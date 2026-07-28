@@ -1,0 +1,126 @@
+auto lo
+iface lo inet loopback
+
+iface nic0 inet manual
+
+auto vmbr0
+iface vmbr0 inet static
+	address 192.0.2.10/24
+	gateway 192.0.2.1
+	bridge-ports nic0
+	bridge-stp off
+	bridge-fd 0
+
+iface nic1 inet manual
+
+iface nic2 inet manual
+
+iface nic3 inet manual
+
+iface nic4 inet manual
+
+iface nic5 inet manual
+
+
+source /etc/network/interfaces.d/*
+
+auto vmbr1
+iface vmbr1 inet static
+    address 198.18.0.1/16
+    bridge-ports none
+    bridge-stp off
+    bridge-fd 0
+    # pve-vmbr1-nat-start
+    post-up iptables -t nat -C POSTROUTING -s 198.18.0.0/16 -o vmbr0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 198.18.0.0/16 -o vmbr0 -j MASQUERADE
+    post-up iptables -C FORWARD -i vmbr1 -o vmbr0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i vmbr1 -o vmbr0 -j ACCEPT
+    post-up iptables -C FORWARD -i vmbr0 -o vmbr1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i vmbr0 -o vmbr1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    post-down iptables -t nat -C POSTROUTING -s 198.18.0.0/16 -o vmbr0 -j MASQUERADE 2>/dev/null && iptables -t nat -D POSTROUTING -s 198.18.0.0/16 -o vmbr0 -j MASQUERADE || true
+    post-down iptables -C FORWARD -i vmbr1 -o vmbr0 -j ACCEPT 2>/dev/null && iptables -D FORWARD -i vmbr1 -o vmbr0 -j ACCEPT || true
+    post-down iptables -C FORWARD -i vmbr0 -o vmbr1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null && iptables -D FORWARD -i vmbr0 -o vmbr1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || true
+    # pve-reverse-proxy-dnat-start
+    post-up iptables -t nat -C PREROUTING -i vmbr0 -p tcp --dport 80 -j DNAT --to-destination 198.18.1.10:80 2>/dev/null || iptables -t nat -A PREROUTING -i vmbr0 -p tcp --dport 80 -j DNAT --to-destination 198.18.1.10:80
+    post-up iptables -t nat -C PREROUTING -i vmbr0 -p tcp --dport 443 -j DNAT --to-destination 198.18.1.10:443 2>/dev/null || iptables -t nat -A PREROUTING -i vmbr0 -p tcp --dport 443 -j DNAT --to-destination 198.18.1.10:443
+    post-up iptables -C FORWARD -i vmbr0 -o vmbr1 -p tcp -d 198.18.1.10 --dport 80 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i vmbr0 -o vmbr1 -p tcp -d 198.18.1.10 --dport 80 -j ACCEPT
+    post-up iptables -C FORWARD -i vmbr0 -o vmbr1 -p tcp -d 198.18.1.10 --dport 443 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i vmbr0 -o vmbr1 -p tcp -d 198.18.1.10 --dport 443 -j ACCEPT
+    post-down iptables -t nat -C PREROUTING -i vmbr0 -p tcp --dport 80 -j DNAT --to-destination 198.18.1.10:80 2>/dev/null && iptables -t nat -D PREROUTING -i vmbr0 -p tcp --dport 80 -j DNAT --to-destination 198.18.1.10:80 || true
+    post-down iptables -t nat -C PREROUTING -i vmbr0 -p tcp --dport 443 -j DNAT --to-destination 198.18.1.10:443 2>/dev/null && iptables -t nat -D PREROUTING -i vmbr0 -p tcp --dport 443 -j DNAT --to-destination 198.18.1.10:443 || true
+    post-down iptables -C FORWARD -i vmbr0 -o vmbr1 -p tcp -d 198.18.1.10 --dport 80 -j ACCEPT 2>/dev/null && iptables -D FORWARD -i vmbr0 -o vmbr1 -p tcp -d 198.18.1.10 --dport 80 -j ACCEPT || true
+    post-down iptables -C FORWARD -i vmbr0 -o vmbr1 -p tcp -d 198.18.1.10 --dport 443 -j ACCEPT 2>/dev/null && iptables -D FORWARD -i vmbr0 -o vmbr1 -p tcp -d 198.18.1.10 --dport 443 -j ACCEPT || true
+    # pve-reverse-proxy-dnat-end
+    # host IPv6 stack off on this bridge (2026-07-17 hardening): guests could
+    # otherwise reach host listeners over link-local IPv6, bypassing the
+    # IPv4-only INPUT rules. Host management stays on vmbr0/IPv4.
+    post-up sysctl -qw net.ipv6.conf.vmbr1.disable_ipv6=1
+    # route to the relay WG transport net via the sshgw LXC (port-forwarding
+    # reply path: VM replies to 100.64.0.1 would otherwise follow the campus
+    # default route and die). replace, not "add || true" — add would swallow
+    # genuine failures behind an unrelated exit path.
+    post-up ip route replace 100.64.0.0/30 via 198.18.1.30 dev vmbr1
+    post-down ip route del 100.64.0.0/30 via 198.18.1.30 dev vmbr1 2>/dev/null || true
+    # FORWARD default-deny tails re-sink (2026-07-28): delete-then-append so the
+    # tails always end up LAST, even after an `ifup vmbr1`/`ifreload` that would
+    # otherwise -A a re-added ACCEPT behind them. The tails deliberately have no
+    # post-down (they must survive an ifdown so the chain stays default-deny);
+    # this re-sink in BOTH stanzas' post-up is what keeps ordering correct.
+    post-up while iptables -D FORWARD -o vmbr1 -j DROP 2>/dev/null; do :; done; iptables -A FORWARD -o vmbr1 -j DROP
+    post-up while iptables -D FORWARD -o vmbr2 -j DROP 2>/dev/null; do :; done; iptables -A FORWARD -o vmbr2 -j DROP
+    # pve-vmbr1-nat-end
+
+auto vmbr2
+iface vmbr2 inet static
+    address 198.19.0.1/16
+    bridge-ports none
+    bridge-stp off
+    bridge-fd 0
+
+    # vmbr2-guest-net-start
+    # NAT egress for guest VMs
+    post-up iptables -t nat -C POSTROUTING -s 198.19.0.0/16 -o vmbr0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 198.19.0.0/16 -o vmbr0 -j MASQUERADE
+    post-up iptables -C FORWARD -i vmbr2 -o vmbr0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i vmbr2 -o vmbr0 -j ACCEPT
+    post-up iptables -C FORWARD -i vmbr0 -o vmbr2 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i vmbr0 -o vmbr2 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    # infra -> guest: only reverse-proxy and sshgw may initiate
+    post-up iptables -C FORWARD -i vmbr1 -o vmbr2 -s 198.18.1.10 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i vmbr1 -o vmbr2 -s 198.18.1.10 -j ACCEPT
+    post-up iptables -C FORWARD -i vmbr1 -o vmbr2 -s 198.18.1.30 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i vmbr1 -o vmbr2 -s 198.18.1.30 -j ACCEPT
+    # relay tunnel -> guest (port-forwarding DNAT data path, routed in via the
+    # sshgw LXC which enforces the narrower per-destination rules): scoped to
+    # the relay's WG address only — do NOT widen to the /30 or drop the source;
+    # this /32 is the entire intended surface.
+    post-up iptables -C FORWARD -i vmbr1 -o vmbr2 -s 100.64.0.1 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i vmbr1 -o vmbr2 -s 100.64.0.1 -j ACCEPT
+    # guest -> infra: replies only, everything else dropped
+    post-up iptables -C FORWARD -i vmbr2 -o vmbr1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i vmbr2 -o vmbr1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    post-up iptables -C FORWARD -i vmbr2 -o vmbr1 -j DROP 2>/dev/null || iptables -A FORWARD -i vmbr2 -o vmbr1 -j DROP
+    # host protection: guests may only ping the host, nothing else
+    post-up iptables -C INPUT -i vmbr2 -p icmp -j ACCEPT 2>/dev/null || iptables -A INPUT -i vmbr2 -p icmp -j ACCEPT
+    post-up iptables -C INPUT -i vmbr2 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A INPUT -i vmbr2 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    post-up iptables -C INPUT -i vmbr2 -j DROP 2>/dev/null || iptables -A INPUT -i vmbr2 -j DROP
+    # host protection: infra bridge may not reach host ssh; 8006 only from pickle-app
+    post-up iptables -C INPUT -i vmbr1 -p tcp -m multiport --dports 22 -j DROP 2>/dev/null || iptables -A INPUT -i vmbr1 -p tcp -m multiport --dports 22 -j DROP
+    post-up iptables -C INPUT -i vmbr1 -p tcp --dport 8006 ! -s 198.18.1.20 -j DROP 2>/dev/null || iptables -A INPUT -i vmbr1 -p tcp --dport 8006 ! -s 198.18.1.20 -j DROP
+
+    post-down iptables -t nat -C POSTROUTING -s 198.19.0.0/16 -o vmbr0 -j MASQUERADE 2>/dev/null && iptables -t nat -D POSTROUTING -s 198.19.0.0/16 -o vmbr0 -j MASQUERADE || true
+    post-down iptables -C FORWARD -i vmbr2 -o vmbr0 -j ACCEPT 2>/dev/null && iptables -D FORWARD -i vmbr2 -o vmbr0 -j ACCEPT || true
+    post-down iptables -C FORWARD -i vmbr0 -o vmbr2 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null && iptables -D FORWARD -i vmbr0 -o vmbr2 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || true
+    post-down iptables -C FORWARD -i vmbr1 -o vmbr2 -s 198.18.1.10 -j ACCEPT 2>/dev/null && iptables -D FORWARD -i vmbr1 -o vmbr2 -s 198.18.1.10 -j ACCEPT || true
+    post-down iptables -C FORWARD -i vmbr1 -o vmbr2 -s 198.18.1.30 -j ACCEPT 2>/dev/null && iptables -D FORWARD -i vmbr1 -o vmbr2 -s 198.18.1.30 -j ACCEPT || true
+    post-down iptables -C FORWARD -i vmbr1 -o vmbr2 -s 100.64.0.1 -j ACCEPT 2>/dev/null && iptables -D FORWARD -i vmbr1 -o vmbr2 -s 100.64.0.1 -j ACCEPT || true
+    post-down iptables -C FORWARD -i vmbr2 -o vmbr1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null && iptables -D FORWARD -i vmbr2 -o vmbr1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || true
+    post-down iptables -C FORWARD -i vmbr2 -o vmbr1 -j DROP 2>/dev/null && iptables -D FORWARD -i vmbr2 -o vmbr1 -j DROP || true
+    post-down iptables -C INPUT -i vmbr2 -p icmp -j ACCEPT 2>/dev/null && iptables -D INPUT -i vmbr2 -p icmp -j ACCEPT || true
+    post-down iptables -C INPUT -i vmbr2 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null && iptables -D INPUT -i vmbr2 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || true
+    post-down iptables -C INPUT -i vmbr2 -j DROP 2>/dev/null && iptables -D INPUT -i vmbr2 -j DROP || true
+    post-down iptables -C INPUT -i vmbr1 -p tcp -m multiport --dports 22 -j DROP 2>/dev/null && iptables -D INPUT -i vmbr1 -p tcp -m multiport --dports 22 -j DROP || true
+    post-down iptables -C INPUT -i vmbr1 -p tcp --dport 8006 ! -s 198.18.1.20 -j DROP 2>/dev/null && iptables -D INPUT -i vmbr1 -p tcp --dport 8006 ! -s 198.18.1.20 -j DROP || true
+    # host IPv6 stack off on this bridge (2026-07-17 hardening) — same rationale
+    post-up sysctl -qw net.ipv6.conf.vmbr2.disable_ipv6=1
+    # FORWARD default-deny tails (2026-07-17 hardening): the chain policy is
+    # ACCEPT, so without these a campus host with a manual route could open
+    # NEW connections into vmbr1/vmbr2 (api :8080, JobRunr :8000, LXC sshds).
+    # All legitimate ingress is covered by the explicit rules above
+    # (ESTABLISHED/RELATED + DNAT 80/443 to .10 + .10/.30/.100.100.1 -> vmbr2).
+    # delete-then-append (2026-07-28) so an ifup/ifreload that re-adds an ACCEPT
+    # via -A cannot leave it BEHIND these tails; the vmbr1 stanza carries the
+    # same re-sink so a single-bridge ifup also fixes order. No post-down: the
+    # tails must survive an ifdown so the chain never opens.
+    post-up while iptables -D FORWARD -o vmbr1 -j DROP 2>/dev/null; do :; done; iptables -A FORWARD -o vmbr1 -j DROP
+    post-up while iptables -D FORWARD -o vmbr2 -j DROP 2>/dev/null; do :; done; iptables -A FORWARD -o vmbr2 -j DROP
+    # vmbr2-guest-net-end

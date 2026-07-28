@@ -1,0 +1,12 @@
+[Unit]
+Description=Pickle health snapshot every ten minutes
+
+[Timer]
+OnCalendar=*:0/10
+# Spread the run off the exact minute boundary so it does not compete with the
+# recurring application jobs that also tick on it.
+RandomizedDelaySec=30
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

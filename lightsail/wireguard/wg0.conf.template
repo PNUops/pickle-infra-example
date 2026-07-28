@@ -1,0 +1,21 @@
+# Lightsail relay WireGuard endpoint. Copy to /etc/wireguard/wg0.conf,
+# fill <...>, chmod 600. The relay is the tunnel LISTENER; the campus sshgw side
+# initiates outbound, so NO Endpoint is set here (the campus peer roams in from
+# behind NAT). Transport /30: relay = 100.64.0.1, sshgw = 100.64.0.2.
+[Interface]
+Address = 100.64.0.1/30
+PrivateKey = <relay-wg-private-key>   # wg genkey
+ListenPort = 51820
+
+[Peer]
+# campus sshgw LXC — its public key is printed by infra create-sshgw-lxc.sh
+PublicKey = <sshgw-wg-public-key>
+# 100.64.0.2/32 = the tunnel peer itself. 198.19.0.0/16 + 198.18.1.20/32
+# (added 2026-07-28, port-forwarding): DNAT targets on the guest net + the api
+# sync endpoint. Cryptokey routing: any inner source outside this list is
+# dropped, which is why DNAT'd traffic is masqueraded to 100.64.0.1 first.
+# NOTE when editing live: `wg set`/`wg syncconf` REPLACES the peer list —
+# always give the FULL list in one atomic call (dropping 100.64.0.2/32 cuts
+# the tunnel data path instantly), then `ip route replace` the two routes
+# (syncconf installs no routes; only wg-quick up does).
+AllowedIPs = 100.64.0.2/32, 198.19.0.0/16, 198.18.1.20/32

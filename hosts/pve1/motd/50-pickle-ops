@@ -1,0 +1,64 @@
+#!/bin/sh
+# Login notice for the Pickle operations jobs on pve-node.
+#
+# Installed as /etc/update-motd.d/50-pickle-ops. This is the surface an operator
+# actually passes through, and there is no outbound alert channel yet.
+#
+# It deliberately computes the verdict at login instead of reading a verdict
+# some other timer wrote. A watchdog timer would itself be able to die
+# unnoticed, which is the failure this whole area is about; a script that runs
+# on every login cannot go stale, and it also reports when the schedule that
+# feeds it has stopped producing fresh markers.
+#
+# Read-only: it never changes service state and stays silent when all is well,
+# so it does not become noise the operator learns to skip.
+
+STATE_DIR=/var/lib/pickle-ops
+problems=""
+
+add() { problems="${problems}  - $1
+"; }
+
+# A marker older than this means the schedule stopped feeding it. Backups run
+# daily and the snapshot every ten minutes, so these are generous multiples.
+stale_after_min_backup=1560   # 26h
+stale_after_min_health=90
+
+check_marker() {
+  name=$1 limit=$2 label=$3
+  if [ -f "$STATE_DIR/$name.fail" ]; then
+    add "$label failed: $(head -1 "$STATE_DIR/$name.fail")"
+  elif [ ! -f "$STATE_DIR/$name.ok" ]; then
+    add "$label has never reported (no marker in $STATE_DIR)"
+  elif [ -z "$(find "$STATE_DIR/$name.ok" -mmin -"$limit" 2>/dev/null)" ]; then
+    add "$label last succeeded $(head -1 "$STATE_DIR/$name.ok") — the schedule has stopped"
+  fi
+}
+
+check_marker db-backup "$stale_after_min_backup" "database backup"
+check_marker health "$stale_after_min_health" "health snapshot"
+
+# A unit that failed before its wrapper could run leaves one of these instead.
+# Each is retracted by its own unit's next clean run, so what shows here is
+# always a failure that has not since recovered.
+for marker in "$STATE_DIR"/unit-failure-*.fail; do
+  [ -f "$marker" ] || continue
+  add "$(head -1 "$marker")"
+done
+
+# The timers themselves: disabled or failed units produce no markers at all,
+# so the absence checks above would report a stale marker without saying why.
+for unit in pickle-db-backup.timer pickle-health.timer; do
+  systemctl is-enabled "$unit" >/dev/null 2>&1 || add "$unit is not enabled"
+done
+for unit in pickle-db-backup.service pickle-health.service; do
+  if systemctl is-failed "$unit" >/dev/null 2>&1; then
+    add "$unit is in a failed state (systemctl status $unit)"
+  fi
+done
+
+[ -n "$problems" ] || exit 0
+
+printf '\n*** Pickle operations attention required ***\n%s' "$problems"
+printf 'Details: %s, journalctl -u pickle-health.service, %s\n\n' \
+  "$STATE_DIR" /var/log/pickle-cron.log
