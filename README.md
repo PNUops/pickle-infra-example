@@ -72,7 +72,7 @@ runbooks/         운영 절차                                    // 이 예시
 | 분류 | 스크립트 |
 |---|---|
 | 프로비저닝 | `build-vm-template.sh`, `create-app-lxc.sh`, `create-sshgw-lxc.sh` |
-| 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh` |
+| 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh` |
 | 운영 | `db-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh` |
 | 검증 | `verify.sh`, `hygiene.sh`, `setup-hooks.sh`, `pre-commit.sh`, `commit-msg.sh` |
