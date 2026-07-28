@@ -1,0 +1,9 @@
+[Unit]
+Description=Record that a Pickle operations unit failed (%i)
+
+[Service]
+Type=oneshot
+# Reached via OnFailure= from the scheduled units. Its job is to leave a trace
+# that survives the journal and is picked up by the login notice, for the case
+# where the wrapped script never ran and therefore wrote no marker of its own.
+ExecStart=/bin/bash /root/pickle/infra/scripts/ops-unit-failed.sh %i

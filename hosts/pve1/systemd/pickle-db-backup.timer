@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily Pickle dev database backup
+
+[Timer]
+# Local time (KST), matching the schedule this replaced.
+OnCalendar=*-*-* 04:10:00
+# Run a missed occurrence after downtime instead of skipping the day. A
+# catch-up that lands before the database is reachable fails loudly (marker +
+# journal) rather than silently, which is the correct failure mode here.
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

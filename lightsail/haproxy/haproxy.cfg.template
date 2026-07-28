@@ -1,0 +1,28 @@
+# Lightsail relay HAProxy. Copy to /etc/haproxy/haproxy.cfg.
+# TCP passthrough of public :22 to the campus sshgw over the WireGuard tunnel,
+# prepending a PROXY v2 header so sshgw recovers the real client IP. HAProxy
+# does NOT terminate SSH — it is a transparent L4 forwarder.
+global
+    log /dev/log local0
+    maxconn 2048
+
+defaults
+    log     global
+    mode    tcp
+    option  tcplog
+    timeout connect 5s
+    timeout client  1h        # long-lived SSH / scp / VSCode Remote sessions
+    timeout server  1h
+
+frontend ssh_in
+    bind :22
+    default_backend sshgw
+
+backend sshgw
+    # send-proxy-v2 prepends the PROXY protocol v2 header the sshgw shim REQUIREs.
+    # 10.100.100.2 is the sshgw WireGuard address (reachable only over the tunnel).
+    # no `check`: single backend so health state buys nothing, and TCP checks
+    # carry no PROXY header — proxyfront (PROXY-required) rejected each probe,
+    # flooding its log every 2s (removed 2026-07-17; check-send-proxy would
+    # only move the noise to sshpiperd).
+    server sshgw 10.100.100.2:22 send-proxy-v2
