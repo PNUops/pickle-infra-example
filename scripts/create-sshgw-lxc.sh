@@ -287,7 +287,21 @@ if ! cmp -s "$nft_tmp" /etc/nftables.conf 2>/dev/null; then
 fi
 rm -f "$nft_tmp"
 systemctl enable -q nftables
-systemctl restart nftables
+if ! systemctl is-active -q nftables; then
+  systemctl start nftables
+else
+  # Reload unconditionally, not only when the file just changed: a previous run
+  # that died after installing the file, or a hand edit, leaves the kernel
+  # ruleset stale against /etc/nftables.conf, and a content-equal rerun would
+  # then never converge it.
+  # Reload (ExecReload = nft -f), not restart: reload is one atomic transaction,
+  # while restart flushes first and leaves this container unfiltered in between.
+  # A flush is tolerable here only because this netns has a single rule owner and
+  # the file above starts with `flush ruleset` anyway. It must never be used on
+  # the relay, where relay-agent owns a second table: there, reload-not-restart
+  # is a hard rule, since a restart destroys every live port-forwarding mapping.
+  systemctl reload nftables
+fi
 
 # 3e-1. IP forwarding — the relay port-forwarding path routes wg0 → eth0 through
 # this container. A runtime-only sysctl dies on reboot and forwarding then fails
