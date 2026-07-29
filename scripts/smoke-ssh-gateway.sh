@@ -306,7 +306,7 @@ echo "== [13] sudo -n fails in guest (NOPASSWD overridden) =="
 # connection blip can't masquerade as "sudo refused" (a false pass).
 OUT=$(try_connect PICKLE-SUDO pssh "$VMPW" "$SLUG" 'echo PICKLE-SUDO; sudo -n true >/dev/null 2>&1; echo RC=$?')
 if ! echo "$OUT" | grep -q PICKLE-SUDO; then ko "[13] could not reach VM shell to test sudo"
-elif echo "$OUT" | grep -q 'RC=0'; then ko "sudo -n succeeded — 99-pickle PASSWD override missing (template rebuilt?)"
+elif echo "$OUT" | grep -q 'RC=0'; then ko "sudo -n succeeded — zz-pickle PASSWD override missing (template rebuilt?)"
 else ok "sudo requires a password (sudo -n refused)"; fi
 
 # --- 15. password regenerate → new password, audited, old fails ---
