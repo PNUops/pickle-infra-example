@@ -69,6 +69,32 @@ pct exec "$RP" -- tar czf /tmp/nginx-etc.tgz -C / etc/nginx
 pct pull "$RP" /tmp/nginx-etc.tgz "$BK/lxc100-nginx-etc.tgz"
 pct exec "$RP" -- rm /tmp/nginx-etc.tgz
 
+echo "== LXC $RP: removing the retired club-domain vhosts and their origin cert"
+# FIRST, before anything runs `nginx -t`. Every nginx archive that exists predates
+# the cutover, and the vhost it restores is the sole referrer of this certificate —
+# which §4 of a rebuild no longer installs. Left in place, the very first
+# `nginx -t` below fails on the missing file and aborts the run, so a removal
+# placed later in the script could never run on exactly the hosts that need it.
+#
+# Rendered subdomain vhosts must already point at their per-root pair before this
+# runs: they are written with whatever the agent was configured with, so an old
+# agent's output would reference this same file and fail the test below. Redeploy
+# the agent with PICKLE_PROXY_AGENT_WILDCARD_CERTS and re-render (/sync-all) first.
+pct exec "$RP" -- rm -f /etc/nginx/sites-enabled/pickle-dev.conf \
+                        /etc/nginx/sites-enabled/pickle-dev-tls.conf \
+                        /etc/nginx/sites-available/pickle-dev.conf \
+                        /etc/nginx/sites-available/pickle-dev-tls.conf \
+                        /etc/nginx/pickle-certs/origin.crt \
+                        /etc/nginx/pickle-certs/origin.key
+# Fail loudly rather than at the opaque `nginx -t` below if anything still refers
+# to the pair we just deleted.
+if pct exec "$RP" -- grep -rl "pickle-certs/origin\.\(crt\|key\)" /etc/nginx 2>/dev/null | grep -q .; then
+  echo "  FAIL nginx config still references the removed origin pair:" >&2
+  pct exec "$RP" -- grep -rl "pickle-certs/origin\.\(crt\|key\)" /etc/nginx >&2
+  echo "       redeploy pickle-proxy-agent with per-root certificates and re-render, then re-run." >&2
+  exit 1
+fi
+
 echo "== pre-change reachability (stream tier must be healthy before we touch anything)"
 # Assert, so that a tenant that was already broken cannot be mistaken for
 # collateral damage from this run.
@@ -365,18 +391,6 @@ server {
 }
 EOF
 pct exec "$RP" -- ln -sf /etc/nginx/sites-available/pickle-main-tls.conf /etc/nginx/sites-enabled/pickle-main-tls.conf
-
-echo "== LXC $RP: removing the retired club-domain vhosts and their origin cert"
-# The redirect these served is gone with the domain. Removing the certificate in
-# the same step keeps the host from carrying key material for a name it no longer
-# answers for; nothing else references this pair (the platform wildcards are
-# per-root files the agent owns).
-pct exec "$RP" -- rm -f /etc/nginx/sites-enabled/pickle-dev.conf \
-                        /etc/nginx/sites-enabled/pickle-dev-tls.conf \
-                        /etc/nginx/sites-available/pickle-dev.conf \
-                        /etc/nginx/sites-available/pickle-dev-tls.conf \
-                        /etc/nginx/pickle-certs/origin.crt \
-                        /etc/nginx/pickle-certs/origin.key
 
 echo "== LXC $RP: nginx -t + reload (atomic: default_server handover)"
 pct exec "$RP" -- nginx -t

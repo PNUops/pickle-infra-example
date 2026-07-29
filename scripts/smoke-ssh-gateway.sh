@@ -145,7 +145,7 @@ echo "== [0] advertised SSH hostname resolves to the relay =="
 # the relay this run just exercised, and that something answers SSH on it.
 ADV_HOST=$(seed_env PICKLE_SSH_HOST)
 if [ -z "$ADV_HOST" ]; then
-  ko "advertised SSH host is set in api.env"
+  ko "advertised SSH host is NOT set in api.env (PICKLE_SSH_HOST)"
 else
   ok "advertised SSH host = $ADV_HOST"
   ADV_IPS=$(getent ahostsv4 "$ADV_HOST" 2>/dev/null | awk '{print $1}' | sort -u)
@@ -154,11 +154,15 @@ else
   else
     ko "$ADV_HOST resolves to [${ADV_IPS:-nothing}], expected $RELAY"
   fi
-  if echo "" | timeout 15 nc "$ADV_HOST" 22 2>/dev/null | head -c 4 | grep -q "SSH-"; then
-    ok "$ADV_HOST:22 answers with an SSH banner"
-  else
-    ko "$ADV_HOST:22 did not answer with an SSH banner"
-  fi
+  # Capture the banner, then test the string. Piping nc into `head -c` and
+  # testing the pipeline instead would report FAIL on a healthy relay: head
+  # exits at its byte count, nc keeps the connection until timeout kills it
+  # (124), and pipefail makes that the pipeline's status regardless of the match.
+  BANNER=$(timeout 5 nc "$ADV_HOST" 22 2>/dev/null | head -c 64 || true)
+  case "$BANNER" in
+    SSH-*) ok "$ADV_HOST:22 answers with an SSH banner" ;;
+    *)     ko "$ADV_HOST:22 did not answer with an SSH banner" ;;
+  esac
 fi
 
 echo "== provision (owner O creates group + VM) =="
