@@ -71,7 +71,7 @@ runbooks/         운영 절차                                    // 이 예시
 
 | 분류 | 스크립트 |
 |---|---|
-| 프로비저닝 | `build-vm-template.sh`, `create-app-lxc.sh`, `create-sshgw-lxc.sh` |
+| 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh` |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh` |
 | 운영 | `db-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh` |
@@ -81,6 +81,9 @@ runbooks/         운영 절차                                    // 이 예시
 스모크는 목이 아니라 살아 있는 시스템에 실제 요청을 보냅니다. `smoke-provisioning.sh`는
 회원가입부터 인증, 그룹 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기, SSH 도달 확인,
 전원 왕복, 삭제, DB 정합 검증까지 한 번에 통과시킵니다.
+
+사용자 VM 템플릿을 만드는 빌드 레시피는 이 저장소에 없습니다. 공개 저장소
+**pickle-image-builder**가 그 역할을 맡습니다.
 
 ### runbooks/
 
