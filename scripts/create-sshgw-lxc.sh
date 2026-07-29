@@ -267,6 +267,14 @@ table inet sshgw {
     }
     chain forward {
         type filter hook forward priority filter; policy drop;
+        # Guest SSH is reachable through the gateway only. The gateway's own
+        # sessions originate in this container (output hook, never forwarded),
+        # so this costs them nothing, while a relay port-forwarding mapping
+        # aimed at :22 would otherwise put a guest sshd straight on the
+        # internet with every per-VM SSH policy out of the path. Above the
+        # conntrack accept on purpose: an already-open flow must not survive
+        # the rule either.
+        ip daddr 172.29.0.0/16 tcp dport 22 drop
         ct state established,related accept
         ct state invalid drop
         # Relay port-forwarding data path: the WG peer may open new flows ONLY
