@@ -15,6 +15,9 @@ CONSENTS_JSON=$(curl -fsS "$BASE/meta/terms" 2>/dev/null | jq -c '[.[] | {docTyp
 CTID="${CTID:-101}"
 TS=$(date +%s)-$RANDOM
 SUB="e2e-${TS}"
+# Platform root to publish under. Overridable so the smoke can exercise a second
+# root the moment one exists, without editing the script.
+ROOT="${ROOT:-pusan.dev}"
 USER_EMAIL="http-${TS}@pusan.ac.kr"; USER_PW="http-pass-${TS}!"
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"; }
 ORGADMIN_EMAIL="orgadmin@pickle.local"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
@@ -104,7 +107,7 @@ FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); M
 [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)" || { ko "no ACTIVE vm-flavor"; exit 1; }
 
 echo "== request + approve (subdomain pre-picked=$SUB) =="
-req "vm-request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"templateId\":$TID,\"flavorId\":$FID,\"purpose\":\"HTTP publish e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":\"$SUB\",\"rootDomain\":\"pickle.pnuops.com\"}" || exit 1
+req "vm-request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"templateId\":$TID,\"flavorId\":$FID,\"purpose\":\"HTTP publish e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":\"$SUB\",\"rootDomain\":\"$ROOT\"}" || exit 1
 RID=$(jq -r .id "$B")
 req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedTemplateId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"http e2e\"}" || exit 1
 req "vm list" 200 "$BASE/vms?groupId=$GID" -H "Authorization: Bearer $SAT" || exit 1
@@ -144,7 +147,7 @@ while :; do curl -sS -o "$B" "$BASE/vms/$VM" -H "Authorization: Bearer $SAT"; RS
   [ "$RST" = "APPLIED" ] && break; [ "$RST" = "FAILED" ] && { ko "route FAILED: $(jq -r '.publication.route.lastError' "$B")"; break; }
   [ "$SECONDS" -ge "$DL" ] && { ko "route not APPLIED in 120s (last=$RST)"; break; }; sleep 5; done
 [ "$RST" = "APPLIED" ] && ok "route APPLIED fqdn=$FQDN" || true
-[ "$FQDN" = "${SUB}.pickle.pnuops.com" ] && ok "fqdn = pre-picked subdomain" || ko "fqdn=$FQDN (expected ${SUB}.pickle.pnuops.com)"
+[ "$FQDN" = "${SUB}.${ROOT}" ] && ok "fqdn = pre-picked subdomain" || ko "fqdn=$FQDN (expected ${SUB}.${ROOT})"
 
 echo "== vhost rendered on LXC 100 =="
 pct exec 100 -- sh -c "ls /etc/nginx/pickle.d/ | grep -c '$SUB' " >"$B" 2>/dev/null
@@ -158,7 +161,14 @@ echo "== origin chain: LXC100 :443 SNI → 8443 → subdomain vhost → VM:80 ==
 # a Cloudflare Origin CA cert, NOT in the public trust store (plain validation
 # gives 000) — so pin the DEPLOYED cert's public key instead (-k disables chain
 # checks but --pinnedpubkey still enforces the pin ⇒ a cert regression fails).
-PIN=$(pct exec 100 -- cat /etc/nginx/pickle-certs/origin.crt 2>/dev/null \
+# Read the pair the agent is configured to serve for THIS root rather than
+# repeating a filename convention here: the agent's map is what actually decides
+# which certificate the vhost gets, so pinning anything else could pass while the
+# served certificate is a different one.
+CERTS_ENV=$(pct exec 100 -- sh -c "grep '^PICKLE_PROXY_AGENT_WILDCARD_CERTS=' /etc/pickle-proxy-agent/agent.env | cut -d= -f2-" 2>/dev/null)
+CERT_PATH=$(printf '%s' "$CERTS_ENV" | tr ',' '\n' | awk -F= -v root="$ROOT" '$1==root {print $2}' | cut -d: -f1)
+[ -n "$CERT_PATH" ] && ok "agent has a wildcard certificate for $ROOT" || ko "agent has no wildcard certificate configured for $ROOT"
+PIN=$(pct exec 100 -- cat "$CERT_PATH" 2>/dev/null \
   | openssl x509 -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform der 2>/dev/null \
   | openssl dgst -sha256 -binary | base64)
 if [ -n "$FQDN" ] && [ -n "$PIN" ]; then

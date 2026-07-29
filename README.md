@@ -20,7 +20,7 @@
 
 ```
 pickle.example.ac.kr ──┐                   외부 릴레이 (오프캠퍼스 SSH)
-*.pickle.example.com ──┤ :80/:443           HAProxy(send-proxy-v2)
+*.example.dev        ──┤ :80/:443           HAProxy(send-proxy-v2)
                        ▼                      │ 캠퍼스발 아웃바운드 WireGuard
 pve-node (Proxmox VE) ────────────────────────────┘
  ├─ vmbr1 (인프라)
