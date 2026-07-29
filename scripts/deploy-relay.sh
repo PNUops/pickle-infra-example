@@ -109,10 +109,13 @@ ensure_account
 PREFLIGHT
 
 cd "$RELAY_AGENT_DIR"
-scripts/verify.sh                 # lint + go fmt/vet/build/test gate
+bash scripts/verify.sh            # lint + go fmt/vet/build/test gate
 
 echo "==> building static linux/amd64 binary"
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 PATH="$(dirname "$GO"):$PATH" scripts/build.sh
+# Both agent scripts are invoked through the interpreter, never as bare paths:
+# a missing execute bit then fails the deploy at exec instead of silently
+# skipping, which is how a set of cron jobs once died unnoticed for ten days.
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 PATH="$(dirname "$GO"):$PATH" bash scripts/build.sh
 [ -f dist/relay-agent ] || { echo "deploy FAILED: dist/relay-agent was not produced" >&2; exit 1; }
 
 # --- stage the artifacts ----------------------------------------------------
