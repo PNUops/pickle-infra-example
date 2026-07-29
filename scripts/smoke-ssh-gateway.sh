@@ -137,6 +137,30 @@ cleanup(){
 trap cleanup EXIT
 
 # ==========================================================================
+echo "== [0] advertised SSH hostname resolves to the relay =="
+# The scenarios below connect to the relay by raw IP so they work either side of a
+# DNS flip. That deliberately leaves the name users are actually told to type
+# untested: a missing or stale A record would not fail a single check here. This
+# asserts the advertised host — the value the API hands to the console — points at
+# the relay this run just exercised, and that something answers SSH on it.
+ADV_HOST=$(seed_env PICKLE_SSH_HOST)
+if [ -z "$ADV_HOST" ]; then
+  ko "advertised SSH host is set in api.env"
+else
+  ok "advertised SSH host = $ADV_HOST"
+  ADV_IPS=$(getent ahostsv4 "$ADV_HOST" 2>/dev/null | awk '{print $1}' | sort -u)
+  if echo "$ADV_IPS" | grep -qx "$RELAY"; then
+    ok "$ADV_HOST resolves to the relay ($RELAY)"
+  else
+    ko "$ADV_HOST resolves to [${ADV_IPS:-nothing}], expected $RELAY"
+  fi
+  if echo "" | timeout 15 nc "$ADV_HOST" 22 2>/dev/null | head -c 4 | grep -q "SSH-"; then
+    ok "$ADV_HOST:22 answers with an SSH banner"
+  else
+    ko "$ADV_HOST:22 did not answer with an SSH banner"
+  fi
+fi
+
 echo "== provision (owner O creates group + VM) =="
 OWNER_EMAIL="sgw-owner-${TS}@pusan.ac.kr"; OWNER_PW="sgw-pass-${TS}!"
 read -r OAT OUID < <(mk_user "$OWNER_EMAIL" "$OWNER_PW" "SGW Owner")

@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # Main-entry domain on the reverse-proxy tier: pickle.pusan.ac.kr (Let's
-# Encrypt, campus zone, direct — no CDN in path), with the retired
-# pickle.pnuops.com entry reduced to a 301 redirect.
+# Encrypt, campus zone, direct — no CDN in path).
 #
 # Idempotent: owns the FINAL state of the reverse-proxy ingress — the four
 # main-entry vhost files, the edge capacity and rate-limit configuration, and
 # the default server for unknown names. Run it LAST when rebuilding the proxy
-# LXC: it intentionally overwrites the pickle-dev app vhosts that
-# apply-terminal-ingress.sh writes (that script reproduces the pre-cutover
-# mid-state its own checks expect).
+# LXC: it removes the retired club-domain vhosts if a restored backup still
+# carries them.
 #
 # Everything lands in one `nginx -t` and one reload because parts of it must
 # change together: the socket may name exactly one default server, so handing
@@ -22,9 +20,7 @@
 #     so either script may write it, in any order.
 #   - sites-available/pickle-main.conf      (:80  — ACME webroot + 301 to HTTPS)
 #   - sites-available/pickle-main-tls.conf  (8443 — LE cert, /terminal/ws + /
-#     and the rate-limited credential paths; mirror of the retired
-#     pickle-dev-tls.conf app vhost with the LE pair instead of the CF Origin
-#     CA pair)
+#     and the rate-limited credential paths)
 #   - raises the connection ceiling. One core means one nginx worker, so the
 #     stock `worker_connections 768` was the limit for the entire public entry;
 #     a request holds several slots across the stream router, the TLS tier and
@@ -42,9 +38,12 @@
 #     with a publicly trusted certificate and the whole console.
 #   - issues the LE certificate (HTTP-01 via the webroot) if it is not
 #     already present; requires LE_EMAIL for first-time account registration.
-#   - sites-available/pickle-dev.conf / pickle-dev-tls.conf — redirect-only
-#     (301 to the new domain; the TLS side keeps the CF Origin CA pair so
-#     HSTS-pinned clients arriving through the CDN get a clean redirect).
+#   - REMOVES sites-available/pickle-dev.conf / pickle-dev-tls.conf and the
+#     Cloudflare Origin CA pair they used. The old club domain is gone: its DNS
+#     records are deleted, and an Origin CA certificate is trusted only behind
+#     the CDN proxy, so once the name no longer resolves through the CDN the
+#     redirect could not have been served without a cert error anyway. Keeping
+#     the files would leave the rebuild claiming a name nothing points at.
 #
 # NOT handled here (host-level, see the network runbook): the pve1 /etc/hosts
 # hairpin entry `172.30.1.10 pickle.pusan.ac.kr` — campus NAT has no hairpin,
@@ -53,7 +52,6 @@ set -euo pipefail
 
 RP=100  # reverse-proxy LXC
 DOMAIN=pickle.pusan.ac.kr
-OLD_DOMAIN=pickle.pnuops.com
 HOST_PROBE_IP=172.30.0.1   # the Proxmox host on vmbr1: smoke suite + health snapshot
 
 ts=$(date +%Y%m%d-%H%M%S)
@@ -368,41 +366,19 @@ server {
 EOF
 pct exec "$RP" -- ln -sf /etc/nginx/sites-available/pickle-main-tls.conf /etc/nginx/sites-enabled/pickle-main-tls.conf
 
-echo "== LXC $RP: retired $OLD_DOMAIN entry -> redirect-only (default_server moves to $DOMAIN)"
-pct exec "$RP" -- bash -c 'cat > /etc/nginx/sites-available/pickle-dev.conf' <<EOF
-# $OLD_DOMAIN — retired main entry (temporary club domain, replaced by
-# $DOMAIN on 2026-07-28). Redirect-only: the app is no longer
-# served here. Kept because browsers hold a long HSTS pin for this name and
-# the CDN-proxied DNS record still points at us; user-facing subdomains
-# (*.$OLD_DOMAIN) are separate vhosts and unaffected.
-server {
-    listen 80;
-    listen [::]:80;
+echo "== LXC $RP: removing the retired club-domain vhosts and their origin cert"
+# The redirect these served is gone with the domain. Removing the certificate in
+# the same step keeps the host from carrying key material for a name it no longer
+# answers for; nothing else references this pair (the platform wildcards are
+# per-root files the agent owns).
+pct exec "$RP" -- rm -f /etc/nginx/sites-enabled/pickle-dev.conf \
+                        /etc/nginx/sites-enabled/pickle-dev-tls.conf \
+                        /etc/nginx/sites-available/pickle-dev.conf \
+                        /etc/nginx/sites-available/pickle-dev-tls.conf \
+                        /etc/nginx/pickle-certs/origin.crt \
+                        /etc/nginx/pickle-certs/origin.key
 
-    server_name $OLD_DOMAIN;
-
-    return 301 https://$DOMAIN\$request_uri;
-}
-EOF
-pct exec "$RP" -- bash -c 'cat > /etc/nginx/sites-available/pickle-dev-tls.conf' <<EOF
-# $OLD_DOMAIN — retired main entry, TLS side (see pickle-dev.conf).
-# Still terminates TLS with the CF Origin CA pair (the CDN edge is the only
-# path that resolves here) purely to serve the redirect without cert errors
-# for HSTS-pinned clients.
-server {
-    listen 127.0.0.1:8443 ssl proxy_protocol;
-    http2 on;
-
-    server_name $OLD_DOMAIN;
-
-    ssl_certificate     /etc/nginx/pickle-certs/origin.crt;
-    ssl_certificate_key /etc/nginx/pickle-certs/origin.key;
-
-    return 301 https://$DOMAIN\$request_uri;
-}
-EOF
-
-echo "== LXC $RP: nginx -t + reload (atomic: default_server handover + redirects)"
+echo "== LXC $RP: nginx -t + reload (atomic: default_server handover)"
 pct exec "$RP" -- nginx -t
 pct exec "$RP" -- systemctl reload nginx
 
@@ -433,9 +409,6 @@ check "new  /api" 200 --resolve "$DOMAIN:443:172.30.1.10" "https://$DOMAIN/api/v
 # anything else means the branch is miswired (502 would mean no bridge).
 check "new  /terminal/ws (bridge reachable)" 403 --resolve "$DOMAIN:443:172.30.1.10" "https://$DOMAIN/terminal/ws"
 check "new  :80 (redirect to https)" 301 --resolve "$DOMAIN:80:172.30.1.10" "http://$DOMAIN/"
-# The retired entry keeps the CDN origin cert, which is not publicly trusted: -k.
-check "old  :443 (redirect)" 301 -k --resolve "$OLD_DOMAIN:443:172.30.1.10" "https://$OLD_DOMAIN/"
-check "old  :80  (redirect)" 301 --resolve "$OLD_DOMAIN:80:172.30.1.10" "http://$OLD_DOMAIN/"
 check "opus :443 (pre-existing tenant)" 200 -k --resolve opus.pusan.ac.kr:443:172.30.1.10 https://opus.pusan.ac.kr/
 # 405 proves the rate-limited credential location is wired and reaching the app
 # (login is POST-only); a 404 would mean the prefix match never took effect.

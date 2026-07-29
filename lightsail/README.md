@@ -5,7 +5,7 @@ campus-inbound port. **Not created by this repo's scripts** — the operator
 provisions the AWS Lightsail instance (Seoul, Debian 13 (trixie), static public
 IPv4, ~$5/mo) and applies the two templates here. Topology, transport IPs, and the
 PROXY-protocol trust rule are described below; the relay's assigned public IP is
-recorded with the operator (it fills the `ssh.pickle.pnuops.com` A record).
+recorded with the operator (it fills the `ssh.example.ac.kr` A record).
 
 ## Topology
 
@@ -38,7 +38,7 @@ header from `10.100.100.1` (contract conditions #1–#4).
    `/etc/wireguard/wg0.conf`. `systemctl enable --now wg-quick@wg0`.
 4. `haproxy/haproxy.cfg.template` → `/etc/haproxy/haproxy.cfg`;
    `systemctl enable --now haproxy`.
-5. Point `ssh.pickle.pnuops.com` (Cloudflare A, DNS-only) at the relay public
+5. Point `ssh.example.ac.kr` (A record, DNS-only — a CDN cannot proxy SSH) at the relay public
    IP — only after end-to-end verification.
 
 WireGuard keys live in `/etc/wireguard/` on each side (mode 600); the AWS/relay

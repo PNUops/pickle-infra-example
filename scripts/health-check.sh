@@ -23,7 +23,10 @@ PGCONN_WARN="${PGCONN_WARN:-80}"                              # pickle_dev conne
 PCT_TIMEOUT="${PCT_TIMEOUT:-20}"
 STATE_DIR="${PICKLE_OPS_STATE_DIR:-/var/lib/pickle-ops}"
 DOMAIN="${PICKLE_DEV_DOMAIN:-https://pickle.pusan.ac.kr}"
-CERT_FILE="${ORIGIN_CERT:-/etc/nginx/pickle-certs/origin.crt}"
+# Platform wildcard certificates, one per root domain. A single scalar could not
+# see a second root, and after the domain cutover it would have kept reporting a
+# retired certificate as healthy while the live one went unwatched.
+ORIGIN_CERT_GLOB="${ORIGIN_CERT_GLOB:-/etc/nginx/pickle-certs/*.crt}"
 BACKUP_DIR="${BACKUP_DIR:-/root/pickle/backup/db}"
 
 # Per-recurring-job max age (seconds) before "stalled". Cadences per
@@ -184,16 +187,26 @@ for id in 100 101; do
 done
 
 # ---- 11. origin TLS cert expiry (LXC 100) ----------------------------------
-end=$(pex 100 sh -c "openssl x509 -enddate -noout -in $CERT_FILE 2>/dev/null | cut -d= -f2")
-if [ -n "$end" ]; then
-  ee=$(date -d "$end" +%s 2>/dev/null || true)
-  if [ -n "$ee" ]; then
-    days=$(( (ee - NOW) / 86400 ))
-    if [ "$days" -lt 0 ]; then rec "cert:origin" FAIL "EXPIRED (${days}d)"
-    elif [ "$days" -lt "$CERT_WARN_DAYS" ]; then rec "cert:origin" WARN "${days}d left"
-    else rec "cert:origin" OK "${days}d left"; fi
-  else rec "cert:origin" WARN "unparseable enddate ($end)"; fi
-else rec "cert:origin" FAIL "cannot read $CERT_FILE"; fi
+# Every wildcard pair on the host is checked by name, so adding a root domain
+# brings its certificate under watch without touching this script.
+origin_certs=$(pex 100 sh -c "ls -1 $ORIGIN_CERT_GLOB 2>/dev/null")
+if [ -z "$origin_certs" ]; then
+  rec "cert:origin" FAIL "no wildcard certificate found at $ORIGIN_CERT_GLOB"
+else
+  for cert_path in $origin_certs; do
+    cert_name=$(basename "$cert_path" .crt)
+    end=$(pex 100 sh -c "openssl x509 -enddate -noout -in $cert_path 2>/dev/null | cut -d= -f2")
+    if [ -n "$end" ]; then
+      ee=$(date -d "$end" +%s 2>/dev/null || true)
+      if [ -n "$ee" ]; then
+        days=$(( (ee - NOW) / 86400 ))
+        if [ "$days" -lt 0 ]; then rec "cert:origin:${cert_name}" FAIL "EXPIRED (${days}d)"
+        elif [ "$days" -lt "$CERT_WARN_DAYS" ]; then rec "cert:origin:${cert_name}" WARN "${days}d left"
+        else rec "cert:origin:${cert_name}" OK "${days}d left"; fi
+      else rec "cert:origin:${cert_name}" WARN "unparseable enddate ($end)"; fi
+    else rec "cert:origin:${cert_name}" FAIL "cannot read $cert_path"; fi
+  done
+fi
 
 # ---- 11b. main-entry Let's Encrypt cert expiry (LXC 100) -------------------
 # The origin cert above is a 15-year pair that cannot realistically lapse; the
