@@ -166,7 +166,10 @@ echo "== origin chain: LXC100 :443 SNI → 8443 → subdomain vhost → VM:80 ==
 # which certificate the vhost gets, so pinning anything else could pass while the
 # served certificate is a different one.
 CERTS_ENV=$(pct exec 100 -- sh -c "grep '^PICKLE_PROXY_AGENT_WILDCARD_CERTS=' /etc/pickle-proxy-agent/agent.env | cut -d= -f2-" 2>/dev/null)
-CERT_PATH=$(printf '%s' "$CERTS_ENV" | tr ',' '\n' | awk -F= -v root="$ROOT" '$1==root {print $2}' | cut -d: -f1)
+# Split on the FIRST '=' only, like the agent's own parser does — awk -F= would
+# truncate a path that itself contains '=' and pin the wrong file.
+CERT_PATH=$(printf '%s' "$CERTS_ENV" | tr ',' '\n' \
+  | sed -n "s/^[[:space:]]*${ROOT}=//p" | cut -d: -f1)
 [ -n "$CERT_PATH" ] && ok "agent has a wildcard certificate for $ROOT" || ko "agent has no wildcard certificate configured for $ROOT"
 PIN=$(pct exec 100 -- cat "$CERT_PATH" 2>/dev/null \
   | openssl x509 -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform der 2>/dev/null \
