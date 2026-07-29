@@ -99,7 +99,8 @@ AAT=$(jq -r .accessToken "$B")
 # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
 req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT" || exit 1; OID=$(jq -r '.[0].id' "$B")
 req "templates" 200 "$BASE/templates" -H "Authorization: Bearer $SAT" || exit 1
-TID=$(jq -r '.[0].id' "$B")
+TID=$(jq -r '.[0].id // empty' "$B")
+[ -n "$TID" ] || { ko "no ACTIVE OS image to request with"; exit 1; }
 # templates are a pure OS catalog now — the spec axis lives in vm-flavors, and
 # POST /vm-requests requires the chosen flavorId alongside the req* specs
 req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $SAT" || exit 1

@@ -224,7 +224,11 @@ phase_account() {
   USER_AT=$(jq -r .accessToken "$BODY")
 
   step "templates" 200 "$BASE/templates" -H "Authorization: Bearer $USER_AT" || return 1
-  TEMPLATE_ID=$(jq -r '.[0].id' "$BODY")
+  TEMPLATE_ID=$(jq -r '.[0].id // empty' "$BODY")
+  if [ -z "$TEMPLATE_ID" ]; then
+    ko "no ACTIVE OS image to request with"
+    return 1
+  fi
 
   # The OS axis (templates) and the spec axis (flavors) are separate catalogs:
   # templates no longer carry default specs, and POST /vm-requests requires the

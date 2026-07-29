@@ -198,11 +198,11 @@ req "kill switch on (200)" 200 -X PUT "$BASE/admin/settings/web_terminal_enabled
   -H 'Content-Type: application/json' -d '{"value":true}'
 
 # ── provision one dev VM (owner U1) ──────────────────────────────────────
-TPL=$(pgq "select id from vm_templates where status='ACTIVE' limit 1")
+TPL=$(pgq "select id from os_images where status='ACTIVE' limit 1")
 ORG=$(pgq "select id from orgs limit 1")
 # templates are a pure OS catalog now — the spec axis is vm_flavors, and
 # POST /vm-requests requires the chosen flavorId. Read the presets off the API
-# (the removed vm_templates.default_* columns would error in psql).
+# (the removed catalog default_* columns would error in psql).
 req "vm-flavors 200" 200 "$BASE/vm-flavors" -H "$(auth "$SAT")"
 FSEL='(map(select(.name=="basic"))[0] // .[0])'
 FID=$(jq -r "$FSEL.id // empty" "$B"); TPL_VCPU=$(jq -r "$FSEL.vcpu // empty" "$B")

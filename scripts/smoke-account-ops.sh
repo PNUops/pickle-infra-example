@@ -167,7 +167,7 @@ has_phase(){ case " $PHASES " in *" $1 "*) return 0;; *) return 1;; esac; }
 # Template + org lookups shared by request-creating phases; the request payload
 # mirrors smoke-provisioning (flavor-preset specs, every nullable field explicit) —
 # hand-rolled minimal payloads hit server-side spec validation.
-TPL=$(pgq "select id from vm_templates where status='ACTIVE' limit 1")
+TPL=$(pgq "select id from os_images where status='ACTIVE' limit 1")
 ORG=$(pgq "select id from orgs limit 1")
 req_payload(){ # $1=groupId $2=purpose
   printf '{"groupId":%s,"orgId":%s,"templateId":%s,"flavorId":%s,"purpose":"%s","courseOrProject":null,"specReason":null,"extraNote":null,"reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"reqStartDate":null,"reqEndDate":null,"desiredSubdomain":null,"rootDomain":null}' "$1" "$ORG" "$TPL" "$FLAVOR" "$2" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
@@ -181,7 +181,7 @@ SAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
 OAT=$(login "$ORGADMIN_EMAIL" "$ORGADMIN_PW")
 [ -n "$OAT" ] && ok "orgadmin login" || ko "orgadmin login"
 
-# The spec axis moved off vm_templates into vm_flavors: the default_* columns no
+# The spec axis moved off the OS catalog into vm_flavors: the default_* columns no
 # longer exist (a psql select would just error into an empty value) and
 # POST /vm-requests now requires flavorId. Read the presets from the API.
 req "vm-flavors 200" 200 "$BASE/vm-flavors" -H "$(auth "$SAT")"

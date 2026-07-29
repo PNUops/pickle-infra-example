@@ -92,7 +92,11 @@ phase_setup(){
   # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
   req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT" || return 1; OID=$(jq -r '.[0].id' "$B")
   req "templates" 200 "$BASE/templates" -H "Authorization: Bearer $SAT" || return 1
-  TID=$(jq -r '.[0].id' "$B")
+  TID=$(jq -r '.[0].id // empty' "$B")
+  if [ -z "$TID" ]; then
+    ko "no ACTIVE OS image to request with"
+    return 1
+  fi
   # templates carry only the OS + disk floor now; the spec axis is vm-flavors and
   # POST /vm-requests requires the chosen flavorId ('basic', else first ACTIVE).
   req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $SAT" || return 1
