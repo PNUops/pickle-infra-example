@@ -22,8 +22,12 @@
 # after a RAM or CPU change re-measures and corrects the node row. Columns that
 # belong to the operator are never touched: the node's status (a node parked in
 # MAINTENANCE stays parked), the relay's sync token, enabled flag and generation
-# counters. Writing rows is guarded — a CIDR change that would orphan a live
-# allocation, or a port band that would drop a live mapping, is refused.
+# counters, and a REVOKED certificate row (a compromised wildcard is never
+# brought back to ACTIVE by a capacity re-run). Writing rows is guarded — a CIDR
+# change that would orphan a live allocation, a port band that would drop a live
+# mapping, or a changed pool/relay NAME (which would fork the row rather than
+# rename it) is refused. The four rows are written in one transaction, so a
+# failure part way leaves the database as it was.
 #
 # Usage:
 #   PICKLE_RELAY_PUBLIC_HOST=<relay's public host> bash scripts/apply-platform-inventory.sh
@@ -115,9 +119,31 @@ pgshow() {
   pct exec "$CTID" -- su - postgres -c \
     "psql -q -X -v ON_ERROR_STOP=1 -d $DB -f -" <<<"$1"
 }
+# pgtx → the same, wrapped in ONE transaction (-1). The four inventory rows
+# describe one machine and are useless in halves: a run that wrote the node and
+# the pool and then failed on the relay used to leave the node pointing at a new
+# pool with no relay to reach it, and nothing said which half had landed. With -1
+# plus ON_ERROR_STOP the whole file commits or none of it does.
+pgtx() {
+  local out
+  if ! out=$(pct exec "$CTID" -- su - postgres -c \
+      "psql -q -X -v ON_ERROR_STOP=1 -1 -tA -d $DB -f -" <<<"$1" 2>&1); then
+    printf 'the write transaction failed and was rolled back:\n%s\n' "$out" >&2
+    return 1
+  fi
+  printf '%s' "$out"
+}
 sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
 
 die() { echo "refusing to run: $*" >&2; exit 1; }
+# For every exit AFTER the backup has been taken. An operator who hits one needs
+# to be told where the previous rows are, in the message that stopped them.
+fail() {
+  echo "FAILED: $*" >&2
+  echo "        the rows as they stood before this run are in $BK/inventory-before.sql" >&2
+  echo "        (data-only inserts; a rollback deletes the rows this run wrote and replays it)" >&2
+  exit 1
+}
 
 echo "== preflight"
 
@@ -132,8 +158,17 @@ case "$RELAY_PUBLIC_HOST" in
                 writes that column — set it to the relay's public name or address." ;;
   *[[:space:]]*|*/*|*:*) die "PICKLE_RELAY_PUBLIC_HOST='$RELAY_PUBLIC_HOST' must be a bare
                 host (no scheme, no port, no path)" ;;
-  localhost|127.0.0.1|0.0.0.0|changeme|CHANGEME|TODO|example.com|relay.example.net)
+  localhost|127.0.0.1|0.0.0.0|changeme|CHANGEME|TODO)
     die "PICKLE_RELAY_PUBLIC_HOST='$RELAY_PUBLIC_HOST' is a placeholder, not this relay" ;;
+  # Reserved and documentation names, matched on the SUFFIX rather than as whole
+  # strings: `relay.invalid` is the placeholder this project's own examples and
+  # fixtures use, and a whole-string list never catches the next one somebody
+  # invents under the same TLD. Nothing under these can ever resolve, so a relay
+  # row carrying one hands every user a forwarded port with no address behind it.
+  *.invalid|*.example|*.test|*.localhost|\
+  example.com|example.net|example.org|*.example.com|*.example.net|*.example.org)
+    die "PICKLE_RELAY_PUBLIC_HOST='$RELAY_PUBLIC_HOST' is a reserved/documentation name
+                that can never resolve — set it to the relay's real public name or address" ;;
 esac
 case "$RELAY_PUBLIC_HOST" in
   *.*) : ;;
@@ -301,6 +336,41 @@ shape=$(pgq "
               else '' end;")
 [ -z "$shape" ] || die "$shape"
 
+# Guards: renaming. Every write below is an upsert keyed on the row's NAME, so a
+# changed name does not rename anything — it conflicts with nothing and inserts a
+# SECOND row describing the same real thing, while the guards below (which join on
+# the requested name) look at the new row and find it innocent. For the pool that
+# is silent corruption: a second pool over the same CIDR, the node repointed at
+# it, the old pool's ALLOCATED rows left behind, and IPAM then handing out
+# addresses that are already in use. For the relay it is a crash instead, because
+# source_ip is unique and the insert dies on that constraint half way through the
+# run. Neither is a rename this script knows how to perform, so refuse and say so.
+existing_pool=$(pgq "
+  select coalesce(
+    (select p.name from ip_pools p
+      where p.cidr = '$(sql_escape "$POOL_CIDR")'::cidr
+        and p.name <> '$(sql_escape "$POOL_NAME")' limit 1),
+    (select p.name from nodes n join ip_pools p on p.id = n.ip_pool_id
+      where n.name = '$(sql_escape "$NODE")'
+        and p.name <> '$(sql_escape "$POOL_NAME")' limit 1),
+    '');")
+[ -z "$existing_pool" ] || die "pool '$existing_pool' already describes this network (same CIDR,
+                or already linked to node '$NODE'), but PICKLE_POOL_NAME asks for
+                '$POOL_NAME'. Writing it would add a second pool over the same
+                addresses instead of renaming the first, and every allocation on
+                '$existing_pool' would be orphaned. This script does not rename rows —
+                either set PICKLE_POOL_NAME='$existing_pool', or rename the row in
+                place first and re-run"
+existing_relay=$(pgq "
+  select coalesce((select r.name from relays r
+                    where r.source_ip = '$(sql_escape "$RELAY_SOURCE_IP")'
+                      and r.name <> '$(sql_escape "$RELAY_NAME")' limit 1), '');")
+[ -z "$existing_relay" ] || die "relay '$existing_relay' is already registered on source address
+                $RELAY_SOURCE_IP, but PICKLE_RELAY_NAME asks for '$RELAY_NAME'. That address is
+                unique per relay, so this run would fail on the constraint rather than rename
+                anything. This script does not rename rows — either set
+                PICKLE_RELAY_NAME='$existing_relay', or rename the row in place first and re-run"
+
 # Guards: the two updates that could invalidate live state.
 orphans=$(pgq "
   select count(*) from ip_allocations a
@@ -329,47 +399,53 @@ pct exec "$CTID" -- su - postgres -c \
   > "$BK/inventory-before.sql"
 echo "  $(wc -l < "$BK/inventory-before.sql") lines dumped"
 
-# ── writes ───────────────────────────────────────────────────────────────────
-# Pool first: the node row references it.
-echo "== register the IP pool"
-result=$(pgq "
+# ── writes: all four rows, one transaction ──────────────────────────────────
+# Pool first: the node row references it, and \gset carries the id forward
+# without a round trip that would have to happen outside the transaction.
+#
+# The node's status is deliberately absent from its update list: it is the
+# operator's admission switch, and a node parked in MAINTENANCE must not come
+# back ACTIVE because someone re-measured its RAM. The relay's token_hash,
+# enabled flag and generation counters are left alone for the same reason — the
+# token is issued by the operator at deploy time and the counters are the sync
+# protocol's state.
+#
+# certificates has no unique key over (kind, scope) — a wildcard row is not
+# schema-unique because per-domain rows share the table — so that one is an
+# update-then-insert-if-the-scope-has-no-row rather than an upsert. status is
+# forced to ACTIVE because publishing accepts only an ACTIVE wildcard row for a
+# root, so a row left FAILED or RENEWING by an earlier attempt would refuse every
+# publish under a certificate we have just read off the host and found valid.
+# REVOKED is the one status that is never overwritten: a certificate is revoked
+# when its key is considered compromised, publishing being gated closed is then
+# the POINT, and this script is re-run for unrelated reasons (its own runbook
+# says to re-run it whenever the host's capacity changes). So the update skips
+# REVOKED rows and the insert asks whether the scope has any row at all — a
+# revoked row therefore blocks both paths, nothing is written, and the operator
+# is told below.
+echo "== register the inventory (node, pool, relay, certificate — one transaction)"
+if ! result=$(pgtx "
   insert into ip_pools (name, cidr, gateway, dns, reserved_ranges)
   values ('$(sql_escape "$POOL_NAME")', '$gw_cidr', '$gw_ip',
           '$dns_json'::jsonb, '$res_json'::jsonb)
   on conflict (name) do update
      set cidr = excluded.cidr, gateway = excluded.gateway, dns = excluded.dns,
          reserved_ranges = excluded.reserved_ranges, updated_at = now()
-  returning (xmax = 0) as inserted, id;")
-IFS='|' read -r inserted POOL_ID <<<"$result"
-[ -n "$POOL_ID" ] || die "the pool row was not written"
-[ "$inserted" = "t" ] && echo "  added   pool $POOL_NAME ($POOL_CIDR) id $POOL_ID" \
-                      || echo "  updated pool $POOL_NAME ($POOL_CIDR) id $POOL_ID"
+  returning id as pool_id, (xmax = 0)::text as pool_new
+  \gset
 
-# The node row carries the measured capacity. status is deliberately absent from
-# the update list: it is the operator's admission switch, and a node parked in
-# MAINTENANCE must not come back ACTIVE because someone re-measured its RAM.
-echo "== register the node with its measured capacity"
-result=$(pgq "
   insert into nodes (name, api_host, cpu_threads, memory_mb, vm_bridge, storage, ip_pool_id)
   values ('$(sql_escape "$NODE")', '$(sql_escape "$NODE_API_HOST")',
           $CPU_THREADS, $MEMORY_MB, '$(sql_escape "$NODE_BRIDGE")',
-          '$(sql_escape "$NODE_STORAGE")', $POOL_ID)
+          '$(sql_escape "$NODE_STORAGE")', :pool_id)
   on conflict (name) do update
      set api_host = excluded.api_host, cpu_threads = excluded.cpu_threads,
          memory_mb = excluded.memory_mb, vm_bridge = excluded.vm_bridge,
          storage = excluded.storage, ip_pool_id = excluded.ip_pool_id,
          updated_at = now()
-  returning (xmax = 0) as inserted, id, status::text;")
-IFS='|' read -r inserted NODE_ID node_state <<<"$result"
-[ -n "$NODE_ID" ] || die "the node row was not written"
-[ "$inserted" = "t" ] && echo "  added   node $NODE id $NODE_ID ($node_state)" \
-                      || echo "  updated node $NODE id $NODE_ID ($node_state, status untouched)"
+  returning id as node_id, (xmax = 0)::text as node_new, status::text as node_state
+  \gset
 
-# The relay row's public host is the point of this step. token_hash, enabled and
-# the generation counters are left alone: the token is issued by the operator at
-# deploy time and the counters are the sync protocol's state.
-echo "== register the relay"
-result=$(pgq "
   insert into relays (name, public_host, source_ip, port_band_start, port_band_end)
   values ('$(sql_escape "$RELAY_NAME")', '$(sql_escape "$RELAY_PUBLIC_HOST")',
           '$(sql_escape "$RELAY_SOURCE_IP")', $BAND_START, $BAND_END)
@@ -377,38 +453,53 @@ result=$(pgq "
      set public_host = excluded.public_host, source_ip = excluded.source_ip,
          port_band_start = excluded.port_band_start,
          port_band_end = excluded.port_band_end, updated_at = now()
-  returning (xmax = 0) as inserted, id, (token_hash is not null) as tokened, enabled;")
-IFS='|' read -r inserted RELAY_ID tokened enabled <<<"$result"
-[ -n "$RELAY_ID" ] || die "the relay row was not written"
-[ "$inserted" = "t" ] && echo "  added   relay $RELAY_NAME id $RELAY_ID -> $RELAY_PUBLIC_HOST" \
-                      || echo "  updated relay $RELAY_NAME id $RELAY_ID -> $RELAY_PUBLIC_HOST"
-echo "  sync token issued: $tokened, enabled: $enabled"
+  returning id as relay_id, (xmax = 0)::text as relay_new,
+            (token_hash is not null)::text as relay_tokened, enabled::text as relay_enabled
+  \gset
 
-# certificates has no unique key over (kind, scope) — a wildcard row is not
-# schema-unique because per-domain rows share the table — so this is an
-# update-then-insert-if-nothing-was-updated in one statement rather than an
-# upsert. status is set ACTIVE on both paths on purpose: publishing accepts only
-# an ACTIVE wildcard row for a root, so a row left FAILED or RENEWING from an
-# earlier attempt would refuse every publish under a certificate we have just
-# read off the host and found valid.
-echo "== register the platform wildcard certificate"
-result=$(pgq "
   with upd as (
     update certificates
        set not_after = '$CERT_NOT_AFTER', status = 'ACTIVE', last_error = null,
            updated_at = now()
      where kind = 'ORIGIN_CA_WILDCARD' and domain_id is null
        and scope = '$(sql_escape "$CERT_SCOPE")'
+       and status <> 'REVOKED'
     returning id
   ), ins as (
     insert into certificates (domain_id, kind, scope, not_after, status)
     select null, 'ORIGIN_CA_WILDCARD', '$(sql_escape "$CERT_SCOPE")',
            '$CERT_NOT_AFTER', 'ACTIVE'
-     where not exists (select 1 from upd)
+     where not exists (select 1 from certificates
+                        where kind = 'ORIGIN_CA_WILDCARD' and domain_id is null
+                          and scope = '$(sql_escape "$CERT_SCOPE")')
     returning id
   )
-  select (select count(*) from ins), (select count(*) from upd);")
-IFS='|' read -r cert_ins cert_upd <<<"$result"
+  select (select count(*) from ins) as cert_ins,
+         (select count(*) from upd) as cert_upd,
+         (select count(*) from certificates
+           where kind = 'ORIGIN_CA_WILDCARD' and domain_id is null
+             and scope = '$(sql_escape "$CERT_SCOPE")'
+             and status = 'REVOKED') as cert_revoked
+  \gset
+
+  select :pool_id, :'pool_new', :node_id, :'node_new', :'node_state',
+         :relay_id, :'relay_new', :'relay_tokened', :'relay_enabled',
+         :cert_ins, :cert_upd, :cert_revoked;"); then
+  fail "no inventory row was written — the transaction rolled back, so nothing was applied"
+fi
+IFS='|' read -r POOL_ID pool_new NODE_ID node_new node_state \
+                RELAY_ID relay_new tokened enabled \
+                cert_ins cert_upd cert_revoked <<<"$result"
+{ [ -n "$POOL_ID" ] && [ -n "$NODE_ID" ] && [ -n "$RELAY_ID" ]; } \
+  || fail "the write transaction returned '$result' instead of the four row ids"
+
+[ "$pool_new" = "true" ] && echo "  added   pool $POOL_NAME ($POOL_CIDR) id $POOL_ID" \
+                      || echo "  updated pool $POOL_NAME ($POOL_CIDR) id $POOL_ID"
+[ "$node_new" = "true" ] && echo "  added   node $NODE id $NODE_ID ($node_state)" \
+                      || echo "  updated node $NODE id $NODE_ID ($node_state, status untouched)"
+[ "$relay_new" = "true" ] && echo "  added   relay $RELAY_NAME id $RELAY_ID -> $RELAY_PUBLIC_HOST" \
+                       || echo "  updated relay $RELAY_NAME id $RELAY_ID -> $RELAY_PUBLIC_HOST"
+echo "  sync token issued: $tokened, enabled: $enabled"
 if [ "${cert_ins:-0}" -gt 0 ]; then
   echo "  added   certificate $CERT_SCOPE until $CERT_NOT_AFTER"
 elif [ "${cert_upd:-0}" -gt 0 ]; then
@@ -416,8 +507,19 @@ elif [ "${cert_upd:-0}" -gt 0 ]; then
   # scope; they are all brought to the same measured date, and the verification
   # table below shows every wildcard row so a duplicate is visible.
   echo "  updated $cert_upd certificate row(s) for $CERT_SCOPE until $CERT_NOT_AFTER"
+elif [ "${cert_revoked:-0}" -gt 0 ]; then
+  : # reported as a warning below; not an error, and not something to overwrite
 else
-  die "no certificate row was written"
+  fail "no certificate row was written for $CERT_SCOPE"
+fi
+if [ "${cert_revoked:-0}" -gt 0 ]; then
+  echo "  WARN $cert_revoked certificate row(s) for $CERT_SCOPE are REVOKED and were LEFT ALONE." >&2
+  echo "       This script will not bring a revoked certificate back: the row is revoked because" >&2
+  echo "       its key was considered compromised, and every publish under $ROOT_DOMAIN staying" >&2
+  echo "       refused is the intended consequence, not a fault to repair. To restore publishing:" >&2
+  echo "       issue a NEW wildcard pair for $ROOT_DOMAIN, install it at $WILDCARD_CERT in" >&2
+  echo "       container $PROXY_CTID, delete the REVOKED row (or re-scope it so it no longer" >&2
+  echo "       claims $CERT_SCOPE), then re-run this script." >&2
 fi
 
 # ── verification: print what is now true ─────────────────────────────────────
@@ -480,10 +582,15 @@ check "node bridge" "$s_bridge" "$NODE_BRIDGE"
 check "node storage" "$s_storage" "$NODE_STORAGE"
 check "relay public host" "$(pgq "select coalesce(public_host, '') from relays where id = $RELAY_ID;")" \
       "$RELAY_PUBLIC_HOST"
-check "wildcard rows for $CERT_SCOPE" \
+# One ACTIVE wildcard row is the expectation, except when the scope's row is
+# REVOKED and was deliberately left that way: then zero is the correct answer and
+# demanding one would report the refusal-to-resurrect as a failure.
+cert_expect=1
+{ [ "${cert_ins:-0}" -gt 0 ] || [ "${cert_upd:-0}" -gt 0 ]; } || cert_expect=0
+check "ACTIVE wildcard rows for $CERT_SCOPE" \
       "$(pgq "select count(*) from certificates
                 where kind = 'ORIGIN_CA_WILDCARD' and domain_id is null
-                  and scope = '$(sql_escape "$CERT_SCOPE")' and status = 'ACTIVE';")" "1"
+                  and scope = '$(sql_escape "$CERT_SCOPE")' and status = 'ACTIVE';")" "$cert_expect"
 
 # The api reaches Proxmox from the app container only (the host firewall admits
 # :8006 from that address alone), so the address is verified from there. Any HTTP
@@ -504,14 +611,10 @@ if [ "$granted" -gt "$MEMORY_MB" ]; then
   echo "  WARN ${granted}MB already granted on $NODE exceeds the registered ${MEMORY_MB}MB —"
   echo "       placement will admit no further guests until that is released"
 fi
-[ "$tokened" = "t" ] || echo "  WARN relay '$RELAY_NAME' has no sync token: every relay sync
+[ "$tokened" = "true" ] || echo "  WARN relay '$RELAY_NAME' has no sync token: every relay sync
        fails closed until one is issued and installed on both sides"
 [ "$CERT_DAYS_LEFT" -ge 30 ] \
   || echo "  WARN the wildcard for $ROOT_DOMAIN expires in ${CERT_DAYS_LEFT}d"
 
-if [ "$vfail" -ne 0 ]; then
-  echo "FAILED — $vfail check(s). Pre-change rows: $BK/inventory-before.sql (data-only" >&2
-  echo "         inserts; a rollback deletes the rows written above and replays that file)." >&2
-  exit 1
-fi
+[ "$vfail" -eq 0 ] || fail "$vfail verification check(s) — the rows above WERE committed"
 echo "OK — inventory registered for $NODE. Pre-change rows kept at $BK/inventory-before.sql."
