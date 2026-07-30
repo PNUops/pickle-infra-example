@@ -199,7 +199,13 @@ req "kill switch on (200)" 200 -X PUT "$BASE/admin/settings/web_terminal_enabled
 
 # ── provision one dev VM (owner U1) ──────────────────────────────────────
 TPL=$(pgq "select id from os_images where status='ACTIVE' limit 1")
+# The state the bootstrap runbook leaves behind — catalog rows registered but
+# none enabled yet — makes this empty, and an empty id is interpolated into the
+# payload as "templateId":, which is not JSON. The request then fails as a bare
+# 400 that says nothing about the catalog, so state the reason here instead.
+[ -n "$TPL" ] || { ko "no ACTIVE OS image to request with (enable one in the catalog)"; exit 1; }
 ORG=$(pgq "select id from orgs limit 1")
+[ -n "$ORG" ] || { ko "no org to request against"; exit 1; }
 # templates are a pure OS catalog now — the spec axis is vm_flavors, and
 # POST /vm-requests requires the chosen flavorId. Read the presets off the API
 # (the removed catalog default_* columns would error in psql).
