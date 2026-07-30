@@ -176,7 +176,12 @@ req "orgadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: applicatio
 AAT=$(jq -r .accessToken "$B")
 req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT" || exit 1; OID=$(jq -r '.[0].id' "$B")
 req "templates" 200 "$BASE/templates" -H "Authorization: Bearer $OAT" || exit 1
-TID=$(jq -r '.[0].id' "$B")
+TID=$(jq -r '.[0].id // empty' "$B")
+# An empty catalog — the state the bootstrap runbook leaves behind, rows
+# registered but none enabled — would otherwise reach the request payload as
+# "templateId":, which is not JSON, and surface as a bare 400 saying nothing
+# about the catalog.
+[ -n "$TID" ] || { ko "no ACTIVE OS image to request with (enable one in the catalog)"; exit 1; }
 # templates are the OS catalog; the spec axis is vm-flavors and POST
 # /vm-requests requires the chosen flavorId ('basic', else the first ACTIVE row)
 req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $OAT" || exit 1
