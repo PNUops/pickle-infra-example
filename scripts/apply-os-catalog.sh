@@ -23,17 +23,42 @@ CTID="${PICKLE_APP_CTID:-101}"
 DB="${PICKLE_DB:-pickle_dev}"
 NODE="${PICKLE_NODE:-pve1}"
 
-# name | display | family | version | account | vmid | revision
+# name | display | family | version | account | vmid | template | revision
+#
+# `template` is the name the VM carries on this host, listed rather than derived
+# because nothing guarantees the naming convention. It exists so the existence
+# check can compare a name and not only a number: VMIDs get reused across
+# rebuilds, so a stale or typo'd number that happens to be occupied would
+# otherwise pass and put a different OS behind a catalog entry. The limit of the
+# check is worth knowing — two templates of the SAME distribution revision carry
+# the same name (this host has 1000 and 1001 both named ubuntu-2404-template),
+# and a mix-up between those two is invisible to any name comparison. Retire the
+# superseded VMID rather than relying on this check to tell them apart.
 CATALOG=(
-  "ubuntu-24.04|Ubuntu 24.04 LTS|ubuntu|24.04|ubuntu|1001|2"
-  "ubuntu-26.04|Ubuntu 26.04 LTS|ubuntu|26.04|ubuntu|1002|1"
-  "ubuntu-22.04|Ubuntu 22.04 LTS|ubuntu|22.04|ubuntu|1003|1"
-  "debian-13|Debian 13|debian|13|debian|1004|1"
-  "debian-12|Debian 12|debian|12|debian|1005|1"
+  "ubuntu-24.04|Ubuntu 24.04 LTS|ubuntu|24.04|ubuntu|1001|ubuntu-2404-template|2"
+  "ubuntu-26.04|Ubuntu 26.04 LTS|ubuntu|26.04|ubuntu|1002|ubuntu-2604-template|1"
+  "ubuntu-22.04|Ubuntu 22.04 LTS|ubuntu|22.04|ubuntu|1003|ubuntu-2204-template|1"
+  "debian-13|Debian 13|debian|13|debian|1004|debian-13-template|1"
+  "debian-12|Debian 12|debian|12|debian|1005|debian-12-template|1"
 )
 
+# Statements are fed on STDIN, never as `psql -c "…"`. A -c argument travels
+# through the second shell `su -c` spawns, and that parse expands $ and command
+# substitution and eats quotes — a distribution codename carrying a backtick
+# would run as a command as the postgres user, and psql would still exit 0.
+# Nothing re-parses stdin.
 psqlq() {
-  pct exec "$CTID" -- su - postgres -c "psql -q -d $DB -tAc \"$1\""
+  local out
+  if ! out=$(pct exec "$CTID" -- su - postgres -c \
+      "psql -q -X -v ON_ERROR_STOP=1 -tA -d $DB -f -" <<<"$1" 2>&1); then
+    printf 'query failed: %s\n%s\n' "${1%%$'\n'*}" "$out" >&2
+    return 1
+  fi
+  printf '%s' "$out"
+}
+psqlshow() {
+  pct exec "$CTID" -- su - postgres -c \
+    "psql -q -X -v ON_ERROR_STOP=1 -d $DB -f -" <<<"$1"
 }
 
 sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
@@ -41,12 +66,18 @@ sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
 echo "== check the templates exist on this host"
 missing=0
 for row in "${CATALOG[@]}"; do
-  IFS='|' read -r name _display _family _version _account vmid _revision <<<"$row"
+  IFS='|' read -r name _display _family _version _account vmid template _revision <<<"$row"
   # A row for a template that is not here would be selectable in the request
   # form and fail at clone time, which is the one failure worth refusing up
-  # front. The name is checked too: a VMID alone could be anything.
-  if ! qm config "$vmid" >/dev/null 2>&1; then
+  # front. The name is compared too, because a VMID alone could be anything.
+  if ! cfg=$(qm config "$vmid" 2>/dev/null); then
     echo "  MISSING: $name expects template $vmid, which does not exist" >&2
+    missing=1
+    continue
+  fi
+  actual=$(printf '%s\n' "$cfg" | sed -n 's/^name: //p')
+  if [ "$actual" != "$template" ]; then
+    echo "  MISMATCH: $name expects template $vmid to be named '$template', but $vmid is named '${actual:-<unnamed>}'" >&2
     missing=1
   fi
 done
@@ -54,7 +85,7 @@ done
 
 echo "== upsert the catalog rows (new rows land DISABLED)"
 for row in "${CATALOG[@]}"; do
-  IFS='|' read -r name display family version account vmid revision <<<"$row"
+  IFS='|' read -r name display family version account vmid _template revision <<<"$row"
   n=$(sql_escape "$name"); d=$(sql_escape "$display")
   f=$(sql_escape "$family"); v=$(sql_escape "$version"); a=$(sql_escape "$account")
   result=$(psqlq "
@@ -81,5 +112,6 @@ for row in "${CATALOG[@]}"; do
 done
 
 echo "== current catalog"
-pct exec "$CTID" -- su - postgres -c \
-  "psql -d $DB -c \"select id, name, version, proxmox_vmid, os_family, os_version, ssh_username, status from os_images order by os_family, name, version\""
+psqlshow "
+  select id, name, version, proxmox_vmid, os_family, os_version, ssh_username, status
+    from os_images order by os_family, name, version;"
