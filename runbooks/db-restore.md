@@ -13,7 +13,9 @@
   must stay paired — a jar must not run against an older-schema DB).
 - Data corruption / accidental destructive operation.
 - NOT for a clean slate: for that, drop/create + let Flyway replay V1→latest
-  (fresh-install path, validated 2026-07-17) instead of restoring a dump.
+  (fresh-install path, validated 2026-07-17) instead of restoring a dump. A replay
+  gives you the schema and nothing about this host — see
+  [clean-slate bootstrap](#clean-slate-bootstrap) for the rows you must then add.
 
 ## Procedure (≈2–5 min, full downtime of the api)
 
@@ -88,3 +90,84 @@ pct exec 101 -- runuser -u postgres -- psql -d pickle_dev -qtAc \
   denied `UPDATE audit_logs` as role pickle after restore.
 - JobRunr tables are inside the dump too; stale queued jobs referencing VMs
   that no longer exist on Proxmox will park as NEEDS_ADMIN (never destroy).
+
+## Clean-slate bootstrap
+
+A restore brings the host's inventory back with the dump. A **replay** does not: the
+migrations create the schema and deliberately seed no node, IP pool, relay or
+platform certificate, because those are properties of this machine and network
+rather than of the schema, and a literal carried in a migration is wrong — not
+merely unhelpful — anywhere else. `scripts/apply-platform-inventory.sh` writes
+them, measuring every capacity number off the running host at each run.
+
+So after a drop/create + Flyway replay (or a first build of a new environment), the
+database is schema-complete and the platform still cannot place a single VM. Work
+through the order below.
+
+### Order
+
+| # | Step | What breaks if it runs out of order |
+|---|---|---|
+| 1 | Host bridges, NAT and firewall are up, and the host answers on the guest-network gateway address | `apply-platform-inventory.sh` refuses: the gateway a guest is told to route through must be an address this host holds on the guest bridge. Bypassed, guests get an unroutable gateway and the fault looks like a template problem |
+| 2 | App container built (`create-app-lxc.sh`): PostgreSQL, the database, and the container's hosts entry mapping the Proxmox node name to the infrastructure-bridge address | The inventory script refuses: the api pins the Proxmox API certificate and cannot skip hostname verification, so `api_host` must name a SAN of that certificate **and** resolve inside the container. A bridge address is not a SAN — that exact value was once seeded and only failed at the first provisioning run |
+| 3 | Start the api once so Flyway applies V1→latest | The inventory script refuses by name: "database … has no nodes table" |
+| 4 | Reverse-proxy container built and the wildcard Origin CA pair for **each** platform root domain installed at `/etc/nginx/pickle-certs/<root, dots as dashes>.{crt,key}` | The inventory script refuses: it reads `not_after` off the installed certificate and will not assert an expiry nobody checked. Skipping the pair and inserting a row by hand is worse — the database reports an ACTIVE certificate while the proxy refuses every apply for that root, by name |
+| 5 | Relay host provisioned and its public address decided | `PICKLE_RELAY_PUBLIC_HOST` cannot be filled honestly, and it is required. A blank `public_host` hands users a forwarded port with no address to connect to; no API writes that column |
+| 6 | **`bash scripts/apply-platform-inventory.sh`** — node with measured capacity, IP pool, relay, wildcard certificate row | — |
+| 7 | `apply-os-catalog.sh` — the OS catalog rows | Its upsert resolves the node by name, so with no node row it writes nothing and says so. New rows land DISABLED |
+| 8 | Issue the relay sync token and install the same value on both sides | Until then step 6 reports `token_issued f` and every relay sync fails closed |
+| 9 | Enable an OS in the admin console; review the runtime feature switches | An empty catalog leaves the request form with nothing selectable |
+| 10 | Smoke tests | They provision real guests and need every row above |
+
+Re-run step 6 whenever the host's capacity changes (RAM or CPU) or a wildcard
+certificate is re-issued: it re-measures and corrects the row rather than adding a
+second one. Nothing that belongs to the operator is touched — a node parked in
+MAINTENANCE stays parked, and the relay's token, `enabled` flag and generation
+counters are left alone. It refuses outright if a CIDR change would orphan a live
+allocation or a narrowed port band would strand a live mapping.
+
+The registered memory figure is a hard admission filter for placement and counts
+guest intent only, so it accounts for neither this host's own footprint nor the
+infrastructure containers sharing the same RAM. `PICKLE_NODE_MEMORY_RESERVE_MB`
+withholds capacity for them; it defaults to 0, i.e. register exactly what was
+measured.
+
+### Environment
+
+Only the first has no default and must be set. The rest default to this
+environment's values; every one of them is configuration, so overriding them is how
+this script serves a second host.
+
+| Variable | Example | Notes |
+|---|---|---|
+| `PICKLE_RELAY_PUBLIC_HOST` | `relay.example.dev` | **Required.** Bare host, no scheme or port. Obvious placeholders are refused |
+| `PICKLE_APP_CTID` | `101` | Container running PostgreSQL and the api |
+| `PICKLE_PROXY_CTID` | `100` | Container holding the wildcard certificate material |
+| `PICKLE_DB` | `pickle_dev` | |
+| `PICKLE_NODE` | `pve-node` | Checked against the Proxmox API; a wrong name fails before anything is written |
+| `PICKLE_NODE_API_HOST` | `https://pve-node:8006` | Defaults to `https://<node>:8006`. Must name a SAN of the API certificate |
+| `PICKLE_PVE_CERT` | `/etc/pve/local/pve-ssl.pem` | The certificate whose SANs are checked |
+| `PICKLE_NODE_BRIDGE` | `vmbr2` | Must exist on the host |
+| `PICKLE_NODE_STORAGE` | `local-lvm` | Must be present and active |
+| `PICKLE_NODE_MEMORY_RESERVE_MB` | `0` | Withheld from the measured total |
+| `PICKLE_POOL_NAME` | `guest-private` | |
+| `PICKLE_POOL_CIDR` | `198.19.0.0/16` | |
+| `PICKLE_POOL_GATEWAY` | `198.19.0.1` | Must be inside the CIDR and held by the host on the bridge |
+| `PICKLE_POOL_DNS` | `["8.8.8.8"]` | JSON array |
+| `PICKLE_POOL_RESERVED` | `[{"from": "198.19.0.0", "to": "198.19.0.255"}]` | JSON array of inclusive ranges, each inside the CIDR |
+| `PICKLE_RELAY_NAME` | `lightsail-1` | |
+| `PICKLE_RELAY_SOURCE_IP` | `100.64.0.1` | The relay's tunnel-side address — the only peer accepted for its sync calls |
+| `PICKLE_RELAY_PORT_BAND` | `10000-19999` | Inside 1024-65535 |
+| `PICKLE_ROOT_DOMAIN` | `pusan.dev` | Certificate scope becomes `*.<root>` |
+| `PICKLE_WILDCARD_CERT` | `/etc/nginx/pickle-certs/pusan-dev.crt` | Defaults from the root domain. Must cover `*.<root>` |
+
+```bash
+PICKLE_RELAY_PUBLIC_HOST=relay.example.dev \
+  bash /root/pickle/infra/scripts/apply-platform-inventory.sh
+```
+
+The run ends by printing the node against the numbers just measured, the pool with
+its usage, the relay with its public host and every platform wildcard row, then a
+pass/fail list. Pre-change rows are dumped to
+`/root/pickle/backup/platform-inventory-<timestamp>/inventory-before.sql`
+(data-only inserts) before anything is written.
