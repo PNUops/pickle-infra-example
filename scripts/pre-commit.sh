@@ -47,4 +47,17 @@ if [ "$hit" = 1 ]; then
   echo "pre-commit: aborting (secret pattern in staged content, or content that could not be scanned). Use --no-verify only for a confirmed false positive." >&2
   exit 1
 fi
+
+# A repo whose verification is cheap enough to run per commit opts in by
+# shipping an executable scripts/hook-verify.sh; the hook runs it and refuses
+# the commit when it fails. Repos needing a build or a test suite do not opt in,
+# because a hook nobody can afford to wait for is a hook everybody bypasses.
+# Keep what it runs self-contained: a check that reads sibling repositories ties
+# this commit to another working tree, which parallel sessions make unstable.
+if [ -x scripts/hook-verify.sh ]; then
+  scripts/hook-verify.sh || {
+    echo "pre-commit: aborting (scripts/hook-verify.sh failed)." >&2
+    exit 1
+  }
+fi
 exit 0
