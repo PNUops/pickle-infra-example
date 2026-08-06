@@ -189,7 +189,7 @@ pass/fail list. Pre-change rows are dumped to
 
 | Variable | Example | Notes |
 |---|---|---|
-| `PICKLE_CONTACT_EMAIL` | `ops@example.org` | **Required.** Shown in the console footer and on the maintenance and error screens, and named as the contact point by both legal documents. Pass `none` to publish it empty on purpose |
+| `PICKLE_CONTACT_EMAIL` | `ops@example.org` | **Required.** Shown in the console footer and on the maintenance and error screens, and named as the contact point by both legal documents. Leave it unset and the script asks at the terminal; it refuses only when there is no terminal to ask at, so an unattended run cannot invent one. Answer `none` to publish it empty on purpose |
 | `PICKLE_ROOT_DOMAIN` | `pusan.dev` | Becomes the single entry of `allowed_root_domains`. The same variable the inventory script reads, so the two cannot disagree about which domain this deployment publishes under |
 | `PICKLE_APP_CTID` | `101` | |
 | `PICKLE_DB` | `pickle_dev` | |

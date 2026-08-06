@@ -43,8 +43,11 @@
 #                          named as the contact point by both legal documents.
 #                          Never defaulted: a wrong address here is worse than
 #                          none, and an address does not belong in a repository.
-#                          Pass the literal `none` to publish it empty on
-#                          purpose (the console then shows no contact).
+#                          Left unset the script asks for it at the terminal, and
+#                          refuses only when there is no terminal to ask at, so
+#                          an unattended run still cannot invent one. Answer
+#                          `none` to publish it empty on purpose (the console
+#                          then shows no contact).
 #   PICKLE_APP_CTID        101      container running PostgreSQL + the api
 #   PICKLE_DB              pickle_dev
 #   PICKLE_ROOT_DOMAIN     pusan.dev   root domain offered in the request form.
@@ -133,8 +136,19 @@ echo "  reserved: $(jq length <<<"$RESERVED_JSON") entries"
 echo "  profanity: $(jq length <<<"$PROFANITY_JSON") entries"
 
 echo "== check the required values"
+if [ -z "$CONTACT_EMAIL" ] && [ -r /dev/tty ]; then
+  # Asked rather than refused when a human is running this: the address is a
+  # decision, not configuration somebody forgot to export, and a bootstrap that
+  # stops to ask is friendlier than one that stops to complain. Read from the
+  # terminal rather than stdin, which the caller may have redirected.
+  echo "  Operations contact address. Shown in the console footer and on the"
+  echo "  maintenance and error screens, and named as the contact point by both"
+  echo "  legal documents. Enter 'none' to publish it empty on purpose."
+  printf '  contact_email: '
+  read -r CONTACT_EMAIL </dev/tty || CONTACT_EMAIL=
+fi
 if [ -z "$CONTACT_EMAIL" ]; then
-  echo "  PICKLE_CONTACT_EMAIL is not set." >&2
+  echo "  PICKLE_CONTACT_EMAIL is not set and there is no terminal to ask at." >&2
   echo "  Both legal documents name a contact point and the console footer" >&2
   echo "  shows it; publishing an empty one silently makes those a dead end." >&2
   echo "  Set a real address, or pass 'none' to publish it empty on purpose." >&2
