@@ -132,8 +132,23 @@ list_to_json() {
 }
 RESERVED_JSON=$(list_to_json "$DATA_DIR/reserved-subdomains.txt")
 PROFANITY_JSON=$(list_to_json "$DATA_DIR/profanity-subdomains.txt")
-echo "  reserved: $(jq length <<<"$RESERVED_JSON") entries"
-echo "  profanity: $(jq length <<<"$PROFANITY_JSON") entries"
+
+# The admin API rejects either list above this many entries. Writing a longer one
+# straight into the database succeeds and then locks the key out of the console
+# permanently: every edit, including one that would shorten the list back, fails
+# validation. So the limit is enforced here, where the failure is a refusal
+# rather than a trap.
+LIST_MAX=500
+for pair in "reserved:$RESERVED_JSON" "profanity:$PROFANITY_JSON"; do
+  label=${pair%%:*}; json=${pair#*:}
+  n=$(jq length <<<"$json")
+  echo "  $label: $n entries"
+  [ "$n" -le "$LIST_MAX" ] || {
+    echo "  the $label list has $n entries, more than the $LIST_MAX the admin API accepts." >&2
+    echo "  Written as is, the key becomes uneditable from the console forever." >&2
+    exit 1
+  }
+done
 
 echo "== check the required values"
 if [ -z "$CONTACT_EMAIL" ] && [ -r /dev/tty ]; then
@@ -179,6 +194,14 @@ RUNTIME=(
 
 # ── write ────────────────────────────────────────────────────────────────────
 echo "== write the settings rows"
+# Counted before and after, because "wrote nothing" and "wrote everything" look
+# identical otherwise. They are not the same event: a run that inserts no keys
+# means somebody else already owns every row, and on a real deployment that
+# somebody is usually the api's development seeder, which fills the table with
+# development values the moment it first starts against an empty database. This
+# script never overwrites a value, so it would report success while the curated
+# lists it was run to install were silently discarded.
+before=$(pgq 'select count(*) from settings;')
 sql=""
 for row in "${DEFAULTS[@]}" "${RUNTIME[@]}"; do
   IFS=$'\t' read -r key value description <<<"$row"
@@ -192,7 +215,22 @@ for row in "${DEFAULTS[@]}" "${RUNTIME[@]}"; do
 "
 done
 pgtx "$sql" >/dev/null
-echo "  ${#DEFAULTS[@]} release defaults + ${#RUNTIME[@]} run-time values written"
+after=$(pgq 'select count(*) from settings;')
+expected=$(( ${#DEFAULTS[@]} + ${#RUNTIME[@]} ))
+inserted=$(( after - before ))
+echo "  $inserted key(s) inserted, $before already present and left alone"
+if [ "$inserted" -lt "$expected" ]; then
+  echo
+  echo "  NOTE: $(( expected - inserted )) of the $expected keys already had a row, so the"
+  echo "  values in this run were NOT applied to them. Values belong to whoever"
+  echo "  wrote them first and this script does not take them over."
+  echo "  On a freshly rebuilt database that is usually the api's development"
+  echo "  seeder, which fills the table at its first start with development"
+  echo "  values: seven reserved names instead of the curated list, an empty"
+  echo "  contact address, and whatever root domain it was compiled with."
+  echo "  If that is what happened, clear the table and re-run this script"
+  echo "  before anything else writes to it."
+fi
 
 # ── verify ───────────────────────────────────────────────────────────────────
 echo "== verify"
