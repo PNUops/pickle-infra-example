@@ -70,7 +70,8 @@ pct exec 101 -- runuser -u postgres -- psql -d pickle_dev -qtAc \
 pct exec 101 -- runuser -u postgres -- psql -d pickle_dev -qtAc \
   "select key, value from settings where key='ssh_gateway_enabled'"
 # ^ if the dump predates the operator's kill-switch flip, re-enable it via the
-#   admin settings UI/API (V13 seed default is false — same trap as a reset).
+#   admin settings UI/API. A reset is the sharper version of the same trap:
+#   there the row comes back from apply-settings.sh, which writes it off.
 # Drift: restored `vms` rows may disagree with live Proxmox guests — the 10min
 # reconciler surfaces findings (never destroys); resolve via the drift report.
 ```
@@ -94,15 +95,25 @@ pct exec 101 -- runuser -u postgres -- psql -d pickle_dev -qtAc \
 ## Clean-slate bootstrap
 
 A restore brings the host's inventory back with the dump. A **replay** does not: the
-migrations create the schema and deliberately seed no node, IP pool, relay or
-platform certificate, because those are properties of this machine and network
-rather than of the schema, and a literal carried in a migration is wrong — not
-merely unhelpful — anywhere else. `scripts/apply-platform-inventory.sh` writes
-them, measuring every capacity number off the running host at each run.
+migrations create the schema and deliberately seed no data at all. Nothing —
+no node, IP pool, relay or platform certificate, no runtime setting, no OS
+catalog row, no legal document. Those are properties of this machine, this
+network and this organisation rather than of the schema, and a literal carried
+in a migration is wrong — not merely unhelpful — anywhere else. Worse, a seeded
+value is wrong *silently*: the operator edits it, the database keeps the edit,
+and the migration goes on claiming otherwise until a replay quietly restores the
+stale figure. Four scripts write it all instead:
+
+| Script | Writes | Re-run behaviour |
+|---|---|---|
+| `apply-platform-inventory.sh` | node with measured capacity, IP pool, relay, wildcard certificate row | re-measures and corrects |
+| `apply-settings.sh` | the runtime settings rows | inserts missing keys only; never overwrites a value |
+| `apply-terms.sh` | terms of service and privacy policy | publishes new versions; refuses to rewrite a published one |
+| `apply-os-catalog.sh` | the OS catalog rows | upserts; never changes a row's status |
 
 So after a drop/create + Flyway replay (or a first build of a new environment), the
-database is schema-complete and the platform still cannot place a single VM. Work
-through the order below.
+database is schema-complete and the platform cannot place a VM, cannot be
+configured, and will not let anybody register. Work through the order below.
 
 ### Order
 
@@ -114,10 +125,12 @@ through the order below.
 | 4 | Reverse-proxy container built and the wildcard Origin CA pair for **each** platform root domain installed at `/etc/nginx/pickle-certs/<root, dots as dashes>.{crt,key}` | The inventory script refuses: it reads `not_after` off the installed certificate and will not assert an expiry nobody checked. Skipping the pair and inserting a row by hand is worse — the database reports an ACTIVE certificate while the proxy refuses every apply for that root, by name |
 | 5 | Relay host provisioned and its public address decided | `PICKLE_RELAY_PUBLIC_HOST` cannot be filled honestly, and it is required. A blank `public_host` hands users a forwarded port with no address to connect to; no API writes that column |
 | 6 | **`bash scripts/apply-platform-inventory.sh`** — node with measured capacity, IP pool, relay, wildcard certificate row | — |
-| 7 | `apply-os-catalog.sh` — the OS catalog rows | Its upsert resolves the node by name, so with no node row it writes nothing and says so. New rows land DISABLED |
-| 8 | Issue the relay sync token and install the same value on both sides | Until then step 6 reports `token_issued f` and every relay sync fails closed |
-| 9 | Enable an OS in the admin console; review the runtime feature switches | An empty catalog leaves the request form with nothing selectable |
-| 10 | Smoke tests | They provision real guests and need every row above |
+| 7 | **`bash scripts/apply-settings.sh`** — the runtime settings rows | Reads fall back to the defaults compiled into the api, so the platform *runs* and the gap stays invisible until somebody opens the settings screen: it lists exactly the rows that exist, and editing a key with no row answers 404. Pass the same `PICKLE_ROOT_DOMAIN` as step 6, or the request form offers a root domain no certificate covers |
+| 8 | **`bash scripts/apply-terms.sh`** — the legal documents | Registration requires consenting to the current version, so with no rows nobody can sign up. This is the intended failure, not a bug to work around: a service whose terms are unpublished should not be collecting accounts |
+| 9 | `apply-os-catalog.sh` — the OS catalog rows | Its upsert resolves the node by name, so with no node row it writes nothing and says so. New rows land DISABLED |
+| 10 | Issue the relay sync token and install the same value on both sides | Until then step 6 reports `token_issued f` and every relay sync fails closed |
+| 11 | Enable an OS in the admin console, **and turn the feature switches back on** | An empty catalog leaves the request form with nothing selectable. The switches are the trap: `apply-settings.sh` writes `ssh_gateway_enabled`, `web_terminal_enabled` and `port_forwarding_enabled` **off**, because a fresh deployment has not yet proven any of them works. A restore of a system where they were on therefore comes back with SSH and the web terminal dead, and nothing reports it — the platform behaves exactly as if the operator had thrown the kill switches |
+| 12 | Smoke tests | They provision real guests and need every row above |
 
 Re-run step 6 whenever the host's capacity changes (RAM or CPU) or a wildcard
 certificate is re-issued: it re-measures and corrects the row rather than adding a
@@ -132,7 +145,7 @@ infrastructure containers sharing the same RAM. `PICKLE_NODE_MEMORY_RESERVE_MB`
 withholds capacity for them; it defaults to 0, i.e. register exactly what was
 measured.
 
-### Environment
+### Environment — `apply-platform-inventory.sh`
 
 Only the first has no default and must be set. The rest default to this
 environment's values; every one of them is configuration, so overriding them is how
@@ -171,3 +184,52 @@ its usage, the relay with its public host and every platform wildcard row, then 
 pass/fail list. Pre-change rows are dumped to
 `/root/pickle/backup/platform-inventory-<timestamp>/inventory-before.sql`
 (data-only inserts) before anything is written.
+
+### Environment — `apply-settings.sh`
+
+| Variable | Example | Notes |
+|---|---|---|
+| `PICKLE_CONTACT_EMAIL` | `ops@example.org` | **Required.** Shown in the console footer and on the maintenance and error screens, and named as the contact point by both legal documents. Pass `none` to publish it empty on purpose |
+| `PICKLE_ROOT_DOMAIN` | `pusan.dev` | Becomes the single entry of `allowed_root_domains`. The same variable the inventory script reads, so the two cannot disagree about which domain this deployment publishes under |
+| `PICKLE_APP_CTID` | `101` | |
+| `PICKLE_DB` | `pickle_dev` | |
+| `PICKLE_DATA_DIR` | `<repo>/data` | Holds the curated word lists |
+
+```bash
+PICKLE_CONTACT_EMAIL=ops@example.org \
+  bash /root/pickle/infra/scripts/apply-settings.sh
+```
+
+Two settings are lists the operator curates rather than values a default can
+supply, so they live in `data/` as one entry per line: `reserved-subdomains.txt`
+(names nobody may claim, because the organisation already publishes them) and
+`profanity-subdomains.txt`. Adding a name is a one-line diff a reviewer can read.
+They are read fresh on every run, but — like every other key — only for a row
+that does not exist yet: once the rows are there, extending the lists is done in
+the admin console, and the files are the bootstrap copy. Keep them in step by
+hand, or a rebuild silently reverts months of curation.
+
+### Environment — `apply-terms.sh`
+
+| Variable | Example | Notes |
+|---|---|---|
+| `PICKLE_APP_CTID` | `101` | |
+| `PICKLE_DB` | `pickle_dev` | |
+| `PICKLE_DATA_DIR` | `<repo>/data` | Documents are read from `<data>/terms/*.md` |
+
+```bash
+bash /root/pickle/infra/scripts/apply-terms.sh
+```
+
+Each document is one file: a four-line header (`doc_type`, `version`, `title`,
+`effective_at`), a `---` line, then the document in Markdown. `effective_at` is a
+real timestamp and the application treats the current version as the highest one
+whose date has passed — so a revision can be published ahead of time and take
+effect on its own.
+
+Revising a document means **adding a file with the next version number**, not
+editing the published one. The script enforces that: it compares the file against
+what is in the database and refuses if a published version's text or title has
+changed, because users have already consented to the published wording and a
+silent rewrite leaves their consent record pointing at a document that no longer
+exists.

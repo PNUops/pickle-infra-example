@@ -1,0 +1,15 @@
+# Subdomain names this deployment refuses to hand out, one per line.
+# Blank lines and lines starting with # are ignored.
+#
+# This is an EXAMPLE list. A real deployment curates its own and it grows:
+# every hostname the organisation already publishes belongs here, or a user can
+# claim a name that collides with an existing service. Sort order does not
+# matter to the script; keeping it sorted just makes the diff readable when
+# somebody adds a name.
+admin
+api
+console
+mail
+ssh
+staging
+www

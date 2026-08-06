@@ -1,0 +1,7 @@
+# Subdomain names refused as abusive or impersonating, one per line.
+# Blank lines and lines starting with # are ignored.
+#
+# This is an EXAMPLE list. A real deployment curates its own, in the languages
+# its users actually write in, and administrators extend it from the console.
+admin-official
+official
