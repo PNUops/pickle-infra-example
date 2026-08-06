@@ -63,11 +63,23 @@ ROOT_DOMAIN="${PICKLE_ROOT_DOMAIN:-pusan.dev}"
 CONTACT_EMAIL="${PICKLE_CONTACT_EMAIL:-}"
 DATA_DIR="${PICKLE_DATA_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/data}"
 
+# The database name is the one value that rides INSIDE the command string the
+# second shell below re-parses, so it is pinned to bare-word characters here.
+# This also turns a plain typo ("pickle dev") into a readable refusal instead
+# of an incomprehensible psql failure.
+case "$DB" in
+  ''|*[!a-zA-Z0-9_]*)
+    echo "PICKLE_DB must be a plain database name ([A-Za-z0-9_]), got: '$DB'" >&2
+    exit 1 ;;
+esac
+
 # ── database access ──────────────────────────────────────────────────────────
 # Statements are fed on STDIN, never as `psql -c "…"`. A -c argument travels
 # through the second shell `su -c` spawns, and that parse expands $ and eats
 # quotes: the word lists below are JSON arrays full of double quotes and would
-# terminate the argument early. Nothing re-parses stdin.
+# terminate the argument early. Nothing re-parses stdin; the database name is
+# the only piece spliced into that command string, and it is validated to
+# bare-word characters above.
 pgq() {
   local out
   if ! out=$(pct exec "$CTID" -- su - postgres -c \
@@ -151,6 +163,15 @@ for pair in "reserved:$RESERVED_JSON" "profanity:$PROFANITY_JSON"; do
 done
 
 echo "== check the required values"
+# Leading/trailing whitespace is the paste artifact that actually happens, and
+# the api's validator matches the whole string — an untrimmed address would be
+# published here and then refused by the console on every later edit.
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  printf '%s' "${s%"${s##*[![:space:]]}"}"
+}
+CONTACT_EMAIL=$(trim "$CONTACT_EMAIL")
 if [ -z "$CONTACT_EMAIL" ] && [ -r /dev/tty ]; then
   # Asked rather than refused when a human is running this: the address is a
   # decision, not configuration somebody forgot to export, and a bootstrap that
@@ -161,6 +182,7 @@ if [ -z "$CONTACT_EMAIL" ] && [ -r /dev/tty ]; then
   echo "  legal documents. Enter 'none' to publish it empty on purpose."
   printf '  contact_email: '
   read -r CONTACT_EMAIL </dev/tty || CONTACT_EMAIL=
+  CONTACT_EMAIL=$(trim "$CONTACT_EMAIL")
 fi
 if [ -z "$CONTACT_EMAIL" ]; then
   echo "  PICKLE_CONTACT_EMAIL is not set and there is no terminal to ask at." >&2
@@ -171,19 +193,31 @@ if [ -z "$CONTACT_EMAIL" ]; then
 fi
 if [ "$CONTACT_EMAIL" = "none" ]; then
   CONTACT_JSON='""'
-  echo "  contact_email: published empty, on request"
+  echo "  contact_email (this run's value): empty, on request"
 else
-  # Deliberately loose — this rejects the mistakes that actually happen (a bare
-  # name, a URL, a stray space) without pretending to validate an address.
-  case "$CONTACT_EMAIL" in
-    *[![:space:]]@*.*) ;;
-    *) echo "  PICKLE_CONTACT_EMAIL does not look like an address: $CONTACT_EMAIL" >&2; exit 1 ;;
-  esac
+  # The same check the api's settings editor runs — its pragmatic pattern
+  # ([^@\s]+@[^@\s]+\.[^@\s]+, whole string) and its 254-char cap. Anything
+  # looser publishes an address the console then refuses to ever save again.
+  if [ "${#CONTACT_EMAIL}" -gt 254 ] || \
+     ! printf '%s' "$CONTACT_EMAIL" | grep -Eq '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'; then
+    echo "  PICKLE_CONTACT_EMAIL is not an address the api accepts: '$CONTACT_EMAIL'" >&2
+    exit 1
+  fi
   CONTACT_JSON=$(jq -R -c . <<<"$CONTACT_EMAIL")
-  echo "  contact_email: $CONTACT_EMAIL"
+  echo "  contact_email (this run's value): $CONTACT_EMAIL"
+fi
+# The same shape the api enforces on allowed_root_domains entries: lowercase
+# dot-separated labels, 63 chars at most. A root that fails it would sit in the
+# row, every publish under it would be refused, and the console could never
+# save an edit to the list — the email is checked, so this must be too.
+if [ "${#ROOT_DOMAIN}" -gt 63 ] || \
+   ! printf '%s' "$ROOT_DOMAIN" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$'; then
+  echo "  PICKLE_ROOT_DOMAIN is not a hostname the api accepts: '$ROOT_DOMAIN'" >&2
+  echo "  (lowercase letters, digits, hyphens and dots; 63 chars max)" >&2
+  exit 1
 fi
 ROOT_DOMAIN_JSON=$(jq -R -c '[.]' <<<"$ROOT_DOMAIN")
-echo "  allowed_root_domains: $ROOT_DOMAIN_JSON"
+echo "  allowed_root_domains (this run's value): $ROOT_DOMAIN_JSON"
 
 RUNTIME=(
   "allowed_root_domains	$ROOT_DOMAIN_JSON	VM 신청에서 선택할 수 있는 루트 도메인 목록."
@@ -231,6 +265,24 @@ if [ "$inserted" -lt "$expected" ]; then
   echo "  If that is what happened, clear the table and re-run this script"
   echo "  before anything else writes to it."
 fi
+# The two values typed for THIS run are named individually: the count above
+# says how many keys were skipped, but not which. Echoing the input back as if
+# written is how a typo survives a re-run — the screen shows the corrected
+# address while the row keeps the old one — so what is reported here is read
+# back from the database, not from the input.
+report_value() { # key  this-run-json
+  local key="$1" val="$2" db
+  db=$(pgq "select value::text from settings where key = '$(sql_escape "$key")';")
+  if [ "$db" = "$val" ]; then
+    echo "  $key: $db (this run's value is what the database now holds)"
+  else
+    echo "  $key: an earlier row already holds $db —"
+    echo "    this run's $val was NOT applied. Values belong to whoever wrote"
+    echo "    them first; change it in the admin console if it is wrong."
+  fi
+}
+report_value contact_email "$CONTACT_JSON"
+report_value allowed_root_domains "$ROOT_DOMAIN_JSON"
 
 # ── verify ───────────────────────────────────────────────────────────────────
 echo "== verify"
