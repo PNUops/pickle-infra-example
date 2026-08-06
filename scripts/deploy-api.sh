@@ -10,7 +10,14 @@ HEALTH_URL="http://127.0.0.1:8080/actuator/health"
 
 cd "$API_DIR"
 scripts/verify.sh
-mvn -q -DskipTests package
+# `clean` is not optional here. Maven copies resources into target/ but never
+# removes ones that have left the source tree, so a renamed or deleted migration
+# stays behind and ships inside the jar next to its replacement. Flyway then
+# refuses to start with "Found more than one migration with version N" — the api
+# does not come up at all, and the deploy's own health check rolls back to a jar
+# that cannot explain why. Rebuilding from scratch costs a couple of minutes and
+# removes the whole class of failure.
+mvn -q -DskipTests clean package
 jar=$(find target -maxdepth 1 -name 'pickle-api-*.jar' | head -1)
 [ -n "$jar" ] || { echo "deploy FAILED: no pickle-api-*.jar under target/ (build layout changed?)" >&2; exit 1; }
 ts=$(date +%Y%m%d-%H%M%S)
