@@ -116,6 +116,8 @@ DEFAULTS=(
   "maintenance_mode	false	점검 모드. true면 관리자 계층이 아닌 모든 인증 요청이 503(MAINTENANCE_MODE)으로 거부됩니다. 변경은 15초 이내 반영."
   "memory_usage_warn	0.8	승인 화면 경고 임계값 — 할당 메모리 / 물리 메모리 비율."
   "notification_retention_days	365	알림 보관 기간(일). 기간이 지난 알림은 정리 작업이 삭제합니다. (30~3650)"
+  "platform_subdomain_reserve_days	30	플랫폼 서브도메인을 해제한 뒤 그 이름을 예약해 두는 기간(일). 예약 중에는 같은 VM에서 다시 연결할 수 있고 다른 사용자는 가져갈 수 없습니다. 기간이 지나면 정리 작업이 이름을 풀어 줍니다. 0이면 해제 즉시 풀립니다."
+  "platform_subdomains_per_vm	3	VM 하나에 연결할 수 있는 플랫폼 서브도메인 개수. 예약 중인 이름은 세지 않습니다. 커스텀 도메인은 이 제한과 무관합니다. 0이면 플랫폼 서브도메인 연결을 막습니다."
   "port_forward_alloc_limit_per_hour	20	사용자별 포트 포워딩 생성 허용 횟수(시간당)."
   "port_forward_band_alert_percent	80	릴레이 공개 포트 대역 사용률 경고 임계값(%). 도달 시 시스템 관리자에게 알림을 보냅니다."
   "port_forward_suspend_conns_per_min	6000	매핑별 분당 신규 연결 수 자동 정지 임계값. 초과 시 해당 매핑을 자동 SUSPENDED 처리합니다."
