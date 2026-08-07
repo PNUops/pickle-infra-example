@@ -126,12 +126,13 @@ provisioning call answers 403.
 
 ```sh
 # 4a. the role. Every privilege the platform actually holds, and no more —
-#     read off the live role, not chosen from the Proxmox catalogue.
+#     measured, not copied: the live role carried three more that were removed
+#     and every path still passed, so they are not here.
 pveum role add PickleProvisioner --privs \
-  "Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit,\
+  "Datastore.AllocateSpace,SDN.Use,Sys.Audit,\
 VM.Allocate,VM.Audit,VM.Clone,VM.Config.CPU,VM.Config.Cloudinit,\
 VM.Config.Disk,VM.Config.Memory,VM.Config.Network,VM.Config.Options,\
-VM.Console,VM.GuestAgent.Audit,VM.GuestAgent.Unrestricted,VM.PowerMgmt"
+VM.GuestAgent.Unrestricted,VM.PowerMgmt"
 
 # 4b. the user. API-only: no password is set, so the account cannot log in to
 #     the web UI at all and the token is its only credential.
@@ -152,8 +153,16 @@ pveum user token add pickle@pve pickle-api --privsep 0 --output-format json \
   > /root/pickle-api-token.json
 ```
 
-Two privileges are worth naming because they are easy to trim and expensive to
-miss. **`VM.GuestAgent.Unrestricted`** is what lets provisioning read the guest's
+This list is 14, and the host it was taken from had 17. The three that are
+absent — `VM.Console`, `VM.GuestAgent.Audit`, `Datastore.Audit` — were removed
+from the live role on 2026-08-07 and provisioning (39/39), the web terminal, the
+SSH gateway and the node capacity measurement all still passed, so they are
+accumulated rather than required. The console privilege is the clearest case:
+nothing in the platform opens a Proxmox console any more, because the web
+terminal reaches guests over SSH.
+
+Two of the fourteen are worth naming because they are easy to trim and expensive
+to miss. **`VM.GuestAgent.Unrestricted`** is what lets provisioning read the guest's
 host keys through the agent; without it the pipeline parks every VM at the
 host-key step. **`SDN.Use`** covers the bridge the guest NIC attaches to.
 
