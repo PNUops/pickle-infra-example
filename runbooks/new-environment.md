@@ -37,10 +37,10 @@ that makes the order real. Details and gaps: the numbered notes below the table.
 | 5 | App container (PostgreSQL + api + console nginx) | `scripts/create-app-lxc.sh`, then fill `/etc/pickle/api.env` from the vault (or issue fresh secrets) | 2, 3 |
 | 6 | SSH gateway container (sshpiperd + WireGuard endpoint) | `scripts/create-sshgw-lxc.sh` — prints the WG public key the relay needs; fill `/etc/pickle/sshgw.env` | 2, 3 |
 | 7 | **HUMAN** creates the relay instance; then bring it up | the relay bring-up runbook (private repo) end to end (WG pairing with step 6, HAProxy, firewall), agent via `scripts/deploy-relay.sh` | 0, 6 |
-| 8 | Reverse-proxy container (public web entry) | the reverse-proxy rebuild runbook (private repo) — note 8, **BLOCKED** on a truly new host; install the Origin CA wildcard pair per platform root | 2, 3, and 0 (certificates) |
+| 8 | Reverse-proxy container (public web entry) | note 8 — create the container, then its config arrives with the agent deploy (step 10) and the apply scripts (step 11); install the Origin CA wildcard pair per platform root | 2, 3, and 0 (certificates) |
 | 9 | User VM templates | image-builder repo (public; on this host a workspace checkout), per-OS profiles → the template VMIDs in the values table; rebuild flow: the template rebuild runbook (private repo) | 2 |
 | 10 | Deploy the services | `scripts/deploy-api.sh` (first api start = Flyway V1→latest), `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-sshgw.sh` | 5, 6, 8; api.env filled |
-| 11 | Ingress and host policy | `scripts/apply-terminal-ingress.sh` → `scripts/apply-main-domain-vhost.sh` (note 11 — **BLOCKED** on a new host) → `scripts/apply-tls-ciphers.sh`; then `scripts/apply-log-retention.sh` and `scripts/apply-ops-timers.sh` (note 11a) | 8, 10; 0 (DNS + firewall live, for the LE issuance) |
+| 11 | Ingress and host policy | `scripts/apply-terminal-ingress.sh` → `scripts/apply-main-domain-vhost.sh` (note 11) → `scripts/apply-tls-ciphers.sh`; then `scripts/apply-log-retention.sh` and `scripts/apply-ops-timers.sh` (note 11a) | 8, 10; 0 (DNS + firewall live, for the LE issuance) |
 | 12 | Database bootstrap — inventory, settings, terms, OS catalog, relay token | [db-restore.md](db-restore.md) §Clean-slate bootstrap, the whole numbered order there; note 12 for the dev-profile clearing and the measured sequence | 5–10 done; 8 for the certificate row |
 | 13 | First operating data | note 13 — enable an OS, switch the kill switches on, create ≥1 organisation and the spec presets, verify the admin account | 12 |
 | 14 | Smoke tests, health snapshot, first backup | note 14 | 13 |
@@ -58,7 +58,7 @@ step 1 — chasing them one failing script at a time is how a build stalls.
 | Infra bridge net (vmbr1) | `172.30.0.0/16`, host `.0.1`; proxy `.1.10`, app `.1.20`, sshgw `.1.30` | `hosts/pve1/interfaces` (NAT/DNAT/FORWARD rules pin `.1.10`), `create-app-lxc.sh`, `create-sshgw-lxc.sh`, the reverse-proxy rebuild runbook, `apply-terminal-ingress.sh`, `apply-main-domain-vhost.sh` (`HOST_PROBE_IP`) |
 | Guest bridge net (vmbr2) | `172.29.0.0/16`, host `.0.1` | `hosts/pve1/interfaces`; `PICKLE_POOL_CIDR` / `PICKLE_POOL_GATEWAY` / `PICKLE_POOL_RESERVED` (`apply-platform-inventory.sh`) |
 | WireGuard transport net | `10.100.100.0/30` — relay `.1`, sshgw `.2` | `create-sshgw-lxc.sh`, `lightsail/wireguard/`, `hosts/pve1/interfaces` (the `/30` route + the `.1` FORWARD accept), `PICKLE_RELAY_SOURCE_IP` |
-| Main entry domain | `pickle.pusan.ac.kr` | `apply-main-domain-vhost.sh` (**literal `DOMAIN=`, no env override** — note 11); `create-sshgw-lxc.sh` as `PICKLE_TERMINAL_CONSOLE_ORIGIN` — **the terminal bridge accepts this origin and no other, and that container is built at step 6, long before step 11**, so a stale value here kills the web terminal silently; `create-app-lxc.sh` console vhost `server_name`; `health-check.sh` (`PICKLE_DEV_DOMAIN` default, and the Let's Encrypt certificate path); `apply-tls-ciphers.sh`, whose before/after assertions demand a 200 from this name; smoke-test defaults (`BASE`); the host `/etc/hosts` hairpin entry |
+| Main entry domain | `pickle.pusan.ac.kr` | `apply-main-domain-vhost.sh` via `PICKLE_MAIN_DOMAIN`; `create-sshgw-lxc.sh` as `PICKLE_TERMINAL_CONSOLE_ORIGIN` — **the terminal bridge accepts this origin and no other, and that container is built at step 6, long before step 11**, so a stale value here kills the web terminal silently; `create-app-lxc.sh` console vhost `server_name`; `health-check.sh` (`PICKLE_DEV_DOMAIN` default, and the Let's Encrypt certificate path); `apply-tls-ciphers.sh`, whose before/after assertions demand a 200 from this name; smoke-test defaults (`BASE`); the host `/etc/hosts` hairpin entry |
 | Platform root domain(s) | `pusan.dev` | `PICKLE_ROOT_DOMAIN` (`apply-platform-inventory.sh` **and** `apply-settings.sh` — same value, on purpose), cert path `/etc/nginx/pickle-certs/<root, dots as dashes>.{crt,key}`, the Cloudflare zone |
 | User SSH host | `ssh.example.dev` (DNS-only A record → relay static IP) | the relay bring-up runbook; api `PICKLE_SSH_HOST` (the override point) — **and the api falls back to a compiled-in default when it is blank**, in the meta endpoint and in notification text, so an unset variable does not fail, it advertises the wrong host; the console carries its own constant for the unauthenticated landing page, which its own comment admits is duplicated state |
 | Relay public host (port forwarding) | `ssh.example.dev` — the same name as the user SSH host above, because both resolve to the relay | `PICKLE_RELAY_PUBLIC_HOST` (`apply-platform-inventory.sh`, required — no default, and no API writes the column) |
@@ -176,22 +176,40 @@ pveum user token list pickle@pve   # privsep 0
 The ACLs live on the **user**, not the token, so a later token rotation does not
 disturb them (the secret rotation runbook (private repo) §2b relies on that).
 
-### 8. Reverse proxy from blank — BLOCKED on a truly new host
+### 8. Reverse proxy from blank
 
-The reverse-proxy rebuild runbook (private repo) is honest about its own limit:
-it *restores* the nginx state (the SNI stream router, the include skeleton, the
-pre-existing tenant vhost) from the newest backup archive, and that archive is
-the **only** source of that skeleton. A new host has no archive. **BLOCKED —
-nothing can produce the nginx skeleton from source.** The apply scripts layer
-onto it (`apply-terminal-ingress.sh`, `apply-tls-ciphers.sh`,
-`apply-main-domain-vhost.sh`) but none of them writes the base `nginx.conf`
-stream block or the vhost include layout. What would close it: either commit
-the skeleton as files this repo owns, or extend the rebuild runbook with a
-from-source section. Until then: carry a current archive from the old host
-(and for a first environment with no old host, this step cannot be completed
-as documented). The Origin CA wildcard pair per platform root (from step 0)
-installs at `/etc/nginx/pickle-certs/` either way — step 12's inventory
-refuses without it.
+the reverse-proxy rebuild runbook (private repo) *restores* nginx from the newest
+backup archive, and it is honest that the archive is its source. That reads as a
+dead end for a first environment, and this runbook said so until the live
+container was inventoried on 2026-08-07. It is not: **every platform config file
+on that container has a source in the repositories.** The archive is a
+convenience for a rebuild, not the only way to the state.
+
+| File | Written by |
+|---|---|
+| `conf.d/pickle-base.conf` | the proxy-agent's own deploy script (the websocket upgrade map and the `pickle.d` include glob the rendered vhosts need) |
+| `conf.d/pickle-terminal.conf`, `stream-conf.d/*-sni.conf` | `apply-terminal-ingress.sh` — this is also what defines `$pickle_client_ip` and the stream SNI router that owns :443 and prepends the PROXY header |
+| `conf.d/pickle-tls.conf` | `apply-tls-ciphers.sh` |
+| `conf.d/pickle-ratelimit.conf`, `sites-available/pickle-main*.conf`, `pickle-reject*.conf`, `stream-conf.d/pickle-stream-limits.conf`, `snippets/proxy-common.conf` | `apply-main-domain-vhost.sh` |
+| `pickle.d/<fqdn>.conf` | the proxy-agent at run time, one per published domain |
+
+So the order for a blank container is: create it (Debian, nginx, the
+infrastructure-bridge address from the values table), deploy the proxy agent
+(step 10) so its base config lands, then run the three apply scripts (step 11).
+Install the Origin CA wildcard pair per platform root at
+`/etc/nginx/pickle-certs/<root, dots as dashes>.{crt,key}` — step 12's inventory
+refuses without it, and the proxy agent needs it named in its own environment.
+
+Two things are genuinely not in any repository, and both are specific to the
+host this platform grew on rather than to the platform:
+
+- the **legacy tenant vhost** that shares this proxy. A new environment has no
+  such tenant and needs none of it — but see note 11, because one apply script
+  asserts that tenant answers before it will run.
+- `nginx.conf` itself, beyond the stock Debian file: the `stream {}` block that
+  includes `stream-conf.d/`, and `worker_shutdown_timeout` set high enough that a
+  reload does not sever web-terminal websockets. Both are one line each and named
+  in `pickle-base.conf`'s own comments.
 
 ### 11. Ingress and host policy
 
@@ -200,16 +218,12 @@ terminal-ingress plumbing writes no app vhost, so the platform answers nothing
 until `apply-main-domain-vhost.sh` runs — it owns the final ingress state and
 runs LAST among the vhost writers.
 
-**BLOCKED on a new host — `apply-main-domain-vhost.sh` will not run there.**
-Two facts, both currently true and stated nowhere else: (1) its preflight
-asserts the pre-existing tenant of THIS host's proxy answers 200 and aborts
-otherwise — a new host without that tenant dies at the preflight; (2) the main
-domain is a literal `DOMAIN=pickle.pusan.ac.kr` with no environment override,
-unlike every other domain input in this repo. This is a known, accepted debt
-(the production main domain is undecided; the plan is to swap it right before
-launch); what would close it is parameterizing `DOMAIN` and making the tenant
-assertion opt-in. Until then a new environment must edit the script copy it
-runs — note that you did, and do not commit the edit as if general.
+`apply-main-domain-vhost.sh` used to refuse on a new host: its main domain was a
+literal and its pre-flight asserted that a tenant which predates the platform on
+this proxy answers 200. Both are parameterised as of 2026-08-07 — the defaults
+reproduce this deployment, and a new environment passes its own
+`PICKLE_MAIN_DOMAIN` and `PICKLE_LEGACY_TENANT_HOST=none`. The other two scripts
+in this step take the container id and addresses from the same variables.
 
 Also required by the LE issuance inside it: the DNS record and the university
 firewall opening from step 0 must already be live, and the pve1 `/etc/hosts`
