@@ -31,7 +31,8 @@ NODE="${PICKLE_NODE:-pve-node}"
 # rebuilds, so a stale or typo'd number that happens to be occupied would
 # otherwise pass and put a different OS behind a catalog entry. The limit of the
 # check is worth knowing — two templates of the SAME distribution revision carry
-# the same name (this host has 1000 and 1001 both named ubuntu-2404-template),
+# the same name (1000 and 1001 both carried ubuntu-2404-template until 1000 was
+# destroyed on 2026-08-07),
 # and a mix-up between those two is invisible to any name comparison. Retire the
 # superseded VMID rather than relying on this check to tell them apart.
 CATALOG=(

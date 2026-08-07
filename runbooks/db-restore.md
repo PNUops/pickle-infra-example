@@ -81,7 +81,7 @@ pct exec 101 -- runuser -u postgres -- psql -d pickle_dev -qtAc \
 - **Jar/DB pairing**: restoring a pre-V20 dump under a post-V20 jar fails at
   Flyway validate?? No — the dump CONTAINS flyway_schema_history; Flyway will
   apply only missing migrations. A dump that predates V20 carries the old enum
-  values, but that era is long past (live Flyway head is V54 as of 2026-07-28 —
+  values, but that era is long past (live Flyway head is V65 as of 2026-08-07 —
   the current head is always the last file in `api/src/main/resources/db/migration`) and
   the 14-day retention holds no such dump — it is a manual-import concern only. If
   one is ever imported, the paired-era jar rule applies: a jar must not run against
