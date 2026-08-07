@@ -12,7 +12,7 @@ already exists — each step points at the runbook or script that owns it.
 (Runbooks not carried in this sample copy are kept in the private repository;
 they are named descriptively below.)
 
-Two markers are used throughout, and they are the point of the document:
+Three markers are used throughout, and they are the point of the document:
 
 - **HUMAN** — only the operator can do this step: purchases, account creation,
   requests to the university, physical work. No script or session can do it, so
@@ -21,6 +21,25 @@ Two markers are used throughout, and they are the point of the document:
   with what would close it. **Do not improvise these steps from memory or
   guesswork**; a wrong host or proxy skeleton fails in ways that look like
   faults in the layers above it.
+
+- **UNVERIFIED** — the step is written but nobody has followed it on a machine
+  that did not already have the thing. Steps 12 to 14 were walked end to end on
+  2026-08-07 during a database rebuild; everything before them was reconstructed
+  by reading the running host, which proves the destination and not the route.
+  **The next real build is the verification.** Whoever walks it: keep this file
+  open, and as each step completes either leave it alone or correct it on the
+  spot, then drop the marker for that step. A correction made while the failure
+  is in front of you is worth more than the same correction guessed at later —
+  the two runbook errors this document already carries were both found that way,
+  by running the procedure rather than reading it.
+
+## Verification status
+
+| Steps | State |
+|---|---|
+| 0, 1 | HUMAN, and partly undocumented — see their notes |
+| 2 to 11 | **UNVERIFIED** — written from the running host, never walked on a blank one |
+| 12 to 14 | Walked 2026-08-07: the database was dropped, replayed, bootstrapped by the five scripts, and proven with the smoke suite |
 
 ## The order
 
