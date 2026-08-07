@@ -18,8 +18,15 @@
 # What a re-run does:
 #   new (doc_type, version)     published
 #   same version, same text     left alone
-#   same version, CHANGED text  REFUSED. Users have already consented to the
-#                               published wording; changing it underneath them
+#   same version, CHANGED text  Depends on whether anyone can be bound by the
+#                               published row. A version that is still pending
+#                               (effective_at in the future) and has no consent
+#                               records binds nobody — the application only
+#                               collects consent to the version in force — so a
+#                               mistake in it (a wrong effective date, a typo)
+#                               is revised in place. Once it is in force, or
+#                               the moment a consent row exists, it is REFUSED:
+#                               changing consented wording underneath users
 #                               makes the consent record describe a document
 #                               that no longer exists. Publish a new version
 #                               instead — add a file with the next version
@@ -160,7 +167,7 @@ for f in "${FILES[@]}"; do
 done
 
 echo "== compare against what is already published"
-publish=()
+publish=(); revise=()
 for f in "${FILES[@]}"; do
   parse_doc "$f" || exit 1
   dt=$(sql_escape "$DOC_TYPE")
@@ -170,11 +177,6 @@ for f in "${FILES[@]}"; do
                    where doc_type = '$dt' and version = $DOC_VERSION;")
   if [ "$existing" = "0" ]; then
     # A new version is measured against the newest published one of its type.
-    # The application takes the current version as the highest whose
-    # effective_at has passed, so a new version whose effective_at is not
-    # LATER than the published one goes into force the instant it lands and
-    # drops every user into re-consent — and a copy whose text has not changed
-    # does that for nothing at all.
     prev_version=$(pgq "select coalesce(max(version), 0) from terms_versions
                          where doc_type = '$dt';")
     if [ "$prev_version" != "0" ]; then
@@ -183,25 +185,73 @@ for f in "${FILES[@]}"; do
                           where doc_type = '$dt' and version = $prev_version;")
       prev_title=$(pgq "select title from terms_versions
                          where doc_type = '$dt' and version = $prev_version;")
-      prev_effective=$(pgq "select effective_at from terms_versions
-                             where doc_type = '$dt' and version = $prev_version;")
+      prev_revisable=$(pgq "select case when v.effective_at > now()
+                                    and not exists (select 1 from user_consents c
+                                                     where c.terms_version_id = v.id)
+                                   then 't' else 'f' end
+                              from terms_versions v
+                             where v.doc_type = '$dt' and v.version = $prev_version;")
       if [ "$file_digest" = "$prev_digest" ] && [ "$DOC_TITLE" = "$prev_title" ]; then
         echo "  $DOC_TYPE v$DOC_VERSION is byte-identical to published v$prev_version." >&2
         echo "  A new version exists to change the document; publishing an identical one" >&2
         echo "  only forces every user to re-consent to text that has not changed." >&2
+        if [ "$prev_revisable" = "t" ]; then
+          echo "  (If this copy exists to fix v$prev_version's effective_at: v$prev_version is still" >&2
+          echo "  pending with no consents, so edit the v$prev_version file itself — this script" >&2
+          echo "  revises a pending version in place.)" >&2
+        fi
         exit 1
       fi
-      is_later=$(pgq "select case when '$ef'::timestamptz > effective_at
-                             then 't' else 'f' end
-                        from terms_versions
-                       where doc_type = '$dt' and version = $prev_version;")
-      if [ "$is_later" != "t" ]; then
-        echo "  $DOC_TYPE v$DOC_VERSION: effective_at $DOC_EFFECTIVE is not after" >&2
-        echo "  v$prev_version's ($prev_effective)." >&2
-        echo "  A revision must take effect after the version it replaces — set a" >&2
-        echo "  later effective_at (a future one takes effect on its own)." >&2
-        exit 1
+      # Ordering is checked against the newest version anyone can be BOUND by —
+      # one already in force, or one holding consent records. The application
+      # takes the current version as the highest whose effective_at has passed,
+      # so a new version dated at or before that one goes into force the
+      # instant it lands and drops every user into re-consent. A pending,
+      # consent-free version does not anchor this check: nobody is bound by
+      # it, and requiring a correction to land AFTER a mistakenly far-future
+      # date would make the mistake unfixable.
+      anchor_version=$(pgq "select coalesce(
+                              (select v.version
+                                 from terms_versions v
+                                where v.doc_type = '$dt'
+                                  and (v.effective_at <= now()
+                                       or exists (select 1 from user_consents c
+                                                   where c.terms_version_id = v.id))
+                                order by v.effective_at desc, v.version desc
+                                limit 1), 0);")
+      if [ "$anchor_version" != "0" ]; then
+        anchor_effective=$(pgq "select effective_at from terms_versions
+                                 where doc_type = '$dt' and version = $anchor_version;")
+        is_later=$(pgq "select case when '$ef'::timestamptz > effective_at
+                               then 't' else 'f' end
+                          from terms_versions
+                         where doc_type = '$dt' and version = $anchor_version;")
+        if [ "$is_later" != "t" ]; then
+          echo "  $DOC_TYPE v$DOC_VERSION: effective_at $DOC_EFFECTIVE is not after" >&2
+          echo "  v$anchor_version's ($anchor_effective) — the newest version that is in force" >&2
+          echo "  or has consent records." >&2
+          echo "  A revision must take effect after the version users are bound by — set a" >&2
+          echo "  later effective_at (a future one takes effect on its own)." >&2
+          exit 1
+        fi
       fi
+      # A pending, consent-free version dated at or after this new one will be
+      # shadowed: the current version is the highest whose effective_at has
+      # passed, so once the new version is in force the older number never
+      # gets its turn. That is the intended way to retire a mispublished
+      # pending version, but it should happen out loud.
+      while IFS='|' read -r sv se; do
+        [ -n "$sv" ] || continue
+        echo "  note: $DOC_TYPE v$sv (pending, effective $se, no consents) will be"
+        echo "  superseded by v$DOC_VERSION before taking effect and will never be in force"
+      done <<<"$(pgq "select v.version || '|' || v.effective_at
+                        from terms_versions v
+                       where v.doc_type = '$dt' and v.version < $DOC_VERSION
+                         and v.effective_at >= '$ef'::timestamptz
+                         and v.effective_at > now()
+                         and not exists (select 1 from user_consents c
+                                          where c.terms_version_id = v.id)
+                       order by v.version;")"
     fi
     echo "  $DOC_TYPE v$DOC_VERSION: new, will publish"
     publish+=("$f")
@@ -224,6 +274,59 @@ for f in "${FILES[@]}"; do
   if [ "$file_digest" = "$db_digest" ] && [ "$db_title" = "$DOC_TITLE" ] \
      && [ "$eff_same" = "t" ]; then
     echo "  $DOC_TYPE v$DOC_VERSION: already published, unchanged"
+    continue
+  fi
+  # The file differs from the published row. Whether that row may still be
+  # rewritten hinges on whether anyone can be bound by it. The application
+  # collects consent only to the version in force (highest effective_at that
+  # has passed), so a version that is still pending AND has no consent rows
+  # binds nobody — refusing to fix it would leave a mispublished date or typo
+  # with no exit short of hand-written SQL. Both conditions are checked here
+  # and re-checked inside the UPDATE itself, so a version that goes into force
+  # or gains a consent mid-run cannot be rewritten by the race.
+  consents=$(pgq "select count(*) from user_consents c
+                   join terms_versions v on v.id = c.terms_version_id
+                  where v.doc_type = '$dt' and v.version = $DOC_VERSION;")
+  is_pending=$(pgq "select case when effective_at > now() then 't' else 'f' end
+                      from terms_versions
+                     where doc_type = '$dt' and version = $DOC_VERSION;")
+  if [ "$is_pending" = "t" ] && [ "$consents" = "0" ]; then
+    # The corrected effective_at still has to respect the ordering rule new
+    # versions follow: after the newest version that is in force or has
+    # consent records, so the revision cannot slide under consented history.
+    anchor_version=$(pgq "select coalesce(
+                            (select v.version
+                               from terms_versions v
+                              where v.doc_type = '$dt' and v.version <> $DOC_VERSION
+                                and (v.effective_at <= now()
+                                     or exists (select 1 from user_consents c
+                                                 where c.terms_version_id = v.id))
+                              order by v.effective_at desc, v.version desc
+                              limit 1), 0);")
+    if [ "$anchor_version" != "0" ]; then
+      anchor_effective=$(pgq "select effective_at from terms_versions
+                               where doc_type = '$dt' and version = $anchor_version;")
+      is_later=$(pgq "select case when '$ef'::timestamptz > effective_at
+                             then 't' else 'f' end
+                        from terms_versions
+                       where doc_type = '$dt' and version = $anchor_version;")
+      if [ "$is_later" != "t" ]; then
+        echo "  $DOC_TYPE v$DOC_VERSION: corrected effective_at $DOC_EFFECTIVE is not after" >&2
+        echo "  v$anchor_version's ($anchor_effective) — the newest version that is in force" >&2
+        echo "  or has consent records." >&2
+        echo "  A revision must take effect after the version users are bound by — set a" >&2
+        echo "  later effective_at (a future one takes effect on its own)." >&2
+        exit 1
+      fi
+    fi
+    echo "  $DOC_TYPE v$DOC_VERSION: published but still pending (effective $db_effective)"
+    echo "  and has no consent records — nobody is bound by it; revising in place"
+    [ "$file_digest" = "$db_digest" ] || echo "    the body changes"
+    [ "$db_title" = "$DOC_TITLE" ] || \
+      echo "    the title changes: published '$db_title', file '$DOC_TITLE'"
+    [ "$eff_same" = "t" ] || \
+      echo "    the effective_at changes: published '$db_effective', file '$DOC_EFFECTIVE'"
+    revise+=("$f")
   else
     echo "  $DOC_TYPE v$DOC_VERSION is already published and the file differs from it." >&2
     [ "$file_digest" = "$db_digest" ] || echo "    the body differs" >&2
@@ -231,14 +334,21 @@ for f in "${FILES[@]}"; do
       echo "    the title differs: published '$db_title', file '$DOC_TITLE'" >&2
     [ "$eff_same" = "t" ] || \
       echo "    the effective_at differs: published '$db_effective', file '$DOC_EFFECTIVE'" >&2
-    echo "  Users have consented to the published wording, so this script will" >&2
-    echo "  not rewrite it. Publish a revision instead: copy the file, set" >&2
+    if [ "$consents" != "0" ]; then
+      echo "  $consents consent record(s) name the published wording; rewriting it would" >&2
+      echo "  make them describe a document that no longer exists, so this script" >&2
+      echo "  will not." >&2
+    else
+      echo "  It is in force — the wording users are consenting to right now — so" >&2
+      echo "  this script will not rewrite it underneath them." >&2
+    fi
+    echo "  Publish a revision instead: copy the file, set" >&2
     echo "  version: $((DOC_VERSION + 1)) and an effective_at, and re-run." >&2
     exit 1
   fi
 done
 
-if [ "${#publish[@]}" -eq 0 ]; then
+if [ "${#publish[@]}" -eq 0 ] && [ "${#revise[@]}" -eq 0 ]; then
   echo "== nothing to publish"
 else
   echo "== publish"
@@ -255,8 +365,39 @@ else
           values ('$dt', $DOC_VERSION, '$ti', '$bo', '$ef'::timestamptz);
 "
   done
+  for f in "${revise[@]}"; do
+    parse_doc "$f" || exit 1
+    dt=$(sql_escape "$DOC_TYPE"); ti=$(sql_escape "$DOC_TITLE")
+    ef=$(sql_escape "$DOC_EFFECTIVE")
+    bo=$(sql_escape "$DOC_BODY"; printf x); bo=${bo%x}
+    digest=$(printf '%s' "$DOC_BODY" | sha256sum | cut -d' ' -f1)
+    # The revisability conditions ride in the WHERE clause so the decision is
+    # made against the row as it is at write time, not as it was during the
+    # comparison above. If the version went into force or gained a consent in
+    # between, the UPDATE matches nothing — and the DO block right after it
+    # notices the row does not carry the file's content and aborts the whole
+    # transaction, so a half-applied run cannot commit.
+    sql+="update terms_versions
+             set title = '$ti', body = '$bo', effective_at = '$ef'::timestamptz
+           where doc_type = '$dt' and version = $DOC_VERSION
+             and effective_at > now()
+             and not exists (select 1 from user_consents c
+                              where c.terms_version_id = terms_versions.id);
+do \$guard\$
+begin
+  if not exists (select 1 from terms_versions
+                  where doc_type = '$dt' and version = $DOC_VERSION
+                    and encode(sha256(convert_to(body, 'UTF8')), 'hex') = '$digest'
+                    and title = '$ti'
+                    and effective_at = '$ef'::timestamptz) then
+    raise exception '$dt v$DOC_VERSION went into force or gained consents mid-run; nothing committed';
+  end if;
+end \$guard\$;
+"
+  done
   pgtx "$sql" >/dev/null
-  echo "  ${#publish[@]} document(s) published"
+  [ "${#publish[@]}" -eq 0 ] || echo "  ${#publish[@]} document(s) published"
+  [ "${#revise[@]}" -eq 0 ] || echo "  ${#revise[@]} document(s) revised in place"
 fi
 
 echo "== verify"
