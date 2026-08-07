@@ -33,7 +33,7 @@ that makes the order real. Details and gaps: the numbered notes below the table.
 | 1 | **HUMAN** Physical host: disks, OS + Proxmox VE install, admin SSH port, campus network | note 1 — **BLOCKED** | 0 (campus IP, firewall request filed) |
 | 2 | Host bridges, NAT, firewall | install [`hosts/pve-node/interfaces`](../hosts/pve-node/interfaces) adapted per the values table; hardening + post-reboot checklist: the network runbook (private repo) | 1 |
 | 3 | Clone the workspace and unlock the secrets vault | note 3 | 1 |
-| 4 | Proxmox API account, role, ACLs for the api | note 4 — **BLOCKED** | 1 |
+| 4 | Proxmox API account, role, ACLs for the api | note 4 | 1 |
 | 5 | App container (PostgreSQL + api + console nginx) | `scripts/create-app-lxc.sh`, then fill `/etc/pickle/api.env` from the vault (or issue fresh secrets) | 2, 3 |
 | 6 | SSH gateway container (sshpiperd + WireGuard endpoint) | `scripts/create-sshgw-lxc.sh` — prints the WG public key the relay needs; fill `/etc/pickle/sshgw.env` | 2, 3 |
 | 7 | **HUMAN** creates the relay instance; then bring it up | the relay bring-up runbook (private repo) end to end (WG pairing with step 6, HAProxy, firewall), agent via `scripts/deploy-relay.sh` | 0, 6 |
@@ -114,18 +114,58 @@ without the unlocked vault, step 5 has no secrets to install and
 empty vault instead must issue every secret fresh and commit the new
 locations; the secret-rotation runbook (private repo) lists what must exist.
 
-### 4. Proxmox API account for the api — BLOCKED
+### 4. Proxmox API account for the api
 
-The api authenticates to Proxmox with a dedicated user + API token, authorized
-by a custom role and ACLs. **BLOCKED — only the token *rotation* is written
-down (in the secret-rotation runbook, private repo); the creation is not.** No
-committed `pveum` sequence creates the user, defines the role's privilege set,
-or grants the ACL paths; the role contents exist as a name in prose elsewhere
-and nowhere as commands. Without this the api boots but every provisioning
-call 403s. What would close it: the creation commands beside the rotation
-procedure, so a rebuild and a rotation read from the same page. (The token's
-`--privsep 0` in the rotation section is deliberate — the token must carry the
-user's full permissions.)
+The api authenticates to Proxmox with a dedicated user and API token, authorized
+by a custom role and four ACL grants. No committed procedure created these — only
+the token *rotation* was written down (the secret rotation runbook (private repo)
+§2b). The sequence below was **reconstructed on 2026-08-07 by reading the live
+account back out of `pveum`**, so it reproduces exactly what this host runs
+rather than what somebody remembers. Without it the api boots and every
+provisioning call answers 403.
+
+```sh
+# 4a. the role. Every privilege the platform actually holds, and no more —
+#     read off the live role, not chosen from the Proxmox catalogue.
+pveum role add PickleProvisioner --privs \
+  "Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit,\
+VM.Allocate,VM.Audit,VM.Clone,VM.Config.CPU,VM.Config.Cloudinit,\
+VM.Config.Disk,VM.Config.Memory,VM.Config.Network,VM.Config.Options,\
+VM.Console,VM.GuestAgent.Audit,VM.GuestAgent.Unrestricted,VM.PowerMgmt"
+
+# 4b. the user. API-only: no password is set, so the account cannot log in to
+#     the web UI at all and the token is its only credential.
+pveum user add pickle@pve --comment "Pickle platform service account"
+
+# 4c. the grants. Four paths, each propagating to children. Narrower than
+#     granting on `/`: the platform never touches another storage or zone.
+for path in /vms /nodes /storage/local-lvm /sdn/zones/localnetwork; do
+  pveum acl modify "$path" --users pickle@pve --roles PickleProvisioner
+done
+
+# 4d. the token. `--privsep 0` makes it carry the user's permissions; with
+#     privsep on it would have none of them and the first clone would 403.
+#     The secret is printed once — capture it to a mode-600 file, never to
+#     the terminal, and copy it into the api environment from there.
+umask 077
+pveum user token add pickle@pve pickle-api --privsep 0 --output-format json \
+  > /root/pickle-api-token.json
+```
+
+Two privileges are worth naming because they are easy to trim and expensive to
+miss. **`VM.GuestAgent.Unrestricted`** is what lets provisioning read the guest's
+host keys through the agent; without it the pipeline parks every VM at the
+host-key step. **`SDN.Use`** covers the bridge the guest NIC attaches to.
+
+Verify before moving on — the token is the thing that actually has to work:
+
+```sh
+pveum acl list          # four rows, type=user, ugid pickle@pve
+pveum user token list pickle@pve   # privsep 0
+```
+
+The ACLs live on the **user**, not the token, so a later token rotation does not
+disturb them (the secret rotation runbook (private repo) §2b relies on that).
 
 ### 8. Reverse proxy from blank — BLOCKED on a truly new host
 
