@@ -15,8 +15,8 @@
 # because the two share one nginx process.
 set -euo pipefail
 
-RP=100   # reverse-proxy LXC
-APP=101  # app LXC
+RP="${PICKLE_PROXY_CTID:-100}"   # reverse-proxy LXC
+APP="${PICKLE_APP_CTID:-101}"  # app LXC
 CONF=/etc/nginx/conf.d/pickle-tls.conf
 
 ts=$(date +%Y%m%d-%H%M%S)

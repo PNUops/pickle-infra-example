@@ -235,3 +235,34 @@ what is in the database and refuses if a published version's text or title has
 changed, because users have already consented to the published wording and a
 silent rewrite leaves their consent record pointing at a document that no longer
 exists.
+
+### Environment — `apply-os-catalog.sh`
+
+| Variable | Example | Notes |
+|---|---|---|
+| `PICKLE_APP_CTID` | `101` | |
+| `PICKLE_DB` | `pickle_dev` | |
+| `PICKLE_NODE` | `pve1` | The catalog rows are resolved against this node by name; with no node row the script writes nothing and says so |
+
+The templates themselves are a list inside the script, not an environment
+variable: it checks each one exists on this host by name **and** VMID before it
+writes anything, because a row for a template that is not here would be
+selectable in the request form and fail at clone time.
+
+### Environment — `apply-relay-token.sh`
+
+| Variable | Example | Notes |
+|---|---|---|
+| `PICKLE_ADMIN_EMAIL` | | **Asked at the terminal if unset.** The token is issued through the admin API, so the run needs a SYS_ADMIN to act as |
+| `PICKLE_ADMIN_PASSWORD` | | Asked at the terminal if unset, never echoed. Issuing a token is behind re-authentication, so the password is proven twice in the one run |
+| `PICKLE_RELAY_NAME` | `lightsail-1` | Which relay row to issue for |
+| `PICKLE_APP_CTID` | `101` | |
+| `PICKLE_DB` | `pickle_dev` | |
+| `PICKLE_TUNNEL_CTID` | `102` | The container that can reach the relay's tunnel address. The relay's admin port is not reachable from the Proxmox host, so the TCP connection is proxied through this container while ssh itself runs on the host — the private key never enters it |
+| `PICKLE_RELAY_SSH_KEY` | `secrets/lightsail-ssh.pem` | |
+| `PICKLE_RELAY_SSH_USER` | `admin` | |
+| `PICKLE_RELAY_SSH_PORT` | `2222` | |
+
+Note the naming: `deploy-relay.sh` reads the same three SSH values under
+`RELAY_SSH_KEY` / `_PORT` and a `RELAY_HOST`. The two scripts were written apart
+and neither name is wrong, but a new environment has to set both sets.

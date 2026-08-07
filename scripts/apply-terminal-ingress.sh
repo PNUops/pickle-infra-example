@@ -31,8 +31,8 @@
 # real :443 stream path instead (see the checks at the bottom).
 set -euo pipefail
 
-RP=100   # reverse-proxy LXC
-APP=101  # app LXC
+RP="${PICKLE_PROXY_CTID:-100}"   # reverse-proxy LXC
+APP="${PICKLE_APP_CTID:-101}"  # app LXC
 
 ts=$(date +%Y%m%d-%H%M%S)
 BK="/root/pickle/backup/terminal-ingress-$ts"
@@ -125,7 +125,7 @@ server {
 # the earlier direct passthrough; opus never saw the client IP either way).
 server {
     listen 127.0.0.1:8441 proxy_protocol;
-    proxy_pass 203.0.113.20:443;
+    proxy_pass 164.125.18.138:443;
 
     proxy_connect_timeout 10s;
     proxy_timeout 1h;
