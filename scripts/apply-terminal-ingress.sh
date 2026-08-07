@@ -31,8 +31,8 @@
 # real :443 stream path instead (see the checks at the bottom).
 set -euo pipefail
 
-RP=100   # reverse-proxy LXC
-APP=101  # app LXC
+RP="${PICKLE_PROXY_CTID:-100}"   # reverse-proxy LXC
+APP="${PICKLE_APP_CTID:-101}"  # app LXC
 
 ts=$(date +%Y%m%d-%H%M%S)
 BK="/root/pickle/backup/terminal-ingress-$ts"
