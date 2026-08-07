@@ -30,7 +30,7 @@ that makes the order real. Details and gaps: the numbered notes below the table.
 | # | Step | Procedure | Needs |
 |---|---|---|---|
 | 0 | **HUMAN** Acquire names, accounts, and access | note 0 — partially **BLOCKED** | — |
-| 1 | **HUMAN** Physical host: disks, OS + Proxmox VE install, admin SSH port, campus network | note 1 — **BLOCKED** | 0 (campus IP, firewall request filed) |
+| 1 | **HUMAN** Physical host: disks, OS + Proxmox VE install, admin SSH port, campus network | note 1 — end state recorded, installer choices are not | 0 (campus IP, firewall request filed) |
 | 2 | Host bridges, NAT, firewall | install [`hosts/pve-node/interfaces`](../hosts/pve-node/interfaces) adapted per the values table; hardening + post-reboot checklist: the network runbook (private repo) | 1 |
 | 3 | Clone the workspace and unlock the secrets vault | note 3 | 1 |
 | 4 | Proxmox API account, role, ACLs for the api | note 4 | 1 |
@@ -89,18 +89,42 @@ records, as locations — never values), this step runs on the operator's memory
 Lead-time warning regardless: the university requests are measured in days to
 weeks, so file them first.
 
-### 1. Physical host — HUMAN, BLOCKED
+### 1. Physical host — HUMAN, partially recovered
 
-**BLOCKED — there is no committed procedure that takes a bare machine to "step
-2 can run".** Missing: the Proxmox VE install choices, disk/storage layout
-(what `local-lvm` is carved from), moving the admin sshd to its non-default
-port, repository setup, and the campus-side network attach. An early setup log
-exists but predates the 2026-07-08 network renumbering, so following it
-produces a host with the user and infra networks swapped — treat any old
-record as procedure-shape only, never as values. What would close this: a host
-build runbook whose end state is exactly `hosts/pve-node/interfaces` plus a
-listening Proxmox API. The physical parts (racking, disks, cabling, BIOS) are
-HUMAN in any case.
+No procedure was ever committed for taking a bare machine to "step 2 can run".
+The end state was read off the running host on 2026-08-07, so what this
+deployment settled on is recorded below; the choices that produced it are not,
+and the physical parts stay HUMAN in any case.
+
+**Read off the live host — reproduce these:**
+
+| | This host |
+|---|---|
+| Proxmox VE | 9.2 on Debian trixie |
+| Repositories | `pve-no-subscription` enabled; the enterprise and Ceph sources disabled |
+| Disks | two: a 977 GB device carrying the install, a 1.8 TB device **currently unused** |
+| Storage | `local` (directory, on the 96 GB root LV) and `local-lvm` (LVM-thin, ~839 GB) — the names the platform's variables default to |
+| Root/swap | 96 GB root LV, 8 GB swap LV, the rest given to the thin pool |
+| Admin sshd | port 22, moved off the default in the private deployment |
+
+**Still not recorded, and each needs a decision rather than a transcription:**
+
+- The installer choices that produce that layout: filesystem, how much of the
+  device the volume group takes, and how root and swap are sized against the thin
+  pool. Sizing differs with the disk in the new machine, so this is a decision.
+- What the second device is for. It has been attached and unused here long enough
+  that the question is open rather than settled.
+- Moving the admin sshd off its default port. The port itself is in the values
+  table; **the change is the dangerous step in the whole build** — done wrong it
+  ends the session that is doing it. Follow the pattern the relay bring-up runbook (private repo)
+  uses for exactly this: add the new port alongside the old, prove the new one
+  from a second session, and only then remove the old.
+- The campus-side attach: the address, the firewall opening, and who grants it.
+  That is note 0.
+
+An early setup log exists but predates the 2026-07-08 network renumbering, so
+following it produces a host with the user and infra networks swapped. Treat it
+as procedure-shape only, never as values.
 
 ### 3. Workspace and vault
 
