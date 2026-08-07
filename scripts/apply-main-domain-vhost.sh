@@ -48,11 +48,33 @@
 # NOT handled here (host-level, see the network runbook): the pve-node /etc/hosts
 # hairpin entry `198.18.1.10 pickle.pusan.ac.kr` — campus NAT has no hairpin,
 # so on-host smoke/e2e need it to reach the public name.
+
+# Environment (defaults reproduce this deployment exactly — a run with none of
+# these set behaves as it always has):
+#   PICKLE_MAIN_DOMAIN         pickle.pusan.ac.kr  the name this tier serves
+#   PICKLE_PROXY_CTID          100                 reverse-proxy container
+#   PICKLE_PROXY_IP            198.18.1.10         its address, used by every --resolve
+#   PICKLE_HOST_PROBE_IP       198.18.0.1          the Proxmox host on the infra bridge
+#   PICKLE_LEGACY_TENANT_HOST  opus.pusan.ac.kr    a tenant that shared this proxy
+#                              before the platform did. Pass `none` on an
+#                              environment that has no such tenant; otherwise the
+#                              pre-flight refuses to run because a host that never
+#                              served it cannot answer 200 for it.
+
 set -euo pipefail
 
-RP=100  # reverse-proxy LXC
-DOMAIN=pickle.pusan.ac.kr
-HOST_PROBE_IP=198.18.0.1   # the Proxmox host on vmbr1: smoke suite + health snapshot
+RP="${PICKLE_PROXY_CTID:-100}"          # reverse-proxy LXC
+DOMAIN="${PICKLE_MAIN_DOMAIN:-pickle.pusan.ac.kr}"
+HOST_PROBE_IP="${PICKLE_HOST_PROBE_IP:-198.18.0.1}"  # the Proxmox host on vmbr1: smoke suite + health snapshot
+# A tenant that shared this proxy before the platform did. The checks below exist
+# so that a tenant which was ALREADY broken cannot be mistaken for collateral
+# damage from this run, which only makes sense where such a tenant exists. A new
+# environment has none: pass `none` to skip those checks. An empty value would
+# not work — `:-` treats empty as unset and hands back the default — so the
+# skip is spelled out rather than left to a subtlety of parameter expansion.
+LEGACY_TENANT="${PICKLE_LEGACY_TENANT_HOST:-opus.pusan.ac.kr}"
+[ "$LEGACY_TENANT" = none ] && LEGACY_TENANT=""
+PROXY_IP="${PICKLE_PROXY_IP:-198.18.1.10}"
 
 ts=$(date +%Y%m%d-%H%M%S)
 BK="/root/pickle/backup/main-domain-vhost-$ts"
@@ -98,12 +120,17 @@ fi
 echo "== pre-change reachability (stream tier must be healthy before we touch anything)"
 # Assert, so that a tenant that was already broken cannot be mistaken for
 # collateral damage from this run.
-pre_opus=$(curl -sk -o /dev/null -w '%{http_code}' --resolve opus.pusan.ac.kr:443:198.18.1.10 https://opus.pusan.ac.kr/ || true)
-if [ "$pre_opus" = 200 ]; then
-  echo "  OK   pre opus :443 -> 200"
+if [ -n "$LEGACY_TENANT" ]; then
+  pre_tenant=$(curl -sk -o /dev/null -w '%{http_code}' \
+    --resolve "$LEGACY_TENANT:443:$PROXY_IP" "https://$LEGACY_TENANT/" || true)
+  if [ "$pre_tenant" = 200 ]; then
+    echo "  OK   pre $LEGACY_TENANT :443 -> 200"
+  else
+    echo "  FAIL pre $LEGACY_TENANT :443 -> $pre_tenant (expected 200) — fix the tenant before changing this tier"
+    exit 1
+  fi
 else
-  echo "  FAIL pre opus :443 -> $pre_opus (expected 200) — fix the tenant before changing this tier"
-  exit 1
+  echo "  SKIP no legacy tenant configured"
 fi
 
 echo "== LXC $RP: certbot (package brings the auto-renew systemd timer)"
@@ -299,6 +326,35 @@ EOF
 pct exec "$RP" -- ln -sf /etc/nginx/sites-available/pickle-reject.conf /etc/nginx/sites-enabled/pickle-reject.conf
 echo "  OK   sites-available/pickle-reject.conf"
 
+echo "== LXC $RP: default server for unknown Host on :80"
+# The TLS tier has refused unknown names since the reject vhost above took
+# default_server. Plain :80 did not: it still fell through to the distribution's
+# stock site, which serves a page naming this container and its bridge address.
+# That was reachable from the public internet for every name pointed here without
+# a vhost of its own — including a retired platform name whose redirect vhost was
+# removed, and every unpublished subdomain under a proxied wildcard.
+#
+# Named vhosts are unaffected: the main entry, the tenant passthrough and the
+# agent-rendered custom-domain challenge vhosts all carry their own server_name,
+# and ACME HTTP-01 continues to reach them.
+pct exec "$RP" -- bash -c 'cat > /etc/nginx/sites-available/pickle-reject-http.conf' <<'EOF'
+# Unknown Host on plain :80. Closes the connection without a response rather than
+# answering with any page: a name nobody configured should learn nothing at all,
+# and the previous behaviour disclosed the container's identity and internal address.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name _;
+
+    return 444;
+}
+EOF
+# The stock site holds default_server on :80; two of them is a hard nginx error.
+pct exec "$RP" -- rm -f /etc/nginx/sites-enabled/default
+pct exec "$RP" -- ln -sf /etc/nginx/sites-available/pickle-reject-http.conf /etc/nginx/sites-enabled/pickle-reject-http.conf
+echo "  OK   sites-available/pickle-reject-http.conf (stock default site unlinked)"
+
 echo "== LXC $RP: 8443 TLS vhost for $DOMAIN (LE pair, rate-limited)"
 pct exec "$RP" -- bash -c 'cat > /etc/nginx/sites-available/pickle-main-tls.conf' <<EOF
 # $DOMAIN — main entry TLS vhost (Let's Encrypt, publicly trusted;
@@ -405,7 +461,7 @@ sleep 3
 echo "== post-change verification"
 # Assert, do not merely print: a bare `curl -w '%{http_code}'` reports 301/404/502
 # just as happily as 200 and the run still ends in "OK". Failures are collected so
-# every check runs (a `set -e` abort in the middle would skip the opus check, which
+# every check runs (a `set -e` abort in the middle would skip the tenant check, which
 # is the one covering the pre-existing tenant).
 vfail=0
 check() { # check <label> <expected-code> <curl args...>
@@ -417,18 +473,25 @@ check() { # check <label> <expected-code> <curl args...>
   else echo "  FAIL $label -> $got (expected $want)"; vfail=$((vfail + 1)); fi
 }
 # No -k on the new domain: the publicly trusted chain is part of what we verify.
-check "new  :443 (trusted chain)" 200 --resolve "$DOMAIN:443:198.18.1.10" "https://$DOMAIN/"
-check "new  /api" 200 --resolve "$DOMAIN:443:198.18.1.10" "https://$DOMAIN/api/v1/meta/status"
+check "new  :443 (trusted chain)" 200 --resolve "$DOMAIN:443:$PROXY_IP" "https://$DOMAIN/"
+check "new  /api" 200 --resolve "$DOMAIN:443:$PROXY_IP" "https://$DOMAIN/api/v1/meta/status"
 # 403 = the bridge is up and rejecting a ticketless/wrong-origin plain GET —
 # anything else means the branch is miswired (502 would mean no bridge).
-check "new  /terminal/ws (bridge reachable)" 403 --resolve "$DOMAIN:443:198.18.1.10" "https://$DOMAIN/terminal/ws"
-check "new  :80 (redirect to https)" 301 --resolve "$DOMAIN:80:198.18.1.10" "http://$DOMAIN/"
-check "opus :443 (pre-existing tenant)" 200 -k --resolve opus.pusan.ac.kr:443:198.18.1.10 https://opus.pusan.ac.kr/
+check "new  /terminal/ws (bridge reachable)" 403 --resolve "$DOMAIN:443:$PROXY_IP" "https://$DOMAIN/terminal/ws"
+check "new  :80 (redirect to https)" 301 --resolve "$DOMAIN:80:$PROXY_IP" "http://$DOMAIN/"
+if [ -n "$LEGACY_TENANT" ]; then
+check "$LEGACY_TENANT :443 (pre-existing tenant)" 200 -k --resolve "$LEGACY_TENANT:443:$PROXY_IP" "https://$LEGACY_TENANT/"
+# The tenant proxies :80 to its own backend, which answers with its own redirect.
+check "$LEGACY_TENANT :80  (pre-existing tenant)" 301 --resolve "$LEGACY_TENANT:80:$PROXY_IP" "http://$LEGACY_TENANT/"
+fi
+# An unknown Host on :80 must get nothing back. 000 is curl's code for a closed
+# connection, which is what `return 444` produces.
+check "unknown Host :80 (closed)" 000 --resolve "nosuch.invalid:80:$PROXY_IP" http://nosuch.invalid/
 # 405 proves the rate-limited credential location is wired and reaching the app
 # (login is POST-only); a 404 would mean the prefix match never took effect.
-check "new  /api/v1/auth (limited location live)" 405 --resolve "$DOMAIN:443:198.18.1.10" "https://$DOMAIN/api/v1/auth/login"
+check "new  /api/v1/auth (limited location live)" 405 --resolve "$DOMAIN:443:$PROXY_IP" "https://$DOMAIN/api/v1/auth/login"
 # An unknown name must no longer complete a handshake at all.
-if curl -sk -o /dev/null --max-time 10 --resolve "unknown.invalid:443:198.18.1.10" https://unknown.invalid/ 2>/dev/null; then
+if curl -sk -o /dev/null --max-time 10 --resolve "unknown.invalid:443:$PROXY_IP" https://unknown.invalid/ 2>/dev/null; then
   echo "  FAIL unknown SNI still answered"; vfail=$((vfail + 1))
 else
   echo "  OK   unknown SNI refused"
@@ -438,7 +501,7 @@ fi
 # must not produce a single 429 from the probe address.
 burst_429=0
 for _ in $(seq 1 60); do
-  c=$(curl -s -o /dev/null -w '%{http_code}' --resolve "$DOMAIN:443:198.18.1.10" "https://$DOMAIN/api/v1/meta/status" || true)
+  c=$(curl -s -o /dev/null -w '%{http_code}' --resolve "$DOMAIN:443:$PROXY_IP" "https://$DOMAIN/api/v1/meta/status" || true)
   [ "$c" = 429 ] && burst_429=$((burst_429 + 1))
 done
 if [ "$burst_429" -eq 0 ]; then
