@@ -61,7 +61,7 @@ step 1 — chasing them one failing script at a time is how a build stalls.
 | Main entry domain | `pickle.pusan.ac.kr` | `apply-main-domain-vhost.sh` (**literal `DOMAIN=`, no env override** — note 11), smoke-test defaults (`BASE`), the pve1 `/etc/hosts` hairpin entry |
 | Platform root domain(s) | `pusan.dev` | `PICKLE_ROOT_DOMAIN` (`apply-platform-inventory.sh` **and** `apply-settings.sh` — same value, on purpose), cert path `/etc/nginx/pickle-certs/<root, dots as dashes>.{crt,key}`, the Cloudflare zone |
 | User SSH host | `ssh.example.dev` (DNS-only A record → relay static IP) | the relay bring-up runbook; shown to users by the console |
-| Relay public host (port forwarding) | `relay.example.dev` | `PICKLE_RELAY_PUBLIC_HOST` (`apply-platform-inventory.sh`, required) |
+| Relay public host (port forwarding) | `ssh.example.dev` — the same name as the user SSH host above, because both resolve to the relay | `PICKLE_RELAY_PUBLIC_HOST` (`apply-platform-inventory.sh`, required — no default, and no API writes the column) |
 | Relay static IP + admin SSH | `198.51.100.10`, admin sshd `:22`, key `$VAULT/lightsail-ssh.pem` | `RELAY_HOST` / `RELAY_SSH_PORT` / `RELAY_SSH_KEY` (`deploy-relay.sh`), sshgw `wg0.conf` `Endpoint`, the relay bring-up runbook |
 | Container IDs | proxy `100`, app `101`, sshgw `102` | `CTID` defaults in the two create scripts; `PICKLE_APP_CTID` / `PICKLE_PROXY_CTID` in every apply script; `RP=100` in `apply-main-domain-vhost.sh`; literal in most runbooks |
 | Template VMIDs | `1001`–`1005` (Ubuntu 24.04/26.04/22.04, Debian 13/12; `1000` is the retired predecessor) | `CATALOG` in `apply-os-catalog.sh` (name **and** VMID), image-builder per-OS profiles, the template rebuild runbook |
