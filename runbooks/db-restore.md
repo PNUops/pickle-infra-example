@@ -155,7 +155,7 @@ this script serves a second host.
 
 | Variable | Example | Notes |
 |---|---|---|
-| `PICKLE_RELAY_PUBLIC_HOST` | `relay.example.dev` | **Required.** Bare host, no scheme or port. Obvious placeholders are refused |
+| `PICKLE_RELAY_PUBLIC_HOST` | `ssh.example.dev` | **Required.** Bare host, no scheme or port. Obvious placeholders are refused |
 | `PICKLE_APP_CTID` | `101` | Container running PostgreSQL and the api |
 | `PICKLE_PROXY_CTID` | `100` | Container holding the wildcard certificate material |
 | `PICKLE_DB` | `pickle_dev` | |
@@ -177,7 +177,7 @@ this script serves a second host.
 | `PICKLE_WILDCARD_CERT` | `/etc/nginx/pickle-certs/pusan-dev.crt` | Defaults from the root domain. Must cover `*.<root>` |
 
 ```bash
-PICKLE_RELAY_PUBLIC_HOST=relay.example.dev \
+PICKLE_RELAY_PUBLIC_HOST=ssh.example.dev \
   bash /root/pickle/infra/scripts/apply-platform-inventory.sh
 ```
 
