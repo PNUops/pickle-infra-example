@@ -91,19 +91,19 @@ phase_setup(){
   { [ -n "$AAT" ] && ok "orgadmin login (org lookup)"; } || { ko "orgadmin login (org lookup)"; return 1; }
   # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
   req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT" || return 1; OID=$(jq -r '.[0].id' "$B")
-  req "templates" 200 "$BASE/templates" -H "Authorization: Bearer $SAT" || return 1
+  req "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $SAT" || return 1
   TID=$(jq -r '.[0].id // empty' "$B")
   if [ -z "$TID" ]; then
     ko "no ACTIVE OS image to request with"
     return 1
   fi
-  # templates carry only the OS + disk floor now; the spec axis is vm-flavors and
+  # os-images carry only the OS + disk floor; the spec axis is vm-flavors and
   # POST /vm-requests requires the chosen flavorId ('basic', else first ACTIVE).
   req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $SAT" || return 1
   local sel='(map(select(.name=="basic"))[0] // .[0])'
   FID=$(jq -r "$sel.id // empty" "$B"); VC=$(jq -r "$sel.vcpu // empty" "$B"); MM=$(jq -r "$sel.memoryMb // empty" "$B"); DG=$(jq -r "$sel.diskGb // empty" "$B")
   { [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)"; } || { ko "no ACTIVE vm-flavor"; return 1; }
-  req "vm-request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"templateId\":$TID,\"flavorId\":$FID,\"purpose\":\"dashboards e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":null,\"rootDomain\":null}" || return 1
+  req "vm-request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"imageId\":$TID,\"flavorId\":$FID,\"purpose\":\"dashboards e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":null,\"rootDomain\":null}" || return 1
   RID=$(jq -r .id "$B")
   # AAT from the org-lookup login above is seconds old — reuse it
   # submission notification is created synchronously with the request
@@ -112,7 +112,7 @@ phase_setup(){
     '[.content[] | select(.event=="request.submitted" and .linkPath==$l)] | length >= 1' --arg l "/admin/requests/$RID"
   curl -sS -o "$B" "$BASE/notifications/unread-count" -H "Authorization: Bearer $AAT"
   jqc "orgadmin unread-count >= 1" '.unreadCount >= 1'
-  req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedTemplateId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"dash e2e\"}" || return 1
+  req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"dash e2e\"}" || return 1
   req "vm list" 200 "$BASE/vms?groupId=$GID" -H "Authorization: Bearer $SAT" || return 1
   VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
   [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || { ko "vm id (empty list)"; return 1; }

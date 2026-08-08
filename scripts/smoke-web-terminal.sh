@@ -201,12 +201,12 @@ req "kill switch on (200)" 200 -X PUT "$BASE/admin/settings/web_terminal_enabled
 TPL=$(pgq "select id from os_images where status='ACTIVE' limit 1")
 # The state the bootstrap runbook leaves behind — catalog rows registered but
 # none enabled yet — makes this empty, and an empty id is interpolated into the
-# payload as "templateId":, which is not JSON. The request then fails as a bare
+# payload as "imageId":, which is not JSON. The request then fails as a bare
 # 400 that says nothing about the catalog, so state the reason here instead.
 [ -n "$TPL" ] || { ko "no ACTIVE OS image to request with (enable one in the catalog)"; exit 1; }
 ORG=$(pgq "select id from orgs limit 1")
 [ -n "$ORG" ] || { ko "no org to request against"; exit 1; }
-# templates are a pure OS catalog now — the spec axis is vm_flavors, and
+# os-images is a pure OS catalog — the spec axis is vm_flavors, and
 # POST /vm-requests requires the chosen flavorId. Read the presets off the API
 # (the removed catalog default_* columns would error in psql).
 req "vm-flavors 200" 200 "$BASE/vm-flavors" -H "$(auth "$SAT")"
@@ -222,11 +222,11 @@ req "create team 201" 201 -X POST "$BASE/groups" -H "$(auth "$U1T")" -H 'Content
   -d "{\"kind\":\"TEAM\",\"name\":\"smoke-term-$TS\",\"slug\":\"smoke-term-$TS\"}"
 GID=$(jq -r '.id' "$B")
 req "vm request 201" 201 -X POST "$BASE/vm-requests" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
-  -d "{\"groupId\":$GID,\"orgId\":$ORG,\"templateId\":$TPL,\"flavorId\":$FID,\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":null,\"rootDomain\":null}"
+  -d "{\"groupId\":$GID,\"orgId\":$ORG,\"imageId\":$TPL,\"flavorId\":$FID,\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":null,\"rootDomain\":null}"
 RID=$(jq -r '.id // empty' "$B"); [ -n "$RID" ] || { ko "request not created — abort"; exit 1; }
 req "approve 200" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "$(auth "$SAT")" \
   -H 'Content-Type: application/json' \
-  -d "{\"grantedVcpu\":$TPL_VCPU,\"grantedMemoryMb\":$TPL_MEM,\"grantedDiskGb\":$TPL_DISK,\"grantedTemplateId\":$TPL,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"터미널 스모크\"}"
+  -d "{\"grantedVcpu\":$TPL_VCPU,\"grantedMemoryMb\":$TPL_MEM,\"grantedDiskGb\":$TPL_DISK,\"grantedImageId\":$TPL,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"터미널 스모크\"}"
 VM=$(pgq "select id from vms where request_id=$RID"); [ -n "$VM" ] || { ko "no VM row — abort"; exit 1; }
 VM_DELETED=0
 echo "  waiting for RUNNING (vm=$VM)…"
