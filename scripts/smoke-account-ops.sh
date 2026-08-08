@@ -167,7 +167,12 @@ has_phase(){ case " $PHASES " in *" $1 "*) return 0;; *) return 1;; esac; }
 # OS image + org lookups shared by request-creating phases; the request payload
 # mirrors smoke-provisioning (flavor-preset specs, every nullable field explicit) —
 # hand-rolled minimal payloads hit server-side spec validation.
-TPL=$(pgq "select id from os_images where status='ACTIVE' limit 1")
+# `limit 1` with no ORDER BY hands back whatever row the scan reaches first, and
+# that is heap order, not catalog order — it silently moved from Ubuntu to Rocky
+# once the catalog grew. Nothing here depends on the distribution, but a run that
+# picks a different image every time makes any guest-side failure unreproducible,
+# so pin the pick to the oldest registered row.
+TPL=$(pgq "select id from os_images where status='ACTIVE' order by id limit 1")
 # The state the bootstrap runbook leaves behind — catalog rows registered but
 # none enabled yet — makes this empty, and an empty id is interpolated into the
 # payload as "imageId":, which is not JSON. The request then fails as a bare
