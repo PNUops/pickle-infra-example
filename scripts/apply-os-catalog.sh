@@ -41,6 +41,8 @@ CATALOG=(
   "ubuntu-22.04|Ubuntu 22.04 LTS|ubuntu|22.04|ubuntu|1003|ubuntu-2204-template|1"
   "debian-13|Debian 13|debian|13|debian|1004|debian-13-template|1"
   "debian-12|Debian 12|debian|12|debian|1005|debian-12-template|1"
+  "rocky-10|Rocky Linux 10|rocky|10|rocky|1006|rocky-10-template|1"
+  "rocky-9|Rocky Linux 9|rocky|9|rocky|1007|rocky-9-template|1"
 )
 
 # Statements are fed on STDIN, never as `psql -c "…"`. A -c argument travels
