@@ -175,22 +175,22 @@ GID=$(jq -r .id "$B")
 req "orgadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ORGADMIN_EMAIL\",\"password\":\"$ORGADMIN_PW\"}" || exit 1
 AAT=$(jq -r .accessToken "$B")
 req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT" || exit 1; OID=$(jq -r '.[0].id' "$B")
-req "templates" 200 "$BASE/templates" -H "Authorization: Bearer $OAT" || exit 1
+req "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $OAT" || exit 1
 TID=$(jq -r '.[0].id // empty' "$B")
 # An empty catalog — the state the bootstrap runbook leaves behind, rows
 # registered but none enabled — would otherwise reach the request payload as
-# "templateId":, which is not JSON, and surface as a bare 400 saying nothing
+# "imageId":, which is not JSON, and surface as a bare 400 saying nothing
 # about the catalog.
 [ -n "$TID" ] || { ko "no ACTIVE OS image to request with (enable one in the catalog)"; exit 1; }
-# templates are the OS catalog; the spec axis is vm-flavors and POST
+# os-images is the OS catalog; the spec axis is vm-flavors and POST
 # /vm-requests requires the chosen flavorId ('basic', else the first ACTIVE row)
 req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $OAT" || exit 1
 FSEL='(map(select(.name=="basic"))[0] // .[0])'
 FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); MM=$(jq -r "$FSEL.memoryMb // empty" "$B"); DG=$(jq -r "$FSEL.diskGb // empty" "$B")
 [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)" || { ko "no ACTIVE vm-flavor"; exit 1; }
-req "request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"templateId\":$TID,\"flavorId\":$FID,\"purpose\":\"ssh gateway e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":null,\"rootDomain\":null}" || exit 1
+req "request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"imageId\":$TID,\"flavorId\":$FID,\"purpose\":\"ssh gateway e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":null,\"rootDomain\":null}" || exit 1
 RID=$(jq -r .id "$B")
-req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedTemplateId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"sgw\"}" || exit 1
+req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"sgw\"}" || exit 1
 req "vm list" 200 "$BASE/vms?groupId=$GID" -H "Authorization: Bearer $OAT" || exit 1
 VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
 [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || { ko "vm id (empty list)"; exit 1; }

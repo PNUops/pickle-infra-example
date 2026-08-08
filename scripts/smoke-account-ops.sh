@@ -164,22 +164,22 @@ trap cleanup EXIT
 
 has_phase(){ case " $PHASES " in *" $1 "*) return 0;; *) return 1;; esac; }
 
-# Template + org lookups shared by request-creating phases; the request payload
+# OS image + org lookups shared by request-creating phases; the request payload
 # mirrors smoke-provisioning (flavor-preset specs, every nullable field explicit) —
 # hand-rolled minimal payloads hit server-side spec validation.
 TPL=$(pgq "select id from os_images where status='ACTIVE' limit 1")
 # The state the bootstrap runbook leaves behind — catalog rows registered but
 # none enabled yet — makes this empty, and an empty id is interpolated into the
-# payload as "templateId":, which is not JSON. The request then fails as a bare
+# payload as "imageId":, which is not JSON. The request then fails as a bare
 # 400 that says nothing about the catalog, so state the reason here instead.
 [ -n "$TPL" ] || { ko "no ACTIVE OS image to request with (enable one in the catalog)"; exit 1; }
 ORG=$(pgq "select id from orgs limit 1")
 [ -n "$ORG" ] || { ko "no org to request against"; exit 1; }
 req_payload(){ # $1=groupId $2=purpose
-  printf '{"groupId":%s,"orgId":%s,"templateId":%s,"flavorId":%s,"purpose":"%s","courseOrProject":null,"specReason":null,"extraNote":null,"reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"reqStartDate":null,"reqEndDate":null,"desiredSubdomain":null,"rootDomain":null}' "$1" "$ORG" "$TPL" "$FLAVOR" "$2" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
+  printf '{"groupId":%s,"orgId":%s,"imageId":%s,"flavorId":%s,"purpose":"%s","courseOrProject":null,"specReason":null,"extraNote":null,"reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"reqStartDate":null,"reqEndDate":null,"desiredSubdomain":null,"rootDomain":null}' "$1" "$ORG" "$TPL" "$FLAVOR" "$2" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
 }
 approve_payload(){
-  printf '{"grantedVcpu":%s,"grantedMemoryMb":%s,"grantedDiskGb":%s,"grantedTemplateId":%s,"grantedStartDate":null,"grantedEndDate":null,"nodeId":null,"comment":"스모크 승인"}' "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK" "$TPL"
+  printf '{"grantedVcpu":%s,"grantedMemoryMb":%s,"grantedDiskGb":%s,"grantedImageId":%s,"grantedStartDate":null,"grantedEndDate":null,"nodeId":null,"comment":"스모크 승인"}' "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK" "$TPL"
 }
 
 SAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")

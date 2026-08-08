@@ -223,15 +223,15 @@ phase_account() {
     -d "{\"email\":\"$USER_EMAIL\",\"password\":\"$USER_PW\"}" || return 1
   USER_AT=$(jq -r .accessToken "$BODY")
 
-  step "templates" 200 "$BASE/templates" -H "Authorization: Bearer $USER_AT" || return 1
+  step "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $USER_AT" || return 1
   TEMPLATE_ID=$(jq -r '.[0].id // empty' "$BODY")
   if [ -z "$TEMPLATE_ID" ]; then
     ko "no ACTIVE OS image to request with"
     return 1
   fi
 
-  # The OS axis (templates) and the spec axis (flavors) are separate catalogs:
-  # templates no longer carry default specs, and POST /vm-requests requires the
+  # The OS axis (os-images) and the spec axis (flavors) are separate catalogs:
+  # os-images no longer carry default specs, and POST /vm-requests requires the
   # chosen flavorId. Take the 'basic' preset, or the first ACTIVE row.
   step "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $USER_AT" || return 1
   local sel='(map(select(.name=="basic"))[0] // .[0])'
@@ -264,7 +264,7 @@ phase_account() {
 phase_request_approve() {
   step "create vm-request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $USER_AT" \
     -H 'Content-Type: application/json' -d "{
-      \"groupId\":$GROUP_ID,\"orgId\":$ORG_ID,\"templateId\":$TEMPLATE_ID,\"flavorId\":$FLAVOR_ID,
+      \"groupId\":$GROUP_ID,\"orgId\":$ORG_ID,\"imageId\":$TEMPLATE_ID,\"flavorId\":$FLAVOR_ID,
       \"purpose\":\"프로비저닝 스모크 테스트 (실제 프로비저닝 검증)\",\"courseOrProject\":null,\"specReason\":null,
       \"extraNote\":null,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,
       \"reqStartDate\":null,\"reqEndDate\":null,
@@ -278,7 +278,7 @@ phase_request_approve() {
   step "approve" 200 -X POST "$BASE/admin/vm-requests/$REQ_ID/approve" \
     -H "Authorization: Bearer $ADMIN_AT" -H 'Content-Type: application/json' -d "{
       \"grantedVcpu\":$TPL_VCPU,\"grantedMemoryMb\":$TPL_MEM,\"grantedDiskGb\":$TPL_DISK,
-      \"grantedTemplateId\":$TEMPLATE_ID,\"grantedStartDate\":null,\"grantedEndDate\":null,
+      \"grantedImageId\":$TEMPLATE_ID,\"grantedStartDate\":null,\"grantedEndDate\":null,
       \"nodeId\":null,\"comment\":\"스모크 승인\"}" || return 1
 
   step "vm visible in list" 200 "$BASE/vms?groupId=$GROUP_ID" -H "Authorization: Bearer $USER_AT" || return 1
