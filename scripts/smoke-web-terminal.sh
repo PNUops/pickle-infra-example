@@ -198,7 +198,11 @@ req "kill switch on (200)" 200 -X PUT "$BASE/admin/settings/web_terminal_enabled
   -H 'Content-Type: application/json' -d '{"value":true}'
 
 # ── provision one dev VM (owner U1) ──────────────────────────────────────
-TPL=$(pgq "select id from os_images where status='ACTIVE' limit 1")
+# `limit 1` with no ORDER BY hands back whatever row the scan reaches first, and
+# that is heap order, not catalog order — it silently moved from Ubuntu to Rocky
+# once the catalog grew. The bridge resolves the guest account from the VM row, so
+# any image works; pin the pick anyway so a guest-side failure is reproducible.
+TPL=$(pgq "select id from os_images where status='ACTIVE' order by id limit 1")
 # The state the bootstrap runbook leaves behind — catalog rows registered but
 # none enabled yet — makes this empty, and an empty id is interpolated into the
 # payload as "imageId":, which is not JSON. The request then fails as a bare

@@ -99,8 +99,12 @@ AAT=$(jq -r .accessToken "$B")
 # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
 req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT" || exit 1; OID=$(jq -r '.[0].id' "$B")
 req "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $SAT" || exit 1
-TID=$(jq -r '.[0].id // empty' "$B")
-[ -n "$TID" ] || { ko "no ACTIVE OS image to request with"; exit 1; }
+# The catalog is returned in DISPLAY order (distribution, then release), so the
+# first row is a moving target: it was an Ubuntu row until Debian entered the
+# catalog and sorted ahead of it. Any row provisions fine, but name the pick so a
+# distro-specific failure below is readable instead of looking like flakiness.
+TID=$(jq -r '.[0].id // empty' "$B"); INAME=$(jq -r '.[0].name // empty' "$B")
+[ -n "$TID" ] && ok "os image = $INAME (id=$TID)" || { ko "no ACTIVE OS image to request with"; exit 1; }
 # os-images is a pure OS catalog — the spec axis lives in vm-flavors, and
 # POST /vm-requests requires the chosen flavorId alongside the req* specs
 req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $SAT" || exit 1
@@ -129,11 +133,18 @@ echo "== reveal password + start web server on VM:80 =="
 curl -sS -o "$B" "$BASE/vms/$VM/password" -H "Authorization: Bearer $SAT" \
   -H "X-Reauth-Token: $(reauth "$SAT" "$USER_PW")"
 PWV=$(jq -r '.password // empty' "$B"); [ -n "$PWV" ] && ok "initial password revealed (masked)" || ko "password reveal"
+# The guest account is a property of the image, not a constant: ubuntu images
+# carry `ubuntu`, debian `debian`, rocky `rocky`. Hardcoding one broke this smoke
+# the moment the catalog stopped listing an Ubuntu row first. The reveal answers
+# with the password and ITS account in the same response, so the pair used below
+# always belongs to THIS VM's image and no catalog reorder can split them.
+SSHU=$(jq -r '.sshUsername // empty' "$B")
+[ -n "$SSHU" ] && ok "guest account from the reveal ($SSHU)" || ko "sshUsername missing on the password reveal"
 # wait ssh
 for _ in $(seq 1 18); do nc -z -w5 "$VIP" 22 2>/dev/null && break; sleep 5; done
 # the VM password IS the sudo credential (template sudoers demands it) — feed it to
 # a single sudo -S via stdin, then probe as the unprivileged user
-printf '%s\n' "$PWV" | sshpass -p "$PWV" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "ubuntu@$VIP" \
+printf '%s\n' "$PWV" | sshpass -p "$PWV" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$SSHU@$VIP" \
   "sudo -S bash -c 'mkdir -p /var/e2e; echo PICKLE-HTTP-E2E-OK > /var/e2e/index.html; cd /var/e2e; nohup python3 -m http.server 80 >/tmp/httpd.log 2>&1 & sleep 2' 2>/dev/null; curl -s -o /dev/null -w 'local:%{http_code}' http://127.0.0.1:80/index.html" >"$B" 2>/dev/null
 PWV=""; grep -q "local:200" "$B" && ok "web server up on VM:80" || { ko "web server on VM ($(cat "$B"))"; }
 # proxy-agent can reach VM:80 from LXC 100
