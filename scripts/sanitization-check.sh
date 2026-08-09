@@ -26,6 +26,26 @@ set -euo pipefail
 SANITIZE_FAIL=0
 sfail() { echo "sanitization: $1" >&2; SANITIZE_FAIL=1; }
 
+# addr6_allowed ADDRESS → 0 when an IPv6 address may appear in this tree.
+# There is none here today, which is exactly why the rule is written now: the
+# first one to arrive would arrive unexamined. Addresses are extracted in their
+# compressed form too — a rule that only saw the fully written-out form would
+# miss almost every address anyone actually writes. Documentation, loopback,
+# unspecified, link-local and unique-local are fine; a global unicast address
+# (2000::/3) belongs to somebody.
+addr6_allowed() {
+  local a
+  a=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$a" in
+    2001:db8:* | 2001:0db8:*) return 0 ;;   # RFC 3849 documentation
+    ::1 | :: | ::/*) return 0 ;;
+    fe80:*) return 0 ;;                      # link-local
+    fc??:* | fd??:*) return 0 ;;             # unique-local
+    2* | 3*) return 1 ;;                     # global unicast
+  esac
+  return 0
+}
+
 # addr_allowed ADDRESS → 0 when the address may appear in this tree.
 addr_allowed() {
   case "$1" in
@@ -57,6 +77,16 @@ sanitization_check() {
     # report its own probes and the real finding would arrive buried in them.
   done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$' \
     | xargs -0 grep -EoI '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 2>/dev/null | sort -u)
+
+  # 1b. The same question for IPv6.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    file=${line%%:*}
+    addr=${line#*:}
+    addr6_allowed "$addr" && continue
+    sfail "$file carries $addr, which is a global IPv6 address rather than a documentation range"
+  done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$' \
+    | xargs -0 grep -EoI '([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}' 2>/dev/null | sort -u)
 
   # 2. Every placeholder the README promises has to be somewhere in the tree.
   # A substitution that quietly stopped happening leaves its promise standing in
@@ -103,6 +133,18 @@ sanitization_selftest() {
   done
   for probe in 203.0.113.20 198.18.1.10 100.64.0.2 127.0.0.1; do
     if ! addr_allowed "$probe"; then
+      echo "sanitization selftest: $probe would be rejected" >&2
+      return 1
+    fi
+  done
+  for probe in 2606:4700:4700::1111 2a03:2880:f10c::35; do
+    if addr6_allowed "$probe"; then
+      echo "sanitization selftest: $probe would be accepted" >&2
+      return 1
+    fi
+  done
+  for probe in 2001:db8::1 fe80::1 fd00::1 ::1; do
+    if ! addr6_allowed "$probe"; then
       echo "sanitization selftest: $probe would be rejected" >&2
       return 1
     fi
