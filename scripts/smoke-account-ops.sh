@@ -109,8 +109,19 @@ cleanup(){
     # flag itself — clearing it out-of-band would mask a broken clear step.
     pgx "delete from vm_settings where vm_id=$VM and key='deletion_protection'"
     local vname; vname=$(pgq "select name from vms where id=$VM")
-    curl -sS -o /dev/null -X POST "$BASE/admin/vms/$VM/force-delete" -H "$(auth "$at")" \
-      -H 'Content-Type: application/json' -d "{\"confirmName\":\"$vname\",\"overrideProtection\":true}"
+    # Last chance to avoid leaving a real guest and its address allocated, so
+    # the response code decides what is printed: curl succeeds on a 403 or a
+    # 500 just as it does on a 202, and a swallowed rejection here reads as
+    # "cleaned up" while the VM is still running.
+    local dc
+    dc=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/admin/vms/$VM/force-delete" \
+      -H "$(auth "$at")" -H 'Content-Type: application/json' \
+      -d "{\"confirmName\":\"$vname\",\"overrideProtection\":true}") || dc=000
+    if [ "$dc" = 202 ]; then
+      echo "-- cleanup: force-delete accepted (202) --"
+    else
+      echo "-- cleanup: force-delete REJECTED (http=${dc:-none}); manual cleanup needed (vm id $VM) --" >&2
+    fi
   fi
   # Delete each scratch user FK-safely. Users who created a VM/request leave
   # permanent vm/vm_requests rows (retention model §14) so their user row can't
@@ -181,7 +192,7 @@ TPL=$(pgq "select id from os_images where status='ACTIVE' order by id limit 1")
 ORG=$(pgq "select id from orgs limit 1")
 [ -n "$ORG" ] || { ko "no org to request against"; exit 1; }
 req_payload(){ # $1=groupId $2=purpose
-  printf '{"groupId":%s,"orgId":%s,"imageId":%s,"flavorId":%s,"purpose":"%s","courseOrProject":null,"specReason":null,"extraNote":null,"reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"reqStartDate":null,"reqEndDate":null,"desiredSubdomain":null,"rootDomain":null}' "$1" "$ORG" "$TPL" "$FLAVOR" "$2" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
+  printf '{"groupId":%s,"orgId":%s,"imageId":%s,"flavorId":%s,"purpose":"%s","courseOrProject":null,"specReason":null,"extraNote":null,"reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"reqStartDate":null,"reqEndDate":null}' "$1" "$ORG" "$TPL" "$FLAVOR" "$2" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
 }
 approve_payload(){
   printf '{"grantedVcpu":%s,"grantedMemoryMb":%s,"grantedDiskGb":%s,"grantedImageId":%s,"grantedStartDate":null,"grantedEndDate":null,"nodeId":null,"comment":"스모크 승인"}' "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK" "$TPL"
@@ -348,9 +359,15 @@ if has_phase protect; then
     -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' -d '{"settings":{"stop_protection":true}}'
   # add a MEMBER who must be blocked from stopping
   U5="smoke-acct-mem-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U5")
-  read -r U5T _ <<<"$(mk_user "$U5" 'member-password-10' '중지보호구성원')"
-  req "  add MEMBER 201" 201 -X POST "$BASE/groups/$PGID4/members" -H "$(auth "$U4T")" \
+  read -r U5T U5ID <<<"$(mk_user "$U5" 'member-password-10' '중지보호구성원')"
+  req "  add to group 201" 201 -X POST "$BASE/groups/$PGID4/members" -H "$(auth "$U4T")" \
     -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U5\",\"role\":\"MEMBER\"}"
+  # Put them on this VM's list at the rung that may power it. Without the entry
+  # the shutdown is refused for having no access at all, and the assertion below
+  # would pass while proving nothing about stop protection.
+  req "  grant MEMBER on the vm 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U4T")" \
+    -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' \
+    -d "{\"granteeType\":\"USER\",\"userId\":$U5ID,\"role\":\"MEMBER\"}"
   req "  member shutdown blocked 409" 409 -X POST "$BASE/vms/$VM/shutdown" -H "$(auth "$U5T")"
   C=$(jq -r '.code' "$B"); [ "$C" = "VM_STOP_PROTECTED" ] && ok "  code VM_STOP_PROTECTED" || ko "  code ($C)"
   req "  owner shutdown allowed 202" 202 -X POST "$BASE/vms/$VM/shutdown" -H "$(auth "$U4T")"

@@ -14,6 +14,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"   # resolved before any cd
 CTID="${CTID:-100}"
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$CTID" reverse-proxy
 AGENT_DIR="${AGENT_DIR:-/root/pickle/proxy-agent}"
 GO="${GO:-/usr/local/go/bin/go}"
 REMOTE_BIN=/usr/local/bin/pickle-proxy-agent

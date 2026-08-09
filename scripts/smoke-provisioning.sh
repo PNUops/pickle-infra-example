@@ -267,8 +267,7 @@ phase_request_approve() {
       \"groupId\":$GROUP_ID,\"orgId\":$ORG_ID,\"imageId\":$TEMPLATE_ID,\"flavorId\":$FLAVOR_ID,
       \"purpose\":\"프로비저닝 스모크 테스트 (실제 프로비저닝 검증)\",\"courseOrProject\":null,\"specReason\":null,
       \"extraNote\":null,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,
-      \"reqStartDate\":null,\"reqEndDate\":null,
-      \"desiredSubdomain\":null,\"rootDomain\":null}" || return 1
+      \"reqStartDate\":null,\"reqEndDate\":null}" || return 1
   REQ_ID=$(jq -r .id "$BODY")
 
   step "orgadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \

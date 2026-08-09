@@ -33,6 +33,10 @@ set -euo pipefail
 
 RP="${PICKLE_PROXY_CTID:-100}"   # reverse-proxy LXC
 APP="${PICKLE_APP_CTID:-101}"  # app LXC
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$RP" reverse-proxy
+require_ct "$APP" pickle-app
 
 ts=$(date +%Y%m%d-%H%M%S)
 BK="/root/pickle/backup/terminal-ingress-$ts"
@@ -70,14 +74,35 @@ expect_http "pre opus   :443" 200 --resolve opus.pusan.ac.kr:443:198.18.1.10 htt
 [ "$fails" -eq 0 ] || { echo "aborting before any change: the tiers are not healthy" >&2; exit 1; }
 
 echo "== LXC $RP: pickle-cf-geo.conf (geo-format CF ranges, derived from pickle-realip.conf)"
+# Built in a temporary file and only then moved into place. Generating straight
+# into the target truncates it before the first line is produced, so a source
+# file that has been renamed or emptied leaves an include with no ranges in it —
+# and an empty geo{} is valid nginx, reloads cleanly, and answers 0 for every
+# peer. $pickle_client_ip then degrades to $remote_addr for all traffic, which
+# is the Cloudflare edge address, and every client IP recorded from that point
+# on is the edge rather than the client. Nothing downstream can notice, so the
+# count is compared against the source here.
 # shellcheck disable=SC2016  # nginx-side $ must not expand here
 pct exec "$RP" -- bash -c '
 set -euo pipefail
+src=/etc/nginx/pickle-realip.conf
+dst=/etc/nginx/pickle-cf-geo.conf
+tmp=$(mktemp)
+trap "rm -f $tmp" EXIT
 {
   echo "# Cloudflare edge ranges in geo{} form — generated from pickle-realip.conf"
-  echo "# ($(grep -m1 Generated /etc/nginx/pickle-realip.conf | sed "s/^# *//"))"
-  grep -o "set_real_ip_from [^;]*" /etc/nginx/pickle-realip.conf | awk "{print \$2\" 1;\"}"
-} > /etc/nginx/pickle-cf-geo.conf'
+  echo "# ($(grep -m1 Generated $src | sed "s/^# *//"))"
+  grep -o "set_real_ip_from [^;]*" $src | awk "{print \$2\" 1;\"}"
+} > "$tmp"
+want=$(grep -c "^set_real_ip_from" $src)
+got=$(grep -c " 1;$" "$tmp" || true)
+[ "$want" -gt 0 ] || { echo "  $src declares no ranges" >&2; exit 1; }
+[ "$got" -eq "$want" ] || {
+  echo "  derived $got of $want ranges; refusing to replace $dst" >&2
+  exit 1
+}
+install -m 644 -o root -g root "$tmp" "$dst"
+echo "  $got Cloudflare ranges"'
 
 echo "== LXC $RP: conf.d/pickle-terminal.conf (client-IP validation map)"
 pct exec "$RP" -- bash -c 'cat > /etc/nginx/conf.d/pickle-terminal.conf' <<'EOF'
@@ -142,6 +167,22 @@ echo "== LXC $APP: /api/ vhost forwards the LXC-100-validated X-Real-IP"
 # symlink would replace the link with a detached copy, silently orphaning
 # every later edit made on the sites-available side.
 pct exec "$APP" -- sed -i 's|proxy_set_header X-Real-IP \$http_cf_connecting_ip;|proxy_set_header X-Real-IP $http_x_real_ip;|' /etc/nginx/sites-available/pickle.conf
+# sed reports success when it matches nothing, and the vhost is not written by
+# this script, so a renamed directive or a reworded line would leave the app tier
+# trusting the raw header while every step here still passes. Assert the state
+# the substitution was supposed to reach, not the fact that sed ran.
+# shellcheck disable=SC2016  # nginx-side $ must not expand here
+pct exec "$APP" -- bash -c '
+set -euo pipefail
+vhost=/etc/nginx/sites-available/pickle.conf
+grep -q "proxy_set_header X-Real-IP \$http_x_real_ip;" "$vhost" || {
+  echo "  $vhost does not forward the validated X-Real-IP" >&2
+  exit 1
+}
+! grep -q "X-Real-IP \$http_cf_connecting_ip;" "$vhost" || {
+  echo "  $vhost still trusts CF-Connecting-IP directly" >&2
+  exit 1
+}'
 pct exec "$APP" -- nginx -t
 pct exec "$APP" -- systemctl reload nginx
 

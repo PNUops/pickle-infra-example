@@ -26,6 +26,11 @@ DRY_RUN=0
 APP_CTID="${APP_CTID:-101}"
 PROXY_CTID="${PROXY_CTID:-100}"
 SSHGW_CTID="${SSHGW_CTID:-102}"
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$PROXY_CTID" reverse-proxy
+require_ct "$APP_CTID" pickle-app
+require_ct "$SSHGW_CTID" pickle-sshgw
 
 # journald caps, sized ~4-6x the usage measured on 2026-07-26 and well inside
 # each root filesystem: pve-node 75M/94G, 100 12M/7.8G, 101 56M/32G, 102 136M/7.8G.
@@ -86,7 +91,15 @@ app_logrotate() {
 EOF
 }
 
-# install_file <source> <target> <mode> [ctid] → 0 unchanged, 1 written.
+# install_file <source> <target> <mode> [ctid] → 0 unchanged, 1 written, 2 failed.
+#
+# The failure code is not decoration. Every caller invokes this in a `|| ...`
+# list to read the written/unchanged answer, and a function called that way runs
+# with `set -e` suspended for its whole body — so a push that fails carries on to
+# the next line, prints "written", and returns the same 1 a real write returns.
+# The run then reports the policy applied while nothing was installed. Each write
+# is therefore checked where it happens, and the result is read back rather than
+# assumed.
 install_file() {
   local src="$1" target="$2" mode="$3" ctid="${4:-}" want have label
   want=$(sha256sum < "$src" | cut -d' ' -f1)
@@ -101,19 +114,33 @@ install_file() {
     echo "  $label $target: unchanged"
     return 0
   fi
-  if [ "$DRY_RUN" = 0 ]; then
-    if [ -n "$ctid" ]; then
-      pct exec "$ctid" -- mkdir -p "$(dirname "$target")"
-      pct push "$ctid" "$src" "$target" -u root -g root -p "$mode"
-    else
-      mkdir -p "$(dirname "$target")"
-      install -m "$mode" -o root -g root "$src" "$target"
-    fi
-    echo "  $label $target: written"
-  else
+  if [ "$DRY_RUN" != 0 ]; then
     echo "  $label $target: would be written"
+    return 1
   fi
+  if [ -n "$ctid" ]; then
+    pct exec "$ctid" -- mkdir -p "$(dirname "$target")" || return 2
+    pct push "$ctid" "$src" "$target" -u root -g root -p "$mode" || return 2
+    have=$(pct exec "$ctid" -- sha256sum "$target" 2>/dev/null | cut -d' ' -f1 || true)
+  else
+    mkdir -p "$(dirname "$target")" || return 2
+    install -m "$mode" -o root -g root "$src" "$target" || return 2
+    have=$(sha256sum "$target" 2>/dev/null | cut -d' ' -f1 || true)
+  fi
+  [ "$want" = "$have" ] || {
+    echo "  $label $target: written, but the file does not read back as written" >&2
+    return 2
+  }
+  echo "  $label $target: written"
   return 1
+}
+
+# install_or_die <same arguments> → 0 unchanged, 1 written; exits on failure.
+install_or_die() {
+  local rc=0
+  install_file "$@" || rc=$?
+  [ "$rc" -ne 2 ] || { echo "failed to install $2" >&2; exit 1; }
+  return "$rc"
 }
 
 TMP=$(mktemp -d)
@@ -122,7 +149,7 @@ trap 'rm -rf "$TMP"' EXIT
 apply_journald() { # $1 = cap, $2 = ctid ("" for pve-node)
   local cap="$1" ctid="${2:-}" rc=0
   journald_dropin "$cap" > "$TMP/journald.conf"
-  install_file "$TMP/journald.conf" "$JOURNAL_DROPIN" 644 "$ctid" || rc=$?
+  install_or_die "$TMP/journald.conf" "$JOURNAL_DROPIN" 644 "$ctid" || rc=$?
   if [ "$rc" -eq 1 ] && [ "$DRY_RUN" = 0 ]; then
     if [ -n "$ctid" ]; then
       pct exec "$ctid" -- systemctl restart systemd-journald
@@ -140,13 +167,12 @@ apply_journald "$SSHGW_JOURNAL_CAP" "$SSHGW_CTID"
 
 echo "logrotate policies"
 host_logrotate > "$TMP/pickle.logrotate"
-# `|| true` here absorbs install_file's rc 1, which means "written" rather than
-# "failed" — a genuine failure inside it aborts the run under set -e, so nothing
-# is being hidden. Unlike apply_journald, these two need no restart, so the
-# written/unchanged distinction is not read back.
-install_file "$TMP/pickle.logrotate" /etc/logrotate.d/pickle 644 || true
+# `|| true` absorbs the "written" answer, which these two have no use for: unlike
+# the journald drop-ins they need no restart. A failure is not absorbed with it —
+# install_or_die has already exited by then.
+install_or_die "$TMP/pickle.logrotate" /etc/logrotate.d/pickle 644 || true
 app_logrotate > "$TMP/pickle-mock-mail.logrotate"
-install_file "$TMP/pickle-mock-mail.logrotate" /etc/logrotate.d/pickle-mock-mail 644 "$APP_CTID" || true
+install_or_die "$TMP/pickle-mock-mail.logrotate" /etc/logrotate.d/pickle-mock-mail 644 "$APP_CTID" || true
 
 if [ "$DRY_RUN" = 0 ]; then
   echo "validation (logrotate --debug)"

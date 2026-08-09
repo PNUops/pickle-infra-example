@@ -62,6 +62,10 @@ set -euo pipefail
 
 CTID="${PICKLE_APP_CTID:-101}"
 PROXY_CTID="${PICKLE_PROXY_CTID:-100}"
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$CTID" pickle-app
+require_ct "$PROXY_CTID" reverse-proxy
 DB="${PICKLE_DB:-pickle_dev}"
 
 NODE="${PICKLE_NODE:-pve-node}"

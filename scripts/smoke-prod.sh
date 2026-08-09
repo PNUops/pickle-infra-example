@@ -110,7 +110,7 @@ if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
   FSEL='(map(select(.name=="basic"))[0] // .[0])'
   FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); MM=$(jq -r "$FSEL.memoryMb // empty" "$B"); DG=$(jq -r "$FSEL.diskGb // empty" "$B")
   if [ -n "$GID" ] && [ -n "$OID" ] && [ -n "$TID" ] && [ -n "$FID" ]; then
-    req "vm request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"imageId\":$TID,\"flavorId\":$FID,\"purpose\":\"prod smoke\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":null,\"rootDomain\":null}"
+    req "vm request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"imageId\":$TID,\"flavorId\":$FID,\"purpose\":\"prod smoke\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null}"
     RID=$(jq -r '.id // empty' "$B")
     # approve as seed ORG_ADMIN (token from the org-lookup login above)
     req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"prod smoke\"}"

@@ -86,6 +86,17 @@ mk_user(){
   echo "$(login "$1" "$2") $(pgq "select id from users where email='$1'")"
 }
 
+# Access tokens live 15 minutes; this run is longer than that, because half of
+# it is spent waiting out revalidation windows and a provisioning cycle. A token
+# minted at the top is therefore expired by the closing phases, and the checks
+# there failed on authentication rather than on what they assert. Anything used
+# after the long waits takes a fresh one.
+refresh_tokens(){
+  U1T=$(login "$U1" "$U1PW")
+  SAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
+  [ -n "$U1T" ] && [ -n "$SAT" ] || ko "could not refresh tokens for the closing phase"
+}
+
 # mint VMID TOKEN → sets MINT_CODE + TICKET/SESSION_ID/WSPATH/SUBPROTO on 201
 mint(){
   MINT_CODE=$(curl -sS -o "$B" -w '%{http_code}' -X POST "$BASE/vms/$1/terminal-sessions" -H "$(auth "$2")")
@@ -97,7 +108,12 @@ mint(){
 # all frames (binary passthrough + JSON control frames) into $WSOUT.
 ws_run(){
   local t="$1" secs="$2" origin="${3:-$ORIGIN}"
-  { printf 'echo pickle-smoke-%s\r' "$TS"; sleep "$secs"; } | \
+  # The marker must not appear in what is typed. A pty echoes keystrokes back
+  # over the same socket, so grepping the transcript for a string this script
+  # sent proves only that the terminal echoes — it passes even if no shell ever
+  # ran. Assembling the marker on the far side from a format string and an
+  # argument means a match can only come from output.
+  { printf "printf 'pickle-smoke-%%s' %s\r" "$TS"; sleep "$secs"; } | \
     timeout $((secs+20)) websocat --binary -H "Origin: $origin" \
       --protocol "pickle.terminal.v1, ticket.$t" "$WS_URL" >"$WSOUT" 2>&1
 }
@@ -132,16 +148,35 @@ VM=""; VM_DELETED=1; SAT=""; KILL_INITIAL=""
 cleanup(){
   local rc=$?
   # restore the kill switch to its pre-run value
-  if [ -n "$KILL_INITIAL" ] && [ -n "$SAT" ]; then
-    curl -sS -o /dev/null -X PUT "$BASE/admin/settings/web_terminal_enabled" -H "$(auth "$SAT")" \
-      -H 'Content-Type: application/json' -d "{\"value\":$KILL_INITIAL}"
+  # Only worth restoring if the run did not already put it back — and a token
+  # from the top of the run is expired by now, so take a fresh one. Without both,
+  # the trap issues a doomed request and reports a failure to undo something that
+  # was never left undone.
+  local now_kill
+  now_kill=$(pgq "select value::text from settings where key='web_terminal_enabled'")
+  if [ -n "$KILL_INITIAL" ] && [ "$now_kill" != "$KILL_INITIAL" ]; then
+    SAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
+    local kc
+    kc=$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "$BASE/admin/settings/web_terminal_enabled" \
+      -H "$(auth "$SAT")" -H 'Content-Type: application/json' \
+      -d "{\"value\":$KILL_INITIAL}") || kc=000
+    [ "$kc" = 200 ] || echo "-- cleanup: web_terminal_enabled NOT restored to $KILL_INITIAL (http=${kc:-none}, live=$now_kill) --" >&2
   fi
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
     echo "-- cleanup: removing leftover VM $VM --"
     local at; at=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
     local vname; vname=$(pgq "select name from vms where id=$VM")
-    curl -sS -o /dev/null -X POST "$BASE/admin/vms/$VM/force-delete" -H "$(auth "$at")" \
-      -H 'Content-Type: application/json' -d "{\"confirmName\":\"$vname\",\"overrideProtection\":true}"
+    # curl succeeds on a rejection as readily as on a 202; without the code the
+    # trap reports a cleanup it never performed and a real guest stays up.
+    local dc
+    dc=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/admin/vms/$VM/force-delete" \
+      -H "$(auth "$at")" -H 'Content-Type: application/json' \
+      -d "{\"confirmName\":\"$vname\",\"overrideProtection\":true}") || dc=000
+    if [ "$dc" = 202 ]; then
+      echo "-- cleanup: force-delete accepted (202) --"
+    else
+      echo "-- cleanup: force-delete REJECTED (http=${dc:-none}); manual cleanup needed (vm id $VM) --" >&2
+    fi
   fi
   for e in "${SCRATCH_EMAILS[@]:-}"; do
     [ -n "$e" ] || continue
@@ -226,7 +261,7 @@ req "create team 201" 201 -X POST "$BASE/groups" -H "$(auth "$U1T")" -H 'Content
   -d "{\"kind\":\"TEAM\",\"name\":\"smoke-term-$TS\",\"slug\":\"smoke-term-$TS\"}"
 GID=$(jq -r '.id' "$B")
 req "vm request 201" 201 -X POST "$BASE/vm-requests" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
-  -d "{\"groupId\":$GID,\"orgId\":$ORG,\"imageId\":$TPL,\"flavorId\":$FID,\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":null,\"rootDomain\":null}"
+  -d "{\"groupId\":$GID,\"orgId\":$ORG,\"imageId\":$TPL,\"flavorId\":$FID,\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"reqStartDate\":null,\"reqEndDate\":null}"
 RID=$(jq -r '.id // empty' "$B"); [ -n "$RID" ] || { ko "request not created — abort"; exit 1; }
 req "approve 200" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "$(auth "$SAT")" \
   -H 'Content-Type: application/json' \
@@ -250,17 +285,41 @@ for _ in $(seq 1 30); do
 done
 [ "$SSHD_READY" = 1 ] && ok "vm sshd accepting (:22)" || ko "vm sshd not ready after ~150s"
 
-# ── members: U2=MEMBER, U3=VIEWER, U4=non-member ─────────────────────────
+# ── who may open a terminal ──────────────────────────────────────────────
+# Group membership no longer decides this. The group carries two rungs, and
+# reaching a VM's contents takes an entry in that VM's own access list, so the
+# three people below differ only in what the list says about them: U2 is listed,
+# U3 is a group member the list does not mention, U4 is outside the group
+# entirely. U1 requested the VM and is therefore its listed owner.
 U2="smoke-term-mem-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U2")
-read -r U2T _ <<<"$(mk_user "$U2" 'terminal-member-1' '터미널멤버')"
+read -r U2T U2ID <<<"$(mk_user "$U2" 'terminal-member-1' '터미널멤버')"
 U3="smoke-term-view-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U3")
 read -r U3T _ <<<"$(mk_user "$U3" 'terminal-viewer-1' '터미널뷰어')"
 U4="smoke-term-out-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U4")
 read -r U4T _ <<<"$(mk_user "$U4" 'terminal-outsider-1' '터미널외부')"
-req "add U2 MEMBER 201" 201 -X POST "$BASE/groups/$GID/members" -H "$(auth "$U1T")" \
+req "add U2 to group 201" 201 -X POST "$BASE/groups/$GID/members" -H "$(auth "$U1T")" \
   -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U2\",\"role\":\"MEMBER\"}"
-req "add U3 VIEWER 201" 201 -X POST "$BASE/groups/$GID/members" -H "$(auth "$U1T")" \
-  -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U3\",\"role\":\"VIEWER\"}"
+req "add U3 to group 201" 201 -X POST "$BASE/groups/$GID/members" -H "$(auth "$U1T")" \
+  -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U3\",\"role\":\"MEMBER\"}"
+
+# The seeded list: whoever requested the VM, and nobody else.
+req "access list seeded with the requester" 200 "$BASE/vms/$VM/access" -H "$(auth "$U1T")"
+SEEDED=$(jq -r '[.grants[] | select(.role=="OWNER")] | length' "$B")
+[ "$SEEDED" = 1 ] && ok "  one OWNER entry" || ko "  one OWNER entry (got $SEEDED)"
+[ "$(jq -r '.grants | length' "$B")" = 1 ] && ok "  and no other entry" || ko "  and no other entry ($(jq -r '.grants|length' "$B"))"
+[ "$(jq -r '.vm.id' "$B")" = "$VM" ] && ok "  list names its VM" || ko "  list names its VM"
+
+# U3 stays unlisted for the denial assertions further down; U2 gets the rung
+# that carries terminal access.
+req "grant U2 MEMBER on this VM 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U1T")" \
+  -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' \
+  -d "{\"granteeType\":\"USER\",\"userId\":$U2ID,\"role\":\"MEMBER\"}"
+U2GRANT=$(jq -r '.id' "$B")
+[ -n "$U2GRANT" ] && [ "$U2GRANT" != null ] && ok "  grant id returned" || { ko "  grant id returned"; exit 1; }
+req "  granting needs a fresh password proof (403)" 403 -X POST "$BASE/vms/$VM/access" \
+  -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
+  -d "{\"granteeType\":\"USER\",\"userId\":$U2ID,\"role\":\"VIEWER\"}"
+C=$(jq -r '.code' "$B"); [ "$C" = REAUTH_REQUIRED ] && ok "  code REAUTH_REQUIRED" || ko "  code ($C)"
 
 # ── happy path: mint → WS → echo → audit → admin visibility ──────────────
 mint "$VM" "$U2T"
@@ -345,8 +404,38 @@ ws_run "$ORIGIN_TICKET" 3
 grep -q '403 Forbidden' "$WSOUT" \
   && ko "console Origin also got 403 — the refusal above was not about the Origin" \
   || ok "same ticket with the console Origin passes the handshake (control)"
-mint "$VM" "$U3T"; [ "$MINT_CODE" = 403 ] && ok "VIEWER mint denied (403)" || ko "VIEWER mint denied (got $MINT_CODE)"
+# Being in the group is not being on the list. U3 can see the VM exists — the
+# group listing shows it — and gets no further.
+mint "$VM" "$U3T"; [ "$MINT_CODE" = 403 ] && ok "group member not on the list denied (403)" || ko "group member not on the list denied (got $MINT_CODE)"
+req "  and the VM detail is closed to them (403)" 403 "$BASE/vms/$VM" -H "$(auth "$U3T")"
 mint "$VM" "$U4T"; [ "$MINT_CODE" = 404 ] && ok "non-member masked (404)" || ko "non-member masked (got $MINT_CODE)"
+req "  the access list is closed to them too (403)" 403 "$BASE/vms/$VM/access" -H "$(auth "$U3T")"
+
+# Removing the entry has to reach a session that is already open, not just the
+# next mint: the bridge revalidates on a timer, so a revoked person keeps a live
+# shell until it does.
+# Held far longer than the poll below runs: if the session were merely reaching
+# the end of its own hold, its disappearance would prove nothing.
+if open_live_session "$U2T" 300; then
+  ok "U2 holds a live session before the entry is removed"
+  req "remove U2 from the access list 204" 204 -X DELETE "$BASE/vms/$VM/access/$U2GRANT" \
+    -H "$(auth "$U1T")" -H "$(rt "$U1T" "$U1PW")"
+  mint "$VM" "$U2T"; [ "$MINT_CODE" = 403 ] && ok "  new mint refused after removal (403)" || ko "  new mint refused after removal (got $MINT_CODE)"
+  GONE=0
+  for _ in $(seq 1 12); do
+    sleep 10
+    curl -sS -o "$B" -H "$(auth "$SAT")" "$BASE/admin/terminal-sessions" 2>/dev/null
+    jq -e --arg s "$LIVE_SID" 'map(select(.sessionId==$s)) | length == 0' "$B" >/dev/null 2>&1 && { GONE=1; break; }
+  done
+  [ "$GONE" = 1 ] && ok "  the open session was closed by revalidation" || ko "  the open session survived removal for over 120s"
+  kill "$WSPID" 2>/dev/null; wait "$WSPID" 2>/dev/null
+  req "re-grant U2 MEMBER 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U1T")" \
+    -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' \
+    -d "{\"granteeType\":\"USER\",\"userId\":$U2ID,\"role\":\"MEMBER\"}"
+  U2GRANT=$(jq -r '.id' "$B")
+else
+  ko "U2 could not hold a live session — removal convergence unchecked"
+fi
 # ssh_gateway_blocked is a vms COLUMN (V13, sys-admin per-VM block), not a
 # vm_settings row — the mint gate + sshgw route both read vm.isSshGatewayBlocked().
 pgx "update vms set ssh_gateway_blocked=true where id=$VM"
@@ -402,6 +491,7 @@ AUD_PWEND=$(pgq "select count(*) from audit_logs where action='terminal.session_
 [ "${AUD_PWEND:-0}" -ge 1 ] && ok "session_end audited after password change" || ko "session_end audited after password change"
 
 # ── STOPPED VM → 409 ─────────────────────────────────────────────────────
+refresh_tokens
 req "shutdown 202" 202 -X POST "$BASE/vms/$VM/shutdown" -H "$(auth "$U1T")"
 echo "  waiting for STOPPED…"
 for _ in $(seq 1 30); do ST=$(pgq "select status from vms where id=$VM"); [ "$ST" = STOPPED ] && break; sleep 5; done

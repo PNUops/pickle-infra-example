@@ -64,6 +64,9 @@
 set -euo pipefail
 
 RP="${PICKLE_PROXY_CTID:-100}"          # reverse-proxy LXC
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$RP" reverse-proxy
 DOMAIN="${PICKLE_MAIN_DOMAIN:-pickle.pusan.ac.kr}"
 HOST_PROBE_IP="${PICKLE_HOST_PROBE_IP:-198.18.0.1}"  # the Proxmox host on vmbr1: smoke suite + health snapshot
 # A tenant that shared this proxy before the platform did. The checks below exist

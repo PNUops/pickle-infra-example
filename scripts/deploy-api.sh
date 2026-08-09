@@ -4,6 +4,9 @@
 set -euo pipefail
 
 CTID="${CTID:-101}"
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$CTID" pickle-app
 API_DIR="${API_DIR:-/root/pickle/api}"
 RELEASES_DIR=/opt/pickle/api/releases
 HEALTH_URL="http://127.0.0.1:8080/actuator/health"

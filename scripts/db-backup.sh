@@ -8,6 +8,9 @@ set -euo pipefail
 export PATH="/usr/sbin:/usr/bin:/bin:$PATH"
 
 CTID="${CTID:-101}"
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$CTID" pickle-app
 DB="${DB:-pickle_dev}"
 LXC_DIR=/var/backups/pickle
 HOST_DIR=/root/pickle/backup/db

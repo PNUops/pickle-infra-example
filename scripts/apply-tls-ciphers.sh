@@ -17,6 +17,10 @@ set -euo pipefail
 
 RP="${PICKLE_PROXY_CTID:-100}"   # reverse-proxy LXC
 APP="${PICKLE_APP_CTID:-101}"  # app LXC
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$RP" reverse-proxy
+require_ct "$APP" pickle-app
 CONF=/etc/nginx/conf.d/pickle-tls.conf
 
 ts=$(date +%Y%m%d-%H%M%S)

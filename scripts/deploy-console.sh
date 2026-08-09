@@ -4,6 +4,9 @@
 set -euo pipefail
 
 CTID="${CTID:-101}"
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$CTID" pickle-app
 CONSOLE_DIR="${CONSOLE_DIR:-/root/pickle/console}"
 WEB_ROOT=/var/www/pickle-console
 

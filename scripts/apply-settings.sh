@@ -58,6 +58,9 @@
 set -euo pipefail
 
 CTID="${PICKLE_APP_CTID:-101}"
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$CTID" pickle-app
 DB="${PICKLE_DB:-pickle_dev}"
 ROOT_DOMAIN="${PICKLE_ROOT_DOMAIN:-pusan.dev}"
 CONTACT_EMAIL="${PICKLE_CONTACT_EMAIL:-}"

@@ -116,7 +116,10 @@ reg_key(){ curl -sS -o "$B" -X POST "$BASE/me/ssh-keys" -H "Authorization: Beare
 # addmember EMAIL ROLE (as group OWNER). Asserted (201): a silently failed add
 # would make the membership-scoped checks below vacuous — a VIEWER/MEMBER that
 # was never added is denied as a plain non-member and the test still "passes".
-addmember(){ req "add member $2 ($1)" 201 -X POST "$BASE/groups/$GID/members" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"role\":\"$2\"}"; }
+addmember(){ req "add member ($1)" 201 -X POST "$BASE/groups/$GID/members" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"role\":\"MEMBER\"}"; }
+# addgrant USERID ROLE — put somebody on THIS VM's access list. Group membership
+# admits nobody to a VM on its own; every rung below is granted per resource.
+addgrant(){ req "grant $2 on the vm (user $1)" 201 -X POST "$BASE/vms/$VM/access" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" -H 'Content-Type: application/json' -d "{\"granteeType\":\"USER\",\"userId\":$1,\"role\":\"$2\"}"; }
 
 # ---- state to restore on exit ----
 VM=""; VNAME=""; VM_DELETED=0; ORIG_HK_B64=""; ORIG_KILL=""
@@ -129,7 +132,22 @@ cleanup(){
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
     echo "-- cleanup: force-deleting leftover VM $VM --"
     local at; at=$(curl -sS -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$SYSADMIN_EMAIL\",\"password\":\"$SYSADMIN_PW\"}" | jq -r '.accessToken // empty')
-    [ -n "$at" ] && [ -n "$VNAME" ] && curl -sS -o /dev/null -X POST "$BASE/admin/vms/$VM/force-delete" -H "Authorization: Bearer $at" -H 'Content-Type: application/json' -d "{\"confirmName\":\"$VNAME\",\"reason\":\"smoke cleanup (trap)\"}" || echo "-- cleanup: manual VM $VM cleanup may be needed --" >&2
+    # The warning used to hang off `||` at the end of an && chain, so it could
+    # only fire when the token or the name was missing: curl itself exits 0 on a
+    # 403 or a 500, and the rejection printed nothing at all.
+    if [ -n "$at" ] && [ -n "$VNAME" ]; then
+      local dc
+      dc=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/admin/vms/$VM/force-delete" \
+        -H "Authorization: Bearer $at" -H 'Content-Type: application/json' \
+        -d "{\"confirmName\":\"$VNAME\",\"reason\":\"smoke cleanup (trap)\"}") || dc=000
+      if [ "$dc" = 202 ]; then
+        echo "-- cleanup: force-delete accepted (202) --"
+      else
+        echo "-- cleanup: force-delete REJECTED (http=${dc:-none}); manual cleanup needed (vm id $VM) --" >&2
+      fi
+    else
+      echo "-- cleanup: no admin token or VM name; manual cleanup needed (vm id $VM) --" >&2
+    fi
   fi
   rm -f "${TMPFILES[@]}"; rm -rf "$RT_DIR"
   exit "$rc"
@@ -188,7 +206,7 @@ req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $OAT" || exit 
 FSEL='(map(select(.name=="basic"))[0] // .[0])'
 FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); MM=$(jq -r "$FSEL.memoryMb // empty" "$B"); DG=$(jq -r "$FSEL.diskGb // empty" "$B")
 [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)" || { ko "no ACTIVE vm-flavor"; exit 1; }
-req "request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"imageId\":$TID,\"flavorId\":$FID,\"purpose\":\"ssh gateway e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null,\"desiredSubdomain\":null,\"rootDomain\":null}" || exit 1
+req "request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"imageId\":$TID,\"flavorId\":$FID,\"purpose\":\"ssh gateway e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null}" || exit 1
 RID=$(jq -r .id "$B")
 req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"sgw\"}" || exit 1
 req "vm list" 200 "$BASE/vms?groupId=$GID" -H "Authorization: Bearer $OAT" || exit 1
@@ -292,14 +310,25 @@ NMKEY=$(mktemp -u); mklocalkey "$NMKEY"; NM_FP=$(fp_of "$NMKEY.pub")
 reg_key "$NMAT" "$NM_PW" "nm-key" "$(cat "$NMKEY.pub")" >/dev/null
 kssh "$NMKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "non-member routed" || { sleep 1; [ "$(denied SSHGW_KEY_NOT_MEMBER "$NM_FP")" -ge 1 ] 2>/dev/null && ok "non-member denied (SSHGW_KEY_NOT_MEMBER)" || ko "no SSHGW_KEY_NOT_MEMBER audit for non-member"; }
 
-# --- 6. VIEWER member's key → SSHGW_KEY_NOT_MEMBER (VIEWER treated as non-member) ---
-echo "== [6] VIEWER member key → deny =="
+# --- 6. in the group, not on the VM's list → SSHGW_KEY_NOT_MEMBER ---
+# The gateway asks the access list, not the group. Somebody the owner invited to
+# the group but never added to this VM is refused with the same code as a
+# stranger, so the refusal leaks nothing about who is a colleague.
+echo "== [6] group member absent from the access list → deny =="
 VW_PW="vw-pw-${TS}!"
-read -r VWAT _ < <(mk_user "sgw-viewer-${TS}@pusan.ac.kr" "$VW_PW" "SGW Viewer")
-addmember "sgw-viewer-${TS}@pusan.ac.kr" VIEWER
+read -r VWAT VW_ID < <(mk_user "sgw-unlisted-${TS}@pusan.ac.kr" "$VW_PW" "SGW Unlisted")
+addmember "sgw-unlisted-${TS}@pusan.ac.kr"
 VWKEY=$(mktemp -u); mklocalkey "$VWKEY"; VW_FP=$(fp_of "$VWKEY.pub")
 reg_key "$VWAT" "$VW_PW" "vw-key" "$(cat "$VWKEY.pub")" >/dev/null
-kssh "$VWKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "VIEWER routed" || { sleep 1; [ "$(denied SSHGW_KEY_NOT_MEMBER "$VW_FP")" -ge 1 ] 2>/dev/null && ok "VIEWER denied (SSHGW_KEY_NOT_MEMBER)" || ko "no SSHGW_KEY_NOT_MEMBER audit for VIEWER"; }
+kssh "$VWKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "unlisted member routed" || { sleep 1; [ "$(denied SSHGW_KEY_NOT_MEMBER "$VW_FP")" -ge 1 ] 2>/dev/null && ok "unlisted member denied (SSHGW_KEY_NOT_MEMBER)" || ko "no SSHGW_KEY_NOT_MEMBER audit for the unlisted member"; }
+
+# The same person, once listed, reaches the shell — otherwise the denial above
+# would also pass if the gateway were simply broken for everyone but the owner.
+echo "== [7] the same key after the owner adds them to the list =="
+addgrant "$VW_ID" MEMBER
+sleep 1
+try_connect PICKLE-LISTED kssh "$VWKEY" "$SLUG" 'echo PICKLE-LISTED' >/dev/null \
+  && ok "listed member routed to the VM" || ko "listed member still refused"
 
 # --- 8. password default-deny (ssh_password_enabled=false) → SSHGW_PASSWORD_DISABLED ---
 echo "== [8] password default-deny =="
@@ -316,8 +345,12 @@ try_connect PICKLE-PW-OK pssh "$VMPW" "$SLUG" 'echo PICKLE-PW-OK' >/dev/null && 
 # --- 10. MEMBER cannot change VM settings → 403 ---
 echo "== [10] MEMBER PATCH settings → 403 =="
 MB_PW="mb-pw-${TS}!"
-read -r MBAT _ < <(mk_user "sgw-member-${TS}@pusan.ac.kr" "$MB_PW" "SGW Member")
-addmember "sgw-member-${TS}@pusan.ac.kr" MEMBER
+read -r MBAT MB_ID < <(mk_user "sgw-member-${TS}@pusan.ac.kr" "$MB_PW" "SGW Member")
+addmember "sgw-member-${TS}@pusan.ac.kr"
+# Listed at the rung that carries access but not editing. Granting first is what
+# makes this a test of the rung: an unlisted person is refused one step earlier,
+# and the check would pass without the settings gate ever being consulted.
+addgrant "$MB_ID" MEMBER
 # Hand the MEMBER a VALID sudo-mode token on purpose: without one the endpoint
 # 403s on REAUTH_REQUIRED and this check would pass without ever reaching the
 # role gate. The Problem code is asserted for the same reason.
@@ -327,8 +360,9 @@ code_is GROUP_ROLE_INSUFFICIENT "  refused by the role gate, not by reauth"
 # --- 12. EDITOR cannot raise password_reveal_min_role (OWNER-gated) → 403 ---
 echo "== [12] EDITOR raise min_role → 403 =="
 ED_PW="ed-pw-${TS}!"
-read -r EDAT _ < <(mk_user "sgw-editor-${TS}@pusan.ac.kr" "$ED_PW" "SGW Editor")
-addmember "sgw-editor-${TS}@pusan.ac.kr" EDITOR
+read -r EDAT ED_ID < <(mk_user "sgw-editor-${TS}@pusan.ac.kr" "$ED_PW" "SGW Editor")
+addmember "sgw-editor-${TS}@pusan.ac.kr"
+addgrant "$ED_ID" EDITOR
 # valid sudo-mode token here too — the OWNER-only key is what must refuse
 req "editor min_role forbidden" 403 -X PATCH "$BASE/vms/$VM/settings" -H "Authorization: Bearer $EDAT" -H "$(rt "$EDAT" "$ED_PW")" -H 'Content-Type: application/json' -d '{"settings":{"password_reveal_min_role":"EDITOR"}}'
 code_is GROUP_ROLE_INSUFFICIENT "  refused by the role gate, not by reauth"

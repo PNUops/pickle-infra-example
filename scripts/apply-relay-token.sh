@@ -38,6 +38,10 @@ set -euo pipefail
 CTID="${PICKLE_APP_CTID:-101}"
 DB="${PICKLE_DB:-pickle_dev}"
 TUNNEL_CTID="${PICKLE_TUNNEL_CTID:-102}"
+# shellcheck source=scripts/lib/ct.sh
+. "$(dirname "$0")/lib/ct.sh"
+require_ct "$CTID" pickle-app
+require_ct "$TUNNEL_CTID" pickle-sshgw
 RELAY_NAME="${PICKLE_RELAY_NAME:-lightsail-1}"
 VAULT="${VAULT:-/path/to/secrets-vault}"
 SSH_KEY="${PICKLE_RELAY_SSH_KEY:-$VAULT/lightsail-ssh.pem}"
@@ -93,6 +97,10 @@ relay_ssh "sudo test -f $RELAY_ENV" || {
   exit 1
 }
 before=$(relay_ssh "sudo grep -c . $RELAY_ENV")
+# Counted without any token line, so the check after the install holds whether
+# or not this relay was ever paired before.
+before_nontoken=$(relay_ssh "sudo sh -c 'grep -c . $RELAY_ENV | cat
+grep -c \"^PICKLE_RELAY_SYNC_TOKEN=\" $RELAY_ENV || true'" | { read -r a; read -r b; echo $((a - b)); })
 echo "  environment file present, $before lines"
 
 echo "== authenticate as a system administrator"
@@ -154,19 +162,57 @@ echo "== install it on the relay"
 # created at its final mode, so there is never a window where a world-readable
 # copy of the token exists, and the value arrives on stdin rather than in the
 # command line of any process on the relay.
-relay_ssh "set +o history
+#
+# Every step of the remote half has to fail loudly, because the failure that
+# matters is silent: ssh runs this in a plain shell with no `set -e`, so a grep
+# that reads nothing or a token that never arrives used to leave a file holding
+# one line and no shaping variables at all — which is the exact state the header
+# of this script says it refuses to create. The agent then failed closed at the
+# restart two lines later. So the remote script sets its own -e, proves the
+# token arrived intact, and counts the lines it carried over before it is
+# allowed to overwrite anything.
+remote_install=$(cat <<'REMOTE'
+set -eu
+set +o history
 umask 077
-tmp=\$(mktemp)
-sudo grep -v '^PICKLE_RELAY_SYNC_TOKEN=' $RELAY_ENV > \$tmp
+
 read -r tok
-printf 'PICKLE_RELAY_SYNC_TOKEN=%s\n' \"\$tok\" >> \$tmp
-sudo install -m 640 -o root -g root \$tmp $RELAY_ENV
-rm -f \$tmp
-sudo systemctl restart relay-agent" <<<"$TOKEN"
+case "$tok" in
+  *[!0-9a-f]* | "") echo "  the token did not arrive intact" >&2; exit 1 ;;
+esac
+[ "${#tok}" -eq 64 ] || { echo "  token arrived as ${#tok} characters" >&2; exit 1; }
+
+# How many lines have to survive. grep -c prints 0 and exits 1 when there are
+# none, which is not an error here.
+had=$(sudo grep -cv '^PICKLE_RELAY_SYNC_TOKEN=' "$ENV_FILE" || true)
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+# Exit 1 means it kept nothing — legitimate for a file that held only a token.
+sudo grep -v '^PICKLE_RELAY_SYNC_TOKEN=' "$ENV_FILE" > "$tmp" || [ $? -eq 1 ]
+kept=$(wc -l < "$tmp")
+[ "$kept" -eq "$had" ] || {
+  echo "  carried over $kept of $had lines; refusing to overwrite $ENV_FILE" >&2
+  exit 1
+}
+
+printf 'PICKLE_RELAY_SYNC_TOKEN=%s\n' "$tok" >> "$tmp"
+sudo install -m 640 -o root -g root "$tmp" "$ENV_FILE"
+sudo systemctl restart relay-agent
+REMOTE
+)
+relay_ssh "ENV_FILE=$RELAY_ENV
+$remote_install" <<<"$TOKEN"
 unset TOKEN
-after=$(relay_ssh "sudo grep -c . $RELAY_ENV")
-echo "  environment file rewritten, $before lines before, $after after"
-[ "$after" -eq "$before" ] || echo "  WARNING: line count changed, inspect the file" >&2
+# The file now holds the lines it had, minus any token line it already carried,
+# plus exactly one. Counting non-empty lines against that is the only reading
+# that is right both on a re-issue and on the first install.
+read -r after tokens <<<"$(relay_ssh "sudo sh -c 'grep -c . $RELAY_ENV || true
+grep -c \"^PICKLE_RELAY_SYNC_TOKEN=\" $RELAY_ENV || true'" | tr '\n' ' ')"
+want=$((before_nontoken + 1))
+echo "  environment file rewritten, $after non-empty lines (expected $want)"
+[ "$tokens" -eq 1 ] || { echo "  $tokens token lines in $RELAY_ENV, expected 1" >&2; exit 1; }
+[ "$after" -eq "$want" ] || { echo "  expected $want non-empty lines, found $after" >&2; exit 1; }
 
 echo "== verify"
 # The journal is the wrong place to look: the agent logs 'applied' only when a
