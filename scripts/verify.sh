@@ -12,6 +12,15 @@ shellcheck "${scripts[@]}"
 hygiene_selftest
 hygiene_check infra
 
+# This tree is a sanitized copy, and the way it stops being one is that a value
+# from the original arrives with a mirrored change. Once that happens the two
+# trees agree and no comparison between them can notice, so the check runs from
+# this side and asks only what this side can answer.
+# shellcheck source=scripts/sanitization-check.sh
+. scripts/sanitization-check.sh
+sanitization_selftest
+sanitization_check
+
 # Scheduled units must not depend on a script's execute bit. Cron entries did,
 # and because two of the scripts are committed non-executable every backup and
 # health run died at exec for ten days with the error going nowhere. A unit that
