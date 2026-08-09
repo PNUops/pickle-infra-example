@@ -15,7 +15,13 @@
 #
 # The script is duplicated per repo on purpose: a shared copy would have to live
 # somewhere central, and pointing at it from a published repo is itself the kind
-# of cross-reference these rules forbid. Keep the five copies identical.
+# of cross-reference these rules forbid.
+#
+# Every copy must be byte-identical. Once they were not: they drifted for twelve
+# days into several generations at once, and the rules added most recently — the
+# ones written because a whole class of violation was getting through — were
+# present in some copies and missing from others. Editing one copy without the
+# rest is how that happens.
 #
 # Usage: hygiene_check public   # this repo is published
 #        hygiene_check infra    # private-but-shared: may name vault paths
@@ -173,7 +179,7 @@ hygiene_check() {
   if ! raw=$(hygiene_scan -HnI "(\.\./docs|(^|[^a-z])docs/)"); then rc=1; raw=""; fi
   hits=$(printf '%s' "$raw" | hygiene_match "(\.\./docs|(^|[^a-z])docs/)" || true)
   if [ -n "$hits" ]; then
-    echo "hygiene: reference to the documentation repository:" >&2
+    echo "hygiene: reference to a documentation path this repository does not contain:" >&2
     echo "$hits" >&2
     rc=1
   fi

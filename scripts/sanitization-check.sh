@@ -67,14 +67,22 @@ sanitization_check() {
     [ "$count" -gt 0 ] || sfail "README promises $addr but nothing in the tree uses it"
   done
 
-  # 3. The administrative SSH port is one of the substituted facts, so the
-  # variables that carry it must show the standard value. Their defaults are
-  # where the original's value arrives when a change is mirrored line by line.
+  # 3. The administrative SSH port is one of the substituted facts. Checking the
+  # variable defaults alone missed the places that write the port as a literal —
+  # a runbook table, a sentence in prose — which is exactly where a mirrored
+  # change deposits it. Both forms are checked, and by the same reasoning as the
+  # addresses: this file cannot name the value it is looking for, so it names
+  # the only value allowed to appear.
   while IFS= read -r line; do
     sfail "an administrative SSH port default is not the standard value: $line"
   done < <(git ls-files -z \
     | xargs -0 grep -EnI '(RELAY_SSH_PORT|SSH_PORT)="?\$\{[A-Z_]+:-[0-9]+\}' 2>/dev/null \
     | grep -vE ':-22\}')
+  while IFS= read -r line; do
+    sfail "an administrative SSH port is written out as something other than the standard one: $line"
+  done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$' \
+    | xargs -0 grep -EnI '(admin(istrative)? ssh[^0-9]{0,24}|_SSH_PORT[^0-9]{0,8})[`:]?[0-9]+' 2>/dev/null \
+    | grep -viE '(admin(istrative)? ssh[^0-9]{0,24}|_SSH_PORT[^0-9]{0,8})[`:]?22([^0-9]|$)')
 
   [ "$SANITIZE_FAIL" -eq 0 ] || return 1
   echo "sanitization OK"
