@@ -26,6 +26,21 @@ set -euo pipefail
 SANITIZE_FAIL=0
 sfail() { echo "sanitization: $1" >&2; SANITIZE_FAIL=1; }
 
+# is_ipv6 CANDIDATE → 0 when a colon-separated token is an address at all.
+# Colons are common punctuation: 22:30:15 is a time and 2c:54:91:ab:cd:ef is a
+# hardware address, and both begin with the hex digits that the global-unicast
+# rule refuses. Without this the check called a log timestamp a public address —
+# a false statement in the message of a gate, which is worse than a miss. An
+# address either carries the :: that stands for omitted groups, or writes all
+# eight groups out; a time has three groups and a hardware address six, neither
+# with ::.
+is_ipv6() {
+  case "$1" in
+    *::*) return 0 ;;
+  esac
+  [ "$(printf '%s' "$1" | tr -cd ':' | wc -c)" -eq 7 ]
+}
+
 # addr6_allowed ADDRESS → 0 when an IPv6 address may appear in this tree.
 # There is none here today, which is exactly why the rule is written now: the
 # first one to arrive would arrive unexamined. Addresses are extracted in their
@@ -83,6 +98,7 @@ sanitization_check() {
     [ -n "$line" ] || continue
     file=${line%%:*}
     addr=${line#*:}
+    is_ipv6 "$addr" || continue
     addr6_allowed "$addr" && continue
     sfail "$file carries $addr, which is a global IPv6 address rather than a documentation range"
   done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$' \
@@ -134,6 +150,19 @@ sanitization_selftest() {
   for probe in 203.0.113.20 198.18.1.10 100.64.0.2 127.0.0.1; do
     if ! addr_allowed "$probe"; then
       echo "sanitization selftest: $probe would be rejected" >&2
+      return 1
+    fi
+  done
+  # Punctuation that is not an address at all.
+  for probe in 22:30:15 23:59:59 2c:54:91:ab:cd:ef 3a:1b:2c:3d:4e:5f 12:34:56; do
+    if is_ipv6 "$probe"; then
+      echo "sanitization selftest: $probe would be read as an address" >&2
+      return 1
+    fi
+  done
+  for probe in 2606:4700:4700::1111 2606::1 2001:db8::1 2606:4700:4700:1111:2222:3333:4444:5555; do
+    if ! is_ipv6 "$probe"; then
+      echo "sanitization selftest: $probe would not be read as an address" >&2
       return 1
     fi
   done
