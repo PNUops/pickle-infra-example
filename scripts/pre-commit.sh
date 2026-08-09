@@ -9,15 +9,27 @@ set -euo pipefail
 # Regexes tuned for near-zero false positives. A bare "PVEAPIToken=" placeholder
 # and angle-bracket placeholders like <relay-wg-private-key> never match — only
 # real secret shapes do.
+# Keep this list identical to the one the verification gate applies. They were
+# allowed to differ once, and the weaker of the two was the one every commit
+# made on a developer's machine passed through; a shape added here and not there
+# now fails a verification run.
 patterns=(
-  -e 'BEGIN (RSA|EC|OPENSSH|DSA) PRIVATE KEY'
+  # Any PEM private key, whatever the type word and however it is spaced. The
+  # earlier form named four types and one space, so a PKCS#8 key (BEGIN PRIVATE
+  # KEY) and a key written with two spaces both went through.
+  -e 'BEGIN[[:space:]]+([A-Z0-9]+[[:space:]]+)*PRIVATE[[:space:]]+KEY'
   # Proxmox API token WITH a real uuid secret (bare literal placeholder allowed).
   -e 'PVEAPIToken=[^ =]+![^ =]+=[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-  -e 'ghp_[A-Za-z0-9]{36}'
+  -e 'gh[pousr]_[A-Za-z0-9]{36}'
+  -e 'github_pat_[A-Za-z0-9_]{60,}'
   -e 'AKIA[0-9A-Z]{16}'
+  -e 'xox[baprs]-[A-Za-z0-9-]{10,}'
+  -e 'AIza[0-9A-Za-z_-]{35}'
   # WireGuard / preshared key: a 32-byte value is 43 base64 chars + '=' on a
   # PrivateKey/PresharedKey line (covers wg0.conf secrets; placeholders excluded).
   -e '(PrivateKey|PresharedKey)[[:space:]]*=[[:space:]]*[A-Za-z0-9+/]{43}='
+  # A 64-hex value on a line that says what it is.
+  -e '(token|secret|password|passwd|apikey|api_key)["'"'"':= ]{1,8}[0-9a-f]{64}'
 )
 
 mapfile -t files < <(git diff --cached --name-only --diff-filter=ACM)
