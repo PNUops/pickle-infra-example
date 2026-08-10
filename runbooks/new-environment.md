@@ -170,9 +170,11 @@ provisioning call answers 403.
 ```sh
 # 4a. the role. Every privilege the platform actually holds, and no more —
 #     measured, not copied: the live role carried three more that were removed
-#     and every path still passed, so they are not here.
+#     and every path still passed, so they are not here. Datastore.Audit came
+#     back on 2026-08-10: the console's storage-capacity surface reads
+#     GET /nodes/{n}/storage, which that privilege alone answers.
 pveum role add PickleProvisioner --privs \
-  "Datastore.AllocateSpace,SDN.Use,Sys.Audit,\
+  "Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit,\
 VM.Allocate,VM.Audit,VM.Clone,VM.Config.CPU,VM.Config.Cloudinit,\
 VM.Config.Disk,VM.Config.Memory,VM.Config.Network,VM.Config.Options,\
 VM.GuestAgent.Unrestricted,VM.PowerMgmt"
@@ -196,15 +198,17 @@ pveum user token add pickle@pve pickle-api --privsep 0 --output-format json \
   > /root/pickle-api-token.json
 ```
 
-This list is 14, and the host it was taken from had 17. The three that are
-absent — `VM.Console`, `VM.GuestAgent.Audit`, `Datastore.Audit` — were removed
-from the live role on 2026-08-07 and provisioning (39/39), the web terminal, the
-SSH gateway and the node capacity measurement all still passed, so they are
-accumulated rather than required. The console privilege is the clearest case:
-nothing in the platform opens a Proxmox console any more, because the web
-terminal reaches guests over SSH.
+This list is 15. The 2026-08-07 measurement started from a live role of 17 and
+removed three — `VM.Console`, `VM.GuestAgent.Audit`, `Datastore.Audit` — after
+provisioning (39/39), the web terminal, the SSH gateway and the node capacity
+measurement all passed without them. Two stay removed; `Datastore.Audit`
+returned on 2026-08-10 because the storage-capacity surface added a call
+(`GET /nodes/{n}/storage`) that genuinely needs it — the re-grant follows the
+same doctrine, matching the calls the platform makes rather than accumulating.
+The console privilege is the clearest removal: nothing in the platform opens a
+Proxmox console any more, because the web terminal reaches guests over SSH.
 
-Two of the fourteen are worth naming because they are easy to trim and expensive
+Two of the fifteen are worth naming because they are easy to trim and expensive
 to miss. **`VM.GuestAgent.Unrestricted`** is what lets provisioning read the guest's
 host keys through the agent; without it the pipeline parks every VM at the
 host-key step. **`SDN.Use`** covers the bridge the guest NIC attaches to.
