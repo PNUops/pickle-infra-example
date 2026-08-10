@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Whole-system READ-ONLY health snapshot for pickle: pve-node host (root fs, LVM
-# thin pool, VG headroom, load), the platform LXC containers (running state for
-# the three named below; rootfs allocation for every container the host reports),
+# thin pool, VG headroom, load), every LXC container the host reports (running
+# state and rootfs allocation both),
 # pickle-api + console, PostgreSQL, JobRunr recurring jobs, proxy-agent, the SSH
 # gateway + WireGuard tunnel, TLS cert, DB backups, and the dev domain end-to-end.
 #
@@ -24,6 +24,16 @@ VGFREE_WARN_G="${VGFREE_WARN_G:-8}"                           # VG free GiB (lve
 # than hardcoded because the environment runbook builds hosts whose storage may
 # differ; the VG follows the pool unless it too is overridden.
 THINPOOL_LV="${THINPOOL_LV:-pve/data}"
+# The value has to be `vg/lv`: the VG is derived from it, and a name that is
+# only a VG makes lvs answer with every volume in the group — the read below
+# would take the first row and report some other volume's figures as the pool's.
+# Say so here, naming the variable, rather than three rows down blaming LVM.
+case "$THINPOOL_LV" in
+  */*/*|/*|*/) echo "THINPOOL_LV='$THINPOOL_LV' must be vg/lv" >&2; exit 2 ;;
+  */*) : ;;
+  *) echo "THINPOOL_LV='$THINPOOL_LV' must be vg/lv (a volume group alone is not enough)" >&2
+     exit 2 ;;
+esac
 THINPOOL_VG="${THINPOOL_VG:-${THINPOOL_LV%%/*}}"
 LVM_TIMEOUT="${LVM_TIMEOUT:-10}"                              # seconds per lvs/vgs query
 LOAD_WARN="${LOAD_WARN:-40}"                                  # 1m loadavg (40 threads)
@@ -66,7 +76,10 @@ pex()  { timeout "$PCT_TIMEOUT" pct exec "$1" -- "${@:2}"; }
 # mapper suspends its volumes and LVM commands block indefinitely: unbounded,
 # the checks written to report pool exhaustion would hang at exactly the moment
 # they are needed and the snapshot would never print.
-lvmq() { timeout "$LVM_TIMEOUT" "$@"; }
+# SIGKILL follows two seconds later: a command blocked in the kernel on a
+# suspended device does not necessarily act on SIGTERM, and then a plain
+# timeout would still hold the snapshot open.
+lvmq() { timeout -k 2 "$LVM_TIMEOUT" "$@"; }
 # psqv <sql> — run a scalar/rowset SELECT as postgres in LXC 101, tuples-only.
 psqv() { timeout "$PCT_TIMEOUT" pct exec 101 -- su - postgres -c "psql -d pickle_dev -tAc \"$1\"" 2>/dev/null; }
 
@@ -85,9 +98,17 @@ else rec "host:disk" OK "root ${used}%"; fi
 # so each gets its own row. Values are decimals — compare via awk (host:load
 # pattern); a failed read is FAIL, not a skip: an unwatched pool is the exact
 # blind spot this check exists to close.
-read -r tp_data tp_meta < <(lvmq lvs --noheadings -o data_percent,metadata_percent "$THINPOOL_LV" 2>/dev/null | awk '{gsub(/,/,"."); print $1, $2}')
-if [ -z "${tp_data:-}" ] || [ -z "${tp_meta:-}" ]; then
-  rec "host:thinpool" FAIL "cannot read $THINPOOL_LV — thin pool unwatched"
+tp_rows=$(lvmq lvs --noheadings -o data_percent,metadata_percent "$THINPOOL_LV" 2>/dev/null \
+          | awk 'NF {gsub(/,/,"."); print $1, $2}')
+tp_count=$(printf '%s' "$tp_rows" | grep -c . || true)
+read -r tp_data tp_meta <<<"$tp_rows"
+if [ "${tp_count:-0}" != 1 ]; then
+  # Exactly one volume has to answer. Zero means the read failed; more than one
+  # means the name does not identify a single pool, and taking the first row
+  # would report some other volume's fullness as the guest pool's.
+  rec "host:thinpool" FAIL "$THINPOOL_LV did not resolve to one volume (${tp_count:-0} rows) — thin pool unwatched"
+elif [ -z "${tp_data:-}" ] || [ -z "${tp_meta:-}" ]; then
+  rec "host:thinpool" FAIL "$THINPOOL_LV carries no thin figures — not a thin pool?"
 else
   for ax in data meta; do
     v=$tp_data; [ "$ax" = meta ] && v=$tp_meta
@@ -113,15 +134,21 @@ if awk -v l="$load1" -v m="$LOAD_WARN" 'BEGIN{exit !(l>m)}'; then
 else rec "host:load" OK "1m=${load1}"; fi
 
 # ---- 2. containers running --------------------------------------------------
-while read -r id nm; do
-  st=$(timeout "$PCT_TIMEOUT" pct status "$id" 2>/dev/null | awk '{print $2}')
-  if [ "$st" = running ]; then rec "lxc:${id}(${nm})" OK "running"
-  else rec "lxc:${id}(${nm})" FAIL "status=${st:-unknown}"; fi
-done <<'EOF'
-100 reverse-proxy
-101 pickle-app
-102 sshgw
-EOF
+# Enumerated from the host rather than from a list kept here: a fixed list
+# silently stops covering the container somebody adds next, which is exactly
+# what happened — the gateway container ran unwatched while the report looked
+# complete because its rootfs row was there and its running row was not.
+ct_ok=1
+ct_rows=$(timeout "$PCT_TIMEOUT" pct list 2>/dev/null | awk 'NR>1 && NF {print $1, $2, $3}') || ct_ok=0
+if [ "$ct_ok" = 0 ] || [ -z "$ct_rows" ]; then
+  rec "lxc:list" FAIL "cannot list containers — no container is being watched"
+else
+  while read -r id st nm; do
+    [ -n "$id" ] || continue
+    if [ "$st" = running ]; then rec "lxc:${id}(${nm:-?})" OK "running"
+    else rec "lxc:${id}(${nm:-?})" FAIL "status=${st:-unknown}"; fi
+  done <<<"$ct_rows"
+fi
 
 # Container rootfs usage, read from the host's thin-LV allocation: no guest
 # exec needed, and thin alloc% >= filesystem use% (space freed in the guest
@@ -134,31 +161,40 @@ EOF
 # missing: a loop that yields nothing would print a green report while every
 # container's disk went unwatched — the same silent-deletion shape the terminal
 # bridge block further down was rewritten to remove.
-ct_ok=1; lv_ok=1
-ct_ids=$(timeout "$PCT_TIMEOUT" pct list 2>/dev/null | awk 'NR>1{print $1}') || ct_ok=0
+lv_ok=1
 lv_rows=$(lvmq lvs --noheadings -o lv_name,data_percent "$THINPOOL_VG" 2>/dev/null) || lv_ok=0
-if [ "$ct_ok" = 0 ]; then
+if [ "$ct_ok" = 0 ] || [ -z "$ct_rows" ]; then
   rec "lxc:rootfs" FAIL "cannot list containers — rootfs usage unwatched"
 elif [ "$lv_ok" = 0 ]; then
-  rec "lxc:rootfs" FAIL "cannot read VG $THINPOOL_VG — rootfs usage unwatched"
-elif [ -z "$ct_ids" ]; then
-  rec "lxc:rootfs" WARN "no containers reported"
+  rec "lxc:rootfs" FAIL "cannot read VG $THINPOOL_VG (the same read the row above reports) — rootfs usage unwatched"
 else
-  while read -r ctid; do
+  while read -r ctid _ _; do
     [ -n "$ctid" ] || continue
-    # Three answers, not two: a number, "the volume exists but carries no thin
-    # figure" (plain-LVM storage, which nothing here can measure), and "no such
-    # volume". Folding the middle case into a number reported a permanent
-    # 0.0% OK for a container whose fill nobody was watching.
+    # A measurable volume must not hide an unmeasurable sibling: a container can
+    # hold several volumes, and reporting only the worst number would leave a
+    # plain-LVM volume filling to 100% behind a healthy-looking figure. So the
+    # verdict carries both parts — the highest allocation seen, and whether any
+    # volume could not be measured at all.
     worst=$(printf '%s\n' "$lv_rows" | awk -v p="vm-${ctid}-disk-" '
       {gsub(/,/,".")}
-      index($1,p)==1 { seen=1; if ($2 ~ /^[0-9]+(\.[0-9]+)?$/) { thin=1; if ($2+0>m) m=$2+0 } }
-      END { if (thin) printf "%.1f", m+0; else if (seen) print "no-thin-figure" }')
+      index($1,p)==1 {
+        seen=1
+        if ($2 ~ /^[0-9]+(\.[0-9]+)?$/) { thin=1; if ($2+0>m) m=$2+0 } else { opaque=1 }
+      }
+      END {
+        if (thin && opaque) printf "%.1f partial", m+0
+        else if (thin) printf "%.1f", m+0
+        else if (seen) print "no-thin-figure"
+      }')
     case "${worst:-}" in
       '')
         rec "lxc:${ctid}-rootfs" WARN "no volume named vm-${ctid}-disk-* in $THINPOOL_VG" ;;
       no-thin-figure)
         rec "lxc:${ctid}-rootfs" WARN "volume is not thin-provisioned — allocation unmeasurable" ;;
+      *" partial")
+        # Report the number that is known and the fact that it is not the whole
+        # story, at WARN even when the measured part is comfortable.
+        rec "lxc:${ctid}-rootfs" WARN "thin alloc ${worst%% *}% on some volumes; another volume is unmeasurable" ;;
       *)
         if awk -v x="$worst" -v m="$LXC_DISK_FAIL" 'BEGIN{exit !(x>=m)}'; then
           rec "lxc:${ctid}-rootfs" FAIL "thin alloc ${worst}% >= ${LXC_DISK_FAIL}%"
@@ -166,7 +202,7 @@ else
           rec "lxc:${ctid}-rootfs" WARN "thin alloc ${worst}%"
         else rec "lxc:${ctid}-rootfs" OK "thin alloc ${worst}%"; fi ;;
     esac
-  done <<<"$ct_ids"
+  done <<<"$ct_rows"
 fi
 
 # ---- 3. api health ----------------------------------------------------------

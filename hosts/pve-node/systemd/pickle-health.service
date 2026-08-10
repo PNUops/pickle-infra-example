@@ -16,3 +16,9 @@ ExecStartPost=/bin/rm -f /var/lib/pickle-ops/unit-failure-%n.fail
 # it; treating it as a unit failure would raise a second, redundant alarm on
 # every ordinary red check. Only an exec or crash failure reaches OnFailure.
 SuccessExitStatus=1
+# A oneshot has no start timeout by default, so a probe that hangs despite its
+# own bound (an LVM command stuck on a suspended device, pct waiting on a wedged
+# cluster filesystem) would keep this unit active forever and every later
+# timer firing would be skipped as already-running. Ten minutes is far above a
+# healthy run (seconds) and far below "nobody notices for a day".
+TimeoutStartSec=600

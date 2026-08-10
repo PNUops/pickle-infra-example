@@ -280,8 +280,13 @@ storage_status=$(pvesh get "/nodes/$NODE/storage" --output-format json 2>/dev/nu
 # measurement here is likewise pinned to one source.
 disk_entries=$(jq -r --arg s "$NODE_STORAGE" '[.[] | select(.storage == $s)] | length' \
   <<<"$storage_status")
-[ "$disk_entries" = 1 ] || die "node storage status returned ${disk_entries} entries for
-                '$NODE_STORAGE' — exactly one is expected, so the measured capacity is ambiguous"
+case "$disk_entries" in
+  1) : ;;
+  0) die "node storage status has no entry for '$NODE_STORAGE' — the node does not
+                present that storage, so there is nothing to measure" ;;
+  *) die "node storage status returned ${disk_entries} entries for '$NODE_STORAGE' —
+                exactly one is expected, so the measured capacity is ambiguous" ;;
+esac
 DISK_BYTES=$(jq -r --arg s "$NODE_STORAGE" \
   'first(.[] | select(.storage == $s) | .total) // empty' <<<"$storage_status")
 [ -n "$DISK_BYTES" ] || die "storage '$NODE_STORAGE' has no total in the node storage status"
