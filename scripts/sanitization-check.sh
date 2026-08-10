@@ -64,12 +64,14 @@ addr6_allowed() {
 # addr_allowed ADDRESS → 0 when the address may appear in this tree.
 addr_allowed() {
   case "$1" in
-    # RFC 5737 documentation ranges — every substituted address lands here.
+    # RFC 5737 documentation ranges — the public-facing substitutes.
     192.0.2.* | 198.51.100.* | 203.0.113.*) return 0 ;;
-    # Private addressing kept on purpose (RFC 1918).
-    10.*) return 0 ;;
-    192.168.*) return 0 ;;
-    172.1[6-9].* | 172.2[0-9].* | 172.3[01].*) return 0 ;;
+    # RFC 2544 benchmarking space stands in for the internal bridges and RFC
+    # 6598 shared space for the tunnel. Private addressing does NOT pass: this
+    # tree used to allow RFC 1918 wholesale, which made a substituted address
+    # and a real one indistinguishable to the one check meant to tell them apart.
+    198.18.* | 198.19.*) return 0 ;;
+    100.64.0.*) return 0 ;;
     # Loopback, unspecified, broadcast, and the public resolver used in examples.
     127.* | 0.0.0.0 | 255.255.255.* | 8.8.8.8 | 8.8.4.4) return 0 ;;
   esac
@@ -87,10 +89,14 @@ sanitization_check() {
     addr=${line#*:}
     addr_allowed "$addr" && continue
     sfail "$file carries $addr, which is neither a documentation range nor private addressing"
-    # This file is the one place synthetic routable addresses belong: its
-    # selftest needs values the rule must reject, so scanning itself would
-    # report its own probes and the real finding would arrive buried in them.
+    # Two files are skipped, both because they are made of samples the rules
+    # exist to reject. This one's selftest needs values the address rule must
+    # refuse, so scanning itself would bury a real finding among its own probes.
+    # hygiene.sh is the shared publication scanner, byte-identical across every
+    # repository, so its samples cannot be rewritten to suit this tree alone —
+    # and they are synthetic already, which is the property that matters.
   done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$' \
+    | grep -zv '^scripts/hygiene\.sh$' \
     | xargs -0 grep -EoI '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 2>/dev/null | sort -u)
 
   # 1b. The same question for IPv6.
@@ -147,9 +153,18 @@ sanitization_selftest() {
       return 1
     fi
   done
-  for probe in 203.0.113.20 198.18.1.10 100.64.0.2 127.0.0.1; do
+  for probe in 203.0.113.20 198.18.9.9 100.64.0.9 127.0.0.1; do
     if ! addr_allowed "$probe"; then
       echo "sanitization selftest: $probe would be rejected" >&2
+      return 1
+    fi
+  done
+  # Private addressing is rejected now. These probes are synthetic on purpose:
+  # writing the addresses this tree actually substituted would publish the very
+  # layout the substitution removed.
+  for probe in 10.99.99.99 172.31.99.99 192.168.99.99; do
+    if addr_allowed "$probe"; then
+      echo "sanitization selftest: $probe would be accepted" >&2
       return 1
     fi
   done
