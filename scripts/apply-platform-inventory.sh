@@ -266,6 +266,19 @@ if ! { [ -n "$CPU_THREADS" ] && [ -n "$MEM_BYTES" ]; }; then
   die "node status for '$NODE' carried no cpu/memory figures"
 fi
 MEASURED_MEMORY_MB=$(( MEM_BYTES / 1048576 ))
+# Disk capacity comes from the storage status of the SAME storage entry the
+# node row registers for clones — the identical number the api reads live via
+# GET /nodes/{n}/storage, so the stored figure and the live figure can never
+# disagree about what they measure. For an lvmthin storage this is the pool's
+# real size; guests over-provision against it, so the column is an advisory
+# denominator, not a physical guarantee. Stored in GiB to match vms.disk_gb.
+storage_status=$(pvesh get "/nodes/$NODE/storage" --output-format json 2>/dev/null) \
+  || die "could not read storage status for '$NODE'"
+DISK_BYTES=$(jq -r --arg s "$NODE_STORAGE" \
+  '.[] | select(.storage == $s) | .total // empty' <<<"$storage_status")
+[ -n "$DISK_BYTES" ] || die "storage '$NODE_STORAGE' has no total in the node storage status"
+DISK_CAPACITY_GB=$(( DISK_BYTES / 1073741824 ))
+[ "$DISK_CAPACITY_GB" -gt 0 ] || die "storage '$NODE_STORAGE' measured ${DISK_BYTES} bytes"
 # The registered figure is the measured total minus an optional reserve. The
 # admission filter counts guest intent only, so nothing in it accounts for the
 # host's own footprint and the infrastructure containers sharing this RAM; the
@@ -274,7 +287,7 @@ MEASURED_MEMORY_MB=$(( MEM_BYTES / 1048576 ))
 MEMORY_MB=$(( MEASURED_MEMORY_MB - MEMORY_RESERVE_MB ))
 [ "$MEMORY_MB" -gt 0 ] || die "memory reserve ${MEMORY_RESERVE_MB}MB leaves no capacity
                 (measured ${MEASURED_MEMORY_MB}MB)"
-echo "  measured on $NODE: $CPU_THREADS threads, ${MEASURED_MEMORY_MB}MB memory"
+echo "  measured on $NODE: $CPU_THREADS threads, ${MEASURED_MEMORY_MB}MB memory, ${DISK_CAPACITY_GB}GiB pool ($NODE_STORAGE)"
 [ "$MEMORY_RESERVE_MB" -eq 0 ] \
   || echo "  registering ${MEMORY_MB}MB (reserve ${MEMORY_RESERVE_MB}MB withheld)"
 
@@ -315,6 +328,14 @@ missing=$(pgq "
                       where table_schema = 'public' and table_name = w.t);")
 [ -z "$missing" ] || die "database $DB has no $missing table — start the api once so the
                 migrations run, then re-run this"
+# The disk column arrived later than the tables (V76); an older database would
+# make every statement below fail four writes deep, so say so plainly here.
+has_disk_col=$(pgq "
+  select count(*) from information_schema.columns
+   where table_schema = 'public' and table_name = 'nodes'
+     and column_name = 'disk_capacity_gb';")
+[ "$has_disk_col" = "1" ] || die "nodes has no disk_capacity_gb column — deploy an api that
+                carries migration V76 first, then re-run this"
 
 # Configuration shapes are checked by the types that will store them, and the
 # relationships the shapes alone cannot show are checked here: the gateway must
@@ -438,15 +459,16 @@ if ! result=$(pgtx "
   returning id as pool_id, (xmax = 0)::text as pool_new
   \gset
 
-  insert into nodes (name, api_host, cpu_threads, memory_mb, vm_bridge, storage, ip_pool_id)
+  insert into nodes (name, api_host, cpu_threads, memory_mb, disk_capacity_gb,
+                     vm_bridge, storage, ip_pool_id)
   values ('$(sql_escape "$NODE")', '$(sql_escape "$NODE_API_HOST")',
-          $CPU_THREADS, $MEMORY_MB, '$(sql_escape "$NODE_BRIDGE")',
+          $CPU_THREADS, $MEMORY_MB, $DISK_CAPACITY_GB, '$(sql_escape "$NODE_BRIDGE")',
           '$(sql_escape "$NODE_STORAGE")', :pool_id)
   on conflict (name) do update
      set api_host = excluded.api_host, cpu_threads = excluded.cpu_threads,
-         memory_mb = excluded.memory_mb, vm_bridge = excluded.vm_bridge,
-         storage = excluded.storage, ip_pool_id = excluded.ip_pool_id,
-         updated_at = now()
+         memory_mb = excluded.memory_mb, disk_capacity_gb = excluded.disk_capacity_gb,
+         vm_bridge = excluded.vm_bridge, storage = excluded.storage,
+         ip_pool_id = excluded.ip_pool_id, updated_at = now()
   returning id as node_id, (xmax = 0)::text as node_new, status::text as node_state
   \gset
 
@@ -533,11 +555,14 @@ pgshow "
   select n.name, n.status, n.api_host, n.vm_bridge, n.storage,
          n.cpu_threads as threads_stored, $CPU_THREADS as threads_measured,
          n.memory_mb as memory_stored, $MEASURED_MEMORY_MB as memory_measured,
+         n.disk_capacity_gb as disk_stored, $DISK_CAPACITY_GB as disk_measured,
          coalesce(v.vcpu, 0) as vcpu_granted,
          coalesce(v.memory_mb, 0) as memory_granted,
-         n.memory_mb - coalesce(v.memory_mb, 0) as memory_free
+         n.memory_mb - coalesce(v.memory_mb, 0) as memory_free,
+         coalesce(v.disk_gb, 0) as disk_granted
     from nodes n
-    left join (select node_id, sum(vcpu) as vcpu, sum(memory_mb) as memory_mb
+    left join (select node_id, sum(vcpu) as vcpu, sum(memory_mb) as memory_mb,
+                      sum(disk_gb) as disk_gb
                  from vms where deleted_at is null and status <> 'DELETED'
                 group by node_id) v on v.node_id = n.id
    where n.id = $NODE_ID;"
@@ -575,11 +600,12 @@ check() { # check LABEL ACTUAL EXPECTED
   if [ "$2" = "$3" ]; then echo "  OK   $1 = $2"
   else echo "  FAIL $1 = $2 (expected $3)"; vfail=$((vfail + 1)); fi
 }
-row=$(pgq "select cpu_threads, memory_mb, ip_pool_id, api_host, vm_bridge, storage
+row=$(pgq "select cpu_threads, memory_mb, disk_capacity_gb, ip_pool_id, api_host, vm_bridge, storage
              from nodes where id = $NODE_ID;")
-IFS='|' read -r s_threads s_memory s_pool s_api s_bridge s_storage <<<"$row"
+IFS='|' read -r s_threads s_memory s_disk s_pool s_api s_bridge s_storage <<<"$row"
 check "node threads (measured)" "$s_threads" "$CPU_THREADS"
 check "node memory  (registered)" "$s_memory" "$MEMORY_MB"
+check "node disk    (measured)" "$s_disk" "$DISK_CAPACITY_GB"
 check "node pool link" "$s_pool" "$POOL_ID"
 check "node api host" "$s_api" "$NODE_API_HOST"
 check "node bridge" "$s_bridge" "$NODE_BRIDGE"
