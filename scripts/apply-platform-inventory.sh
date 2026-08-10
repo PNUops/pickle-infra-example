@@ -274,8 +274,16 @@ MEASURED_MEMORY_MB=$(( MEM_BYTES / 1048576 ))
 # denominator, not a physical guarantee. Stored in GiB to match vms.disk_gb.
 storage_status=$(pvesh get "/nodes/$NODE/storage" --output-format json 2>/dev/null) \
   || die "could not read storage status for '$NODE'"
+# Exactly one entry has to answer, checked before the value is read: two lines
+# out of jq would flow into the arithmetic below as a single string and either
+# abort the run mid-transaction or register a nonsense capacity. Every other
+# measurement here is likewise pinned to one source.
+disk_entries=$(jq -r --arg s "$NODE_STORAGE" '[.[] | select(.storage == $s)] | length' \
+  <<<"$storage_status")
+[ "$disk_entries" = 1 ] || die "node storage status returned ${disk_entries} entries for
+                '$NODE_STORAGE' — exactly one is expected, so the measured capacity is ambiguous"
 DISK_BYTES=$(jq -r --arg s "$NODE_STORAGE" \
-  '.[] | select(.storage == $s) | .total // empty' <<<"$storage_status")
+  'first(.[] | select(.storage == $s) | .total) // empty' <<<"$storage_status")
 [ -n "$DISK_BYTES" ] || die "storage '$NODE_STORAGE' has no total in the node storage status"
 DISK_CAPACITY_GB=$(( DISK_BYTES / 1073741824 ))
 [ "$DISK_CAPACITY_GB" -gt 0 ] || die "storage '$NODE_STORAGE' measured ${DISK_BYTES} bytes"
