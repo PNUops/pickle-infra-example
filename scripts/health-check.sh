@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Whole-system READ-ONLY health snapshot for pickle: pve-node host, LXC 100/101/102,
+# Whole-system READ-ONLY health snapshot for pickle: pve-node host (root fs, LVM
+# thin pool, VG headroom, load), LXC containers (running + rootfs allocation),
 # pickle-api + console, PostgreSQL, JobRunr recurring jobs, proxy-agent, the SSH
 # gateway + WireGuard tunnel, TLS cert, DB backups, and the dev domain end-to-end.
 #
@@ -15,6 +16,9 @@ export PATH="/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 # ---- thresholds (override via env) ------------------------------------------
 DISK_WARN="${DISK_WARN:-80}"; DISK_FAIL="${DISK_FAIL:-90}"   # root fs used %
+THINPOOL_WARN="${THINPOOL_WARN:-70}"; THINPOOL_FAIL="${THINPOOL_FAIL:-85}"  # pve/data data%/meta%
+LXC_DISK_WARN="${LXC_DISK_WARN:-80}"; LXC_DISK_FAIL="${LXC_DISK_FAIL:-90}"  # LXC rootfs thin-LV alloc %
+VGFREE_WARN_G="${VGFREE_WARN_G:-8}"                           # VG pve free GiB (lvextend headroom)
 LOAD_WARN="${LOAD_WARN:-40}"                                  # 1m loadavg (40 threads)
 BACKUP_MAX_HOURS="${BACKUP_MAX_HOURS:-26}"                    # nightly 04:10 + margin
 WG_HANDSHAKE_MAX="${WG_HANDSHAKE_MAX:-180}"                   # seconds since last handshake
@@ -63,6 +67,34 @@ elif [ "$used" -ge "$DISK_FAIL" ]; then rec "host:disk" FAIL "root ${used}% >= $
 elif [ "$used" -ge "$DISK_WARN" ]; then rec "host:disk" WARN "root ${used}%"
 else rec "host:disk" OK "root ${used}%"; fi
 
+# The root-fs check above sees only pve-root; every guest disk lives in the
+# pve/data thin pool, whose exhaustion turns ALL guests read-only at once.
+# data% and metadata% exhaust independently and metadata is the quieter killer,
+# so each gets its own row. Values are decimals — compare via awk (host:load
+# pattern); a failed read is FAIL, not a skip: an unwatched pool is the exact
+# blind spot this check exists to close.
+read -r tp_data tp_meta < <(lvs --noheadings -o data_percent,metadata_percent pve/data 2>/dev/null | awk '{gsub(/,/,"."); print $1, $2}')
+if [ -z "${tp_data:-}" ] || [ -z "${tp_meta:-}" ]; then
+  rec "host:thinpool" FAIL "lvs pve/data failed — thin pool unwatched"
+else
+  for ax in data meta; do
+    v=$tp_data; [ "$ax" = meta ] && v=$tp_meta
+    if awk -v x="$v" -v m="$THINPOOL_FAIL" 'BEGIN{exit !(x>=m)}'; then
+      rec "host:thinpool-${ax}" FAIL "${v}% >= ${THINPOOL_FAIL}% — pool exhaustion turns all guests read-only"
+    elif awk -v x="$v" -v m="$THINPOOL_WARN" 'BEGIN{exit !(x>=m)}'; then
+      rec "host:thinpool-${ax}" WARN "${v}% >= ${THINPOOL_WARN}%"
+    else rec "host:thinpool-${ax}" OK "${v}%"; fi
+  done
+fi
+
+# Free space left in VG pve is the only room for an emergency lvextend when the
+# pool fills — surface the margin in every snapshot so an incident responder
+# sees it without running anything.
+vgfree=$(vgs --noheadings --units g --nosuffix -o vg_free pve 2>/dev/null | awk '{gsub(/,/,"."); printf "%d", $1}')
+if [ -z "${vgfree:-}" ]; then rec "host:vg-free" WARN "vgs pve failed"
+elif [ "$vgfree" -lt "$VGFREE_WARN_G" ]; then rec "host:vg-free" WARN "${vgfree}G free (<${VGFREE_WARN_G}G) — no lvextend headroom"
+else rec "host:vg-free" OK "${vgfree}G free"; fi
+
 load1=$(cut -d' ' -f1 /proc/loadavg)
 if awk -v l="$load1" -v m="$LOAD_WARN" 'BEGIN{exit !(l>m)}'; then
   rec "host:load" WARN "1m=${load1} (>${LOAD_WARN})"
@@ -78,6 +110,25 @@ done <<'EOF'
 101 pickle-app
 102 sshgw
 EOF
+
+# Container rootfs usage, read from the host's thin-LV allocation: no guest
+# exec needed, and thin alloc% >= filesystem use% (space freed in the guest
+# stays allocated until trimmed), so the threshold fires no later than the
+# guest actually filling — errs only toward early warning. Ids come from
+# `pct list` so a new container is covered without touching this script;
+# extra volumes (vm-<id>-disk-1…) report the worst value.
+while read -r ctid; do
+  [ -n "$ctid" ] || continue
+  worst=$(lvs --noheadings -o lv_name,data_percent pve 2>/dev/null \
+          | awk -v p="vm-${ctid}-disk-" '{gsub(/,/,".")} index($1,p)==1 {f=1; if ($2+0>m) m=$2+0} END{if (f) printf "%.1f", m+0}')
+  if [ -z "${worst:-}" ]; then
+    rec "lxc:${ctid}-rootfs" WARN "no thin LV found (non-thin storage?)"
+  elif awk -v x="$worst" -v m="$LXC_DISK_FAIL" 'BEGIN{exit !(x>=m)}'; then
+    rec "lxc:${ctid}-rootfs" FAIL "thin alloc ${worst}% >= ${LXC_DISK_FAIL}%"
+  elif awk -v x="$worst" -v m="$LXC_DISK_WARN" 'BEGIN{exit !(x>=m)}'; then
+    rec "lxc:${ctid}-rootfs" WARN "thin alloc ${worst}%"
+  else rec "lxc:${ctid}-rootfs" OK "thin alloc ${worst}%"; fi
+done < <(pct list 2>/dev/null | awk 'NR>1{print $1}')
 
 # ---- 3. api health ----------------------------------------------------------
 h=$(pex 101 sh -c 'curl -fsS --max-time 8 http://127.0.0.1:8080/actuator/health' 2>/dev/null)
