@@ -124,7 +124,7 @@ cleanup(){
     fi
   fi
   # Delete each scratch user FK-safely. Users who created a VM/request leave
-  # permanent vm/vm_requests rows (retention model §14) so their user row can't
+  # permanent vm/requests rows (retention model §14) so their user row can't
   # be deleted — that's by design, not residue; skip them (the WHERE not-exists).
   # audit_logs is append-only: detach the actor instead of deleting rows.
   for e in "${SCRATCH_EMAILS[@]:-}"; do
@@ -133,13 +133,13 @@ cleanup(){
       declare uid bigint; gids bigint[];
       begin
         select id into uid from users where email='$e'
-          and not exists (select 1 from vm_requests r where r.requester_id=users.id);
+          and not exists (select 1 from requests r where r.requester_id=users.id);
         if uid is null then return; end if;
         -- the personal group has to be identified before the membership rows go;
         -- the old id-in-subquery ran after them and therefore matched nothing.
-        select coalesce(array_agg(group_id), '{}') into gids from group_members where user_id=uid;
+        select coalesce(array_agg(workspace_id), '{}') into gids from workspace_members where user_id=uid;
         update audit_logs set actor_id=null where actor_id=uid;
-        update groups set deleted_by=null where deleted_by=uid;
+        update workspaces set deleted_by=null where deleted_by=uid;
         delete from notifications where user_id=uid;
         delete from user_consents where user_id=uid;
         delete from mfa_recovery_codes where user_id=uid;
@@ -150,10 +150,10 @@ cleanup(){
         delete from email_verifications where user_id=uid;
         delete from refresh_tokens where user_id=uid;
         delete from auth_reverifications where user_id=uid;
-        delete from group_members where user_id=uid;
-        delete from groups g where g.id = any(gids) and g.kind='PERSONAL' and g.deleted_by is null
-          and not exists (select 1 from group_members gm where gm.group_id=g.id)
-          and not exists (select 1 from vms v where v.group_id=g.id);
+        delete from workspace_members where user_id=uid;
+        delete from workspaces g where g.id = any(gids) and g.kind='PERSONAL' and g.deleted_by is null
+          and not exists (select 1 from workspace_members gm where gm.workspace_id=g.id)
+          and not exists (select 1 from vms v where v.workspace_id=g.id);
         delete from users where id=uid;
       end \$\$;"
     # A user who filed a request keeps their row by design (the not-exists guard
@@ -191,11 +191,11 @@ TPL=$(pgq "select id from os_images where status='ACTIVE' order by id limit 1")
 [ -n "$TPL" ] || { ko "no ACTIVE OS image to request with (enable one in the catalog)"; exit 1; }
 ORG=$(pgq "select id from orgs limit 1")
 [ -n "$ORG" ] || { ko "no org to request against"; exit 1; }
-req_payload(){ # $1=groupId $2=purpose
-  printf '{"groupId":%s,"orgId":%s,"imageId":%s,"flavorId":%s,"purpose":"%s","courseOrProject":null,"specReason":null,"extraNote":null,"reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"reqStartDate":null,"reqEndDate":null}' "$1" "$ORG" "$TPL" "$FLAVOR" "$2" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
+req_payload(){ # $1=workspaceId $2=purpose
+  printf '{"type":"VM","workspaceId":%s,"orgId":%s,"purpose":"%s","courseOrProject":null,"extraNote":null,"reqStartDate":null,"reqEndDate":null,"vm":{"imageId":%s,"flavorId":%s,"reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"specReason":null}}' "$1" "$ORG" "$2" "$TPL" "$FLAVOR" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
 }
 approve_payload(){
-  printf '{"grantedVcpu":%s,"grantedMemoryMb":%s,"grantedDiskGb":%s,"grantedImageId":%s,"grantedStartDate":null,"grantedEndDate":null,"nodeId":null,"comment":"스모크 승인"}' "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK" "$TPL"
+  printf '{"grantedStartDate":null,"grantedEndDate":null,"comment":"스모크 승인","vm":{"grantedVcpu":%s,"grantedMemoryMb":%s,"grantedDiskGb":%s,"grantedImageId":%s,"nodeId":null}}' "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK" "$TPL"
 }
 
 SAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
@@ -205,7 +205,7 @@ OAT=$(login "$ORGADMIN_EMAIL" "$ORGADMIN_PW")
 
 # The spec axis moved off the OS catalog into vm_flavors: the default_* columns no
 # longer exist (a psql select would just error into an empty value) and
-# POST /vm-requests now requires flavorId. Read the presets from the API.
+# POST /requests now requires flavorId. Read the presets from the API.
 req "vm-flavors 200" 200 "$BASE/vm-flavors" -H "$(auth "$SAT")"
 FSEL='(map(select(.name=="basic"))[0] // .[0])'
 FLAVOR=$(jq -r "$FSEL.id // empty" "$B"); TPL_VCPU=$(jq -r "$FSEL.vcpu // empty" "$B")
@@ -261,7 +261,7 @@ if has_phase account; then
   [ "$RS" = 1 ] && ok "  re-signup created no account" || ko "  re-signup created no account ($RS)"
   W=$(pgq "select count(*) from users u where u.email='$U1' and u.status='WITHDRAWN' and u.withdrawn_at is not null")
   [ "$W" = 1 ] && ok "  WITHDRAWN + withdrawn_at stamped" || ko "  WITHDRAWN + withdrawn_at stamped"
-  PG=$(pgq "select count(*) from groups g where g.deleted_at is not null and g.kind='PERSONAL'
+  PG=$(pgq "select count(*) from workspaces g where g.deleted_at is not null and g.kind='PERSONAL'
             and g.deleted_by=(select id from users where email='$U1')")
   [ "$PG" = 1 ] && ok "  personal group soft-deleted" || ko "  personal group soft-deleted"
 fi
@@ -295,27 +295,27 @@ if has_phase group; then
   echo "── group: delete + request-cancel + personal 409"
   U3="smoke-acct-grp-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U3")
   read -r U3T U3ID <<<"$(mk_user "$U3" 'group-password-10' '그룹스모크')"
-  req "create team 201" 201 -X POST "$BASE/groups" -H "$(auth "$U3T")" \
+  req "create team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U3T")" \
     -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"TEAM\",\"name\":\"smoke-acct-team-$TS\",\"slug\":\"smoke-acct-team-$TS\"}"
+    -d "{\"kind\":\"TEAM\",\"name\":\"smoke-acct-team-$TS\"}"
   GID=$(jq -r '.id' "$B")
   # a SUBMITTED request must be canceled by the delete
-  req "submit vm request 201" 201 -X POST "$BASE/vm-requests" -H "$(auth "$U3T")" \
+  req "submit vm request 201" 201 -X POST "$BASE/requests" -H "$(auth "$U3T")" \
     -H 'Content-Type: application/json' -d "$(req_payload "$GID" '그룹삭제 취소 검증용')"
   RID=$(jq -r '.id' "$B")
-  req "delete team 204" 204 -X DELETE "$BASE/groups/$GID" -H "$(auth "$U3T")"
-  RST=$(pgq "select status from vm_requests where id=$RID")
+  req "delete team 204" 204 -X DELETE "$BASE/workspaces/$GID" -H "$(auth "$U3T")"
+  RST=$(pgq "select status from requests where id=$RID")
   [ "$RST" = "CANCELED" ] && ok "  submitted request canceled" || ko "  submitted request canceled (got $RST)"
-  req "  deleted group is gone (404)" 404 "$BASE/groups/$GID" -H "$(auth "$U3T")"
-  req "  slug reusable (201)" 201 -X POST "$BASE/groups" -H "$(auth "$U3T")" \
+  req "  deleted workspace is gone (404)" 404 "$BASE/workspaces/$GID" -H "$(auth "$U3T")"
+  req "  name reusable (201)" 201 -X POST "$BASE/workspaces" -H "$(auth "$U3T")" \
     -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"TEAM\",\"name\":\"smoke-acct-team-$TS\",\"slug\":\"smoke-acct-team-$TS\"}"
+    -d "{\"kind\":\"TEAM\",\"name\":\"smoke-acct-team-$TS\"}"
   GID2=$(jq -r '.id' "$B")
-  req "  cleanup second team 204" 204 -X DELETE "$BASE/groups/$GID2" -H "$(auth "$U3T")"
-  PGID=$(pgq "select g.id from groups g join group_members gm on gm.group_id=g.id
+  req "  cleanup second team 204" 204 -X DELETE "$BASE/workspaces/$GID2" -H "$(auth "$U3T")"
+  PGID=$(pgq "select g.id from workspaces g join workspace_members gm on gm.workspace_id=g.id
               where gm.user_id=$U3ID and g.kind='PERSONAL' and g.deleted_at is null")
-  req "  personal group delete 409" 409 -X DELETE "$BASE/groups/$PGID" -H "$(auth "$U3T")"
-  C=$(jq -r '.code' "$B"); [ "$C" = "GROUP_PERSONAL_UNDELETABLE" ] && ok "  code GROUP_PERSONAL_UNDELETABLE" || ko "  code ($C)"
+  req "  personal workspace delete 409" 409 -X DELETE "$BASE/workspaces/$PGID" -H "$(auth "$U3T")"
+  C=$(jq -r '.code' "$B"); [ "$C" = "WORKSPACE_PERSONAL_UNDELETABLE" ] && ok "  code WORKSPACE_PERSONAL_UNDELETABLE" || ko "  code ($C)"
 fi
 
 # ───────────────────────── phase: protect (REAL PVE) ─────────────────────────
@@ -325,15 +325,15 @@ if has_phase protect; then
   U4PW='vmowner-password-1'   # also the sudo-mode proof for the VM/member calls below
   read -r U4T _ <<<"$(mk_user "$U4" "$U4PW" 'VM보호스모크')"
   # membership tests need an invitable group — PERSONAL membership is immutable
-  req "create protect team 201" 201 -X POST "$BASE/groups" -H "$(auth "$U4T")" \
+  req "create protect team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U4T")" \
     -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"TEAM\",\"name\":\"smoke-acct-prot-$TS\",\"slug\":\"smoke-acct-prot-$TS\"}"
+    -d "{\"kind\":\"TEAM\",\"name\":\"smoke-acct-prot-$TS\"}"
   PGID4=$(jq -r '.id' "$B")
-  req "vm request 201" 201 -X POST "$BASE/vm-requests" -H "$(auth "$U4T")" \
+  req "vm request 201" 201 -X POST "$BASE/requests" -H "$(auth "$U4T")" \
     -H 'Content-Type: application/json' -d "$(req_payload "$PGID4" '보호 스모크')"
   RID4=$(jq -r '.id // empty' "$B")
   [ -n "$RID4" ] || { ko "protect phase aborted — request not created"; RID4=0; }
-  req "approve 200" 200 -X POST "$BASE/admin/vm-requests/$RID4/approve" -H "$(auth "$SAT")" \
+  req "approve 200" 200 -X POST "$BASE/admin/requests/$RID4/approve" -H "$(auth "$SAT")" \
     -H 'Content-Type: application/json' -d "$(approve_payload)"
   VM=$(pgq "select id from vms where request_id=$RID4")
   if [ -z "$VM" ]; then ko "protect phase aborted — no VM row"; VM=""; VM_DELETED=1; fi
@@ -360,7 +360,7 @@ if has_phase protect; then
   # add a MEMBER who must be blocked from stopping
   U5="smoke-acct-mem-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U5")
   read -r U5T U5ID <<<"$(mk_user "$U5" 'member-password-10' '중지보호구성원')"
-  req "  add to group 201" 201 -X POST "$BASE/groups/$PGID4/members" -H "$(auth "$U4T")" \
+  req "  add to group 201" 201 -X POST "$BASE/workspaces/$PGID4/members" -H "$(auth "$U4T")" \
     -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U5\",\"role\":\"MEMBER\"}"
   # Put them on this VM's list at the rung that may power it. Without the entry
   # the shutdown is refused for having no access at all, and the assertion below

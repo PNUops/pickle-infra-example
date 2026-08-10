@@ -116,7 +116,7 @@ reg_key(){ curl -sS -o "$B" -X POST "$BASE/me/ssh-keys" -H "Authorization: Beare
 # addmember EMAIL ROLE (as group OWNER). Asserted (201): a silently failed add
 # would make the membership-scoped checks below vacuous — a VIEWER/MEMBER that
 # was never added is denied as a plain non-member and the test still "passes".
-addmember(){ req "add member ($1)" 201 -X POST "$BASE/groups/$GID/members" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"role\":\"MEMBER\"}"; }
+addmember(){ req "add member ($1)" 201 -X POST "$BASE/workspaces/$GID/members" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"role\":\"MEMBER\"}"; }
 # addgrant USERID ROLE — put somebody on THIS VM's access list. Group membership
 # admits nobody to a VM on its own; every rung below is granted per resource.
 addgrant(){ req "grant $2 on the vm (user $1)" 201 -X POST "$BASE/vms/$VM/access" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" -H 'Content-Type: application/json' -d "{\"granteeType\":\"USER\",\"userId\":$1,\"role\":\"$2\"}"; }
@@ -187,7 +187,7 @@ echo "== provision (owner O creates group + VM) =="
 OWNER_EMAIL="sgw-owner-${TS}@pusan.ac.kr"; OWNER_PW="sgw-pass-${TS}!"
 read -r OAT OUID < <(mk_user "$OWNER_EMAIL" "$OWNER_PW" "SGW Owner")
 [ -n "$OAT" ] && [ -n "$OUID" ] && ok "owner user id=$OUID" || { ko "owner signup"; exit 1; }
-req "group" 201 -X POST "$BASE/groups" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"sgw\",\"slug\":\"sgwteam-${TS}\",\"kind\":\"TEAM\"}" || exit 1
+req "group" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"sgw\",\"kind\":\"TEAM\"}" || exit 1
 GID=$(jq -r .id "$B")
 # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
 req "orgadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ORGADMIN_EMAIL\",\"password\":\"$ORGADMIN_PW\"}" || exit 1
@@ -201,15 +201,15 @@ TID=$(jq -r '.[0].id // empty' "$B")
 # about the catalog.
 [ -n "$TID" ] || { ko "no ACTIVE OS image to request with (enable one in the catalog)"; exit 1; }
 # os-images is the OS catalog; the spec axis is vm-flavors and POST
-# /vm-requests requires the chosen flavorId ('basic', else the first ACTIVE row)
+# /requests requires the chosen flavorId ('basic', else the first ACTIVE row)
 req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $OAT" || exit 1
 FSEL='(map(select(.name=="basic"))[0] // .[0])'
 FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); MM=$(jq -r "$FSEL.memoryMb // empty" "$B"); DG=$(jq -r "$FSEL.diskGb // empty" "$B")
 [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)" || { ko "no ACTIVE vm-flavor"; exit 1; }
-req "request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"imageId\":$TID,\"flavorId\":$FID,\"purpose\":\"ssh gateway e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null}" || exit 1
+req "request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"ssh gateway e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || exit 1
 RID=$(jq -r .id "$B")
-req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"sgw\"}" || exit 1
-req "vm list" 200 "$BASE/vms?groupId=$GID" -H "Authorization: Bearer $OAT" || exit 1
+req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"sgw\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"nodeId\":null}}" || exit 1
+req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $OAT" || exit 1
 VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
 [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || { ko "vm id (empty list)"; exit 1; }
 
@@ -355,7 +355,7 @@ addgrant "$MB_ID" MEMBER
 # 403s on REAUTH_REQUIRED and this check would pass without ever reaching the
 # role gate. The Problem code is asserted for the same reason.
 req "member settings forbidden" 403 -X PATCH "$BASE/vms/$VM/settings" -H "Authorization: Bearer $MBAT" -H "$(rt "$MBAT" "$MB_PW")" -H 'Content-Type: application/json' -d '{"settings":{"ssh_password_enabled":false}}'
-code_is GROUP_ROLE_INSUFFICIENT "  refused by the role gate, not by reauth"
+code_is WORKSPACE_ROLE_INSUFFICIENT "  refused by the role gate, not by reauth"
 
 # --- 12. EDITOR cannot raise password_reveal_min_role (OWNER-gated) → 403 ---
 echo "== [12] EDITOR raise min_role → 403 =="
@@ -365,7 +365,7 @@ addmember "sgw-editor-${TS}@pusan.ac.kr"
 addgrant "$ED_ID" EDITOR
 # valid sudo-mode token here too — the OWNER-only key is what must refuse
 req "editor min_role forbidden" 403 -X PATCH "$BASE/vms/$VM/settings" -H "Authorization: Bearer $EDAT" -H "$(rt "$EDAT" "$ED_PW")" -H 'Content-Type: application/json' -d '{"settings":{"password_reveal_min_role":"EDITOR"}}'
-code_is GROUP_ROLE_INSUFFICIENT "  refused by the role gate, not by reauth"
+code_is WORKSPACE_ROLE_INSUFFICIENT "  refused by the role gate, not by reauth"
 
 # --- 13. sudo demands a password inside the VM (sudoers PASSWD override) ---
 echo "== [13] sudo -n fails in guest (NOPASSWD overridden) =="

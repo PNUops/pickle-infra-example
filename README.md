@@ -81,7 +81,7 @@ runbooks/         운영 절차                                    // 이 예시
 | 스모크 | `smoke-provisioning.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
 
 스모크는 목이 아니라 살아 있는 시스템에 실제 요청을 보냅니다. `smoke-provisioning.sh`는
-회원가입부터 인증, 그룹 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기, SSH 도달 확인,
+회원가입부터 인증, 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기, SSH 도달 확인,
 전원 왕복, 삭제, DB 정합 검증까지 한 번에 통과시킵니다.
 
 사용자 VM 템플릿을 만드는 빌드 레시피는 이 레포지토리에 없습니다. 공개 레포지토리

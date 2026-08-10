@@ -85,7 +85,7 @@ phase_setup(){
   req "verify-email" 200 -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' -d "{\"token\":\"$tok\"}" || return 1
   req "user login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$EM\",\"password\":\"$PW\"}" || return 1
   SAT=$(jq -r .accessToken "$B")
-  req "create group" 201 -X POST "$BASE/groups" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"name\":\"dash e2e\",\"slug\":\"dashteam-${TS}\",\"kind\":\"TEAM\"}" || return 1
+  req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"name\":\"dash e2e\",\"kind\":\"TEAM\"}" || return 1
   GID=$(jq -r .id "$B")
   AAT=$(login "$ORGADMIN_EMAIL" "$ORGADMIN_PW")
   { [ -n "$AAT" ] && ok "orgadmin login (org lookup)"; } || { ko "orgadmin login (org lookup)"; return 1; }
@@ -98,12 +98,12 @@ phase_setup(){
     return 1
   fi
   # os-images carry only the OS + disk floor; the spec axis is vm-flavors and
-  # POST /vm-requests requires the chosen flavorId ('basic', else first ACTIVE).
+  # POST /requests requires the chosen flavorId ('basic', else first ACTIVE).
   req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $SAT" || return 1
   local sel='(map(select(.name=="basic"))[0] // .[0])'
   FID=$(jq -r "$sel.id // empty" "$B"); VC=$(jq -r "$sel.vcpu // empty" "$B"); MM=$(jq -r "$sel.memoryMb // empty" "$B"); DG=$(jq -r "$sel.diskGb // empty" "$B")
   { [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)"; } || { ko "no ACTIVE vm-flavor"; return 1; }
-  req "vm-request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"imageId\":$TID,\"flavorId\":$FID,\"purpose\":\"dashboards e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null}" || return 1
+  req "vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"dashboards e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || return 1
   RID=$(jq -r .id "$B")
   # AAT from the org-lookup login above is seconds old — reuse it
   # submission notification is created synchronously with the request
@@ -112,10 +112,25 @@ phase_setup(){
     '[.content[] | select(.event=="request.submitted" and .linkPath==$l)] | length >= 1' --arg l "/admin/requests/$RID"
   curl -sS -o "$B" "$BASE/notifications/unread-count" -H "Authorization: Bearer $AAT"
   jqc "orgadmin unread-count >= 1" '.unreadCount >= 1'
-  req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"dash e2e\"}" || return 1
-  req "vm list" 200 "$BASE/vms?groupId=$GID" -H "Authorization: Bearer $SAT" || return 1
+  req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"dash e2e\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"nodeId\":null}}" || return 1
+  req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $SAT" || return 1
   VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
   [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || { ko "vm id (empty list)"; return 1; }
+
+  # The type-agnostic inventory must show the same VM the per-type list does:
+  # the console dashboard and the workspace inventory read this one, so a
+  # divergence here is a screen that disagrees with the VM list.
+  req "resource inventory" 200 "$BASE/resources?workspaceId=$GID" \
+    -H "Authorization: Bearer $SAT" || return 1
+  local rid rtype
+  rid=$(jq -r --arg id "$VM" '.content[] | select(.id == ($id | tonumber)) | .id // empty' "$B")
+  rtype=$(jq -r --arg id "$VM" '.content[] | select(.id == ($id | tonumber)) | .type // empty' "$B")
+  if [ "$rid" = "$VM" ] && [ "$rtype" = "VM" ]; then
+    ok "resource inventory carries vm $VM as type VM"
+  else
+    ko "resource inventory missing vm $VM (got id='$rid' type='$rtype')"
+    return 1
+  fi
 }
 
 phase_provision(){
@@ -154,7 +169,7 @@ phase_announcements(){
   req "sysadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$SYSADMIN_EMAIL\",\"password\":\"$SYSADMIN_PW\"}" || return 1
   XAT=$(jq -r .accessToken "$B")
   req "ALL announcement (sys)" 201 -X POST "$BASE/admin/announcements" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' \
-    -d "{\"title\":\"$ATITLE\",\"body\":\"e2e 전체 공지 본문\",\"scope\":\"ALL\",\"orgId\":null,\"groupId\":null}" \
+    -d "{\"title\":\"$ATITLE\",\"body\":\"e2e 전체 공지 본문\",\"scope\":\"ALL\",\"orgId\":null,\"workspaceId\":null}" \
     && jqc "ALL recipientCount >= 1" '.recipientCount >= 1'
   curl -sS -o "$B" "$BASE/notifications/unread-count" -H "Authorization: Bearer $SAT"
   jqc "user unread-count bumped by ALL announcement" '.unreadCount >= 1'
@@ -162,9 +177,9 @@ phase_announcements(){
   jqc "user inbox shows ALL announcement title" \
     '[.content[] | select(.event=="announcement" and .title==$t)] | length >= 1' --arg t "$ATITLE"
   req "ORG announcement (orgadmin, own org)" 201 -X POST "$BASE/admin/announcements" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' \
-    -d "{\"title\":\"$OTITLE\",\"body\":\"e2e 기관 공지 본문\",\"scope\":\"ORG\",\"orgId\":null,\"groupId\":null}"
+    -d "{\"title\":\"$OTITLE\",\"body\":\"e2e 기관 공지 본문\",\"scope\":\"ORG\",\"orgId\":null,\"workspaceId\":null}"
   req "ALL by ORG_ADMIN -> 403" 403 -X POST "$BASE/admin/announcements" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' \
-    -d "{\"title\":\"$ATITLE-forbidden\",\"body\":\"x\",\"scope\":\"ALL\",\"orgId\":null,\"groupId\":null}"
+    -d "{\"title\":\"$ATITLE-forbidden\",\"body\":\"x\",\"scope\":\"ALL\",\"orgId\":null,\"workspaceId\":null}"
   # delivery log (sys): the dispatcher must mark this run's announcement mail SENT
   local dl=$((SECONDS+120)) sent=0
   nudge_dispatcher || true

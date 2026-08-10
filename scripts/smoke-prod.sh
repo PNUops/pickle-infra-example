@@ -95,7 +95,7 @@ if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
   fi
   req "owner login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$OEMAIL\",\"password\":\"$OPW\"}"
   OAT=$(jq -r '.accessToken // empty' "$B")
-  req "create group" 201 -X POST "$BASE/groups" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"prodsmoke\",\"slug\":\"prodsmoke-${TS}\",\"kind\":\"TEAM\"}"
+  req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"prodsmoke\",\"kind\":\"TEAM\"}"
   GID=$(jq -r '.id // empty' "$B")
   # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
   ADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
@@ -105,16 +105,16 @@ if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
   req "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $OAT"
   TID=$(jq -r '.[0].id // empty' "$B")
   # os-images is the OS catalog; specs come from vm-flavors and POST
-  # /vm-requests requires flavorId ('basic' preset, else the first ACTIVE row)
+  # /requests requires flavorId ('basic' preset, else the first ACTIVE row)
   req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $OAT"
   FSEL='(map(select(.name=="basic"))[0] // .[0])'
   FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); MM=$(jq -r "$FSEL.memoryMb // empty" "$B"); DG=$(jq -r "$FSEL.diskGb // empty" "$B")
   if [ -n "$GID" ] && [ -n "$OID" ] && [ -n "$TID" ] && [ -n "$FID" ]; then
-    req "vm request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"imageId\":$TID,\"flavorId\":$FID,\"purpose\":\"prod smoke\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null}"
+    req "vm request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"prod smoke\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}"
     RID=$(jq -r '.id // empty' "$B")
     # approve as seed ORG_ADMIN (token from the org-lookup login above)
-    req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"prod smoke\"}"
-    req "vm list" 200 "$BASE/vms?groupId=$GID" -H "Authorization: Bearer $OAT"
+    req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"prod smoke\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"nodeId\":null}}"
+    req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $OAT"
     VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
     [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || ko "no VM created"
     if [ -n "$VM" ]; then

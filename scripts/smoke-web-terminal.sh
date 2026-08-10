@@ -94,7 +94,10 @@ mk_user(){
 refresh_tokens(){
   U1T=$(login "$U1" "$U1PW")
   SAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
-  [ -n "$U1T" ] && [ -n "$SAT" ] || ko "could not refresh tokens for the closing phase"
+  # U2 only once it exists, and against whatever password it currently has —
+  # this run changes it on purpose partway through.
+  [ -z "${U2:-}" ] || U2T=$(login "$U2" "$U2PW")
+  [ -n "$U1T" ] && [ -n "$SAT" ] || ko "could not refresh the tokens this phase needs"
 }
 
 # mint VMID TOKEN → sets MINT_CODE + TICKET/SESSION_ID/WSPATH/SUBPROTO on 201
@@ -182,17 +185,17 @@ cleanup(){
     [ -n "$e" ] || continue
     # Two things the statement had never been able to tell anyone, because it had
     # never executed: `groups` has no owner_id column (personal-group ownership
-    # is a group_members row), and the personal group has to be identified
+    # is a workspace_members row), and the personal group has to be identified
     # BEFORE those membership rows are deleted, otherwise there is nothing left
     # to find it by. audit_logs is append-only: detach the actor instead.
     pgx "do \$\$ declare uid bigint; gids bigint[]; begin
       select id into uid from users where email='$e';
-      if uid is not null and not exists (select 1 from vms v join groups g on v.group_id=g.id
-          join group_members gm on gm.group_id=g.id where gm.user_id=uid)
-         and not exists (select 1 from vm_requests r where r.requester_id=uid) then
-        select coalesce(array_agg(group_id), '{}') into gids from group_members where user_id=uid;
+      if uid is not null and not exists (select 1 from vms v join workspaces g on v.workspace_id=g.id
+          join workspace_members gm on gm.workspace_id=g.id where gm.user_id=uid)
+         and not exists (select 1 from requests r where r.requester_id=uid) then
+        select coalesce(array_agg(workspace_id), '{}') into gids from workspace_members where user_id=uid;
         update audit_logs set actor_id=null where actor_id=uid;
-        update groups set deleted_by=null where deleted_by=uid;
+        update workspaces set deleted_by=null where deleted_by=uid;
         delete from notifications where user_id=uid;
         delete from user_consents where user_id=uid;
         delete from mfa_recovery_codes where user_id=uid;
@@ -203,10 +206,10 @@ cleanup(){
         delete from refresh_tokens where user_id=uid;
         delete from user_ssh_keys where user_id=uid;
         delete from auth_reverifications where user_id=uid;
-        delete from group_members where user_id=uid;
-        delete from groups g where g.id = any(gids) and g.kind='PERSONAL' and g.deleted_by is null
-          and not exists (select 1 from group_members gm where gm.group_id=g.id)
-          and not exists (select 1 from vms v where v.group_id=g.id);
+        delete from workspace_members where user_id=uid;
+        delete from workspaces g where g.id = any(gids) and g.kind='PERSONAL' and g.deleted_by is null
+          and not exists (select 1 from workspace_members gm where gm.workspace_id=g.id)
+          and not exists (select 1 from vms v where v.workspace_id=g.id);
         delete from users where id=uid;
       end if; end \$\$;"
     # A user who owns a VM or a request keeps their row by design (the not-exists
@@ -246,7 +249,7 @@ TPL=$(pgq "select id from os_images where status='ACTIVE' order by id limit 1")
 ORG=$(pgq "select id from orgs limit 1")
 [ -n "$ORG" ] || { ko "no org to request against"; exit 1; }
 # os-images is a pure OS catalog — the spec axis is vm_flavors, and
-# POST /vm-requests requires the chosen flavorId. Read the presets off the API
+# POST /requests requires the chosen flavorId. Read the presets off the API
 # (the removed catalog default_* columns would error in psql).
 req "vm-flavors 200" 200 "$BASE/vm-flavors" -H "$(auth "$SAT")"
 FSEL='(map(select(.name=="basic"))[0] // .[0])'
@@ -257,15 +260,15 @@ TPL_MEM=$(jq -r "$FSEL.memoryMb // empty" "$B"); TPL_DISK=$(jq -r "$FSEL.diskGb 
 U1PW='terminal-owner-1'
 U1="smoke-term-own-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U1")
 read -r U1T _ <<<"$(mk_user "$U1" "$U1PW" '터미널소유자')"
-req "create team 201" 201 -X POST "$BASE/groups" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
-  -d "{\"kind\":\"TEAM\",\"name\":\"smoke-term-$TS\",\"slug\":\"smoke-term-$TS\"}"
+req "create team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
+  -d "{\"kind\":\"TEAM\",\"name\":\"smoke-term-$TS\"}"
 GID=$(jq -r '.id' "$B")
-req "vm request 201" 201 -X POST "$BASE/vm-requests" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
-  -d "{\"groupId\":$GID,\"orgId\":$ORG,\"imageId\":$TPL,\"flavorId\":$FID,\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"reqStartDate\":null,\"reqEndDate\":null}"
+req "vm request 201" 201 -X POST "$BASE/requests" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
+  -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$ORG,\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"vm\":{\"imageId\":$TPL,\"flavorId\":$FID,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"specReason\":null}}"
 RID=$(jq -r '.id // empty' "$B"); [ -n "$RID" ] || { ko "request not created — abort"; exit 1; }
-req "approve 200" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "$(auth "$SAT")" \
+req "approve 200" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "$(auth "$SAT")" \
   -H 'Content-Type: application/json' \
-  -d "{\"grantedVcpu\":$TPL_VCPU,\"grantedMemoryMb\":$TPL_MEM,\"grantedDiskGb\":$TPL_DISK,\"grantedImageId\":$TPL,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"터미널 스모크\"}"
+  -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"터미널 스모크\",\"vm\":{\"grantedVcpu\":$TPL_VCPU,\"grantedMemoryMb\":$TPL_MEM,\"grantedDiskGb\":$TPL_DISK,\"grantedImageId\":$TPL,\"nodeId\":null}}"
 VM=$(pgq "select id from vms where request_id=$RID"); [ -n "$VM" ] || { ko "no VM row — abort"; exit 1; }
 VM_DELETED=0
 echo "  waiting for RUNNING (vm=$VM)…"
@@ -292,14 +295,15 @@ done
 # U3 is a group member the list does not mention, U4 is outside the group
 # entirely. U1 requested the VM and is therefore its listed owner.
 U2="smoke-term-mem-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U2")
-read -r U2T U2ID <<<"$(mk_user "$U2" 'terminal-member-1' '터미널멤버')"
+U2PW='terminal-member-1'
+read -r U2T U2ID <<<"$(mk_user "$U2" "$U2PW" '터미널멤버')"
 U3="smoke-term-view-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U3")
 read -r U3T _ <<<"$(mk_user "$U3" 'terminal-viewer-1' '터미널뷰어')"
 U4="smoke-term-out-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U4")
 read -r U4T _ <<<"$(mk_user "$U4" 'terminal-outsider-1' '터미널외부')"
-req "add U2 to group 201" 201 -X POST "$BASE/groups/$GID/members" -H "$(auth "$U1T")" \
+req "add U2 to group 201" 201 -X POST "$BASE/workspaces/$GID/members" -H "$(auth "$U1T")" \
   -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U2\",\"role\":\"MEMBER\"}"
-req "add U3 to group 201" 201 -X POST "$BASE/groups/$GID/members" -H "$(auth "$U1T")" \
+req "add U3 to group 201" 201 -X POST "$BASE/workspaces/$GID/members" -H "$(auth "$U1T")" \
   -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U3\",\"role\":\"MEMBER\"}"
 
 # The seeded list: whoever requested the VM, and nobody else.
@@ -307,7 +311,8 @@ req "access list seeded with the requester" 200 "$BASE/vms/$VM/access" -H "$(aut
 SEEDED=$(jq -r '[.grants[] | select(.role=="OWNER")] | length' "$B")
 [ "$SEEDED" = 1 ] && ok "  one OWNER entry" || ko "  one OWNER entry (got $SEEDED)"
 [ "$(jq -r '.grants | length' "$B")" = 1 ] && ok "  and no other entry" || ko "  and no other entry ($(jq -r '.grants|length' "$B"))"
-[ "$(jq -r '.vm.id' "$B")" = "$VM" ] && ok "  list names its VM" || ko "  list names its VM"
+[ "$(jq -r '.resource.id' "$B")" = "$VM" ] && ok "  list names its resource" || ko "  list names its resource"
+[ "$(jq -r '.resource.type' "$B")" = "VM" ] && ok "  and says it is a VM" || ko "  and says it is a VM"
 
 # U3 stays unlisted for the denial assertions further down; U2 gets the rung
 # that carries terminal access.
@@ -408,9 +413,13 @@ grep -q '403 Forbidden' "$WSOUT" \
 # group listing shows it — and gets no further.
 mint "$VM" "$U3T"; [ "$MINT_CODE" = 403 ] && ok "group member not on the list denied (403)" || ko "group member not on the list denied (got $MINT_CODE)"
 req "  and the VM detail is closed to them (403)" 403 "$BASE/vms/$VM" -H "$(auth "$U3T")"
+req "  and so is the access list (403)" 403 "$BASE/vms/$VM/access" -H "$(auth "$U3T")"
 mint "$VM" "$U4T"; [ "$MINT_CODE" = 404 ] && ok "non-member masked (404)" || ko "non-member masked (got $MINT_CODE)"
-req "  the access list is closed to them too (403)" 403 "$BASE/vms/$VM/access" -H "$(auth "$U3T")"
+req "  the access list is masked for them too (404)" 404 "$BASE/vms/$VM/access" -H "$(auth "$U4T")"
 
+# Provisioning and the settle window can take longer than a token lives, so the
+# phases below take fresh ones rather than the ones minted at the top of the run.
+refresh_tokens
 # Removing the entry has to reach a session that is already open, not just the
 # next mint: the bridge revalidates on a timer, so a revoked person keeps a live
 # shell until it does.
@@ -427,12 +436,17 @@ if open_live_session "$U2T" 300; then
     curl -sS -o "$B" -H "$(auth "$SAT")" "$BASE/admin/terminal-sessions" 2>/dev/null
     jq -e --arg s "$LIVE_SID" 'map(select(.sessionId==$s)) | length == 0' "$B" >/dev/null 2>&1 && { GONE=1; break; }
   done
-  [ "$GONE" = 1 ] && ok "  the open session was closed by revalidation" || ko "  the open session survived removal for over 120s"
+  [ "$GONE" = 1 ] && ok "  the open session left the admin mirror" || ko "  the open session survived removal for over 120s"
+  # Disappearing is not the claim. A held session also leaves the mirror when
+  # the client dies for its own reasons — a killed process, a blip, an idle
+  # timeout — and every other phase here distinguishes the reason, so this one
+  # must too or a broken client reads as a working revocation.
   kill "$WSPID" 2>/dev/null; wait "$WSPID" 2>/dev/null
+  AUD_RVK=$(pgq "select count(*) from audit_logs where action='terminal.session_end' and detail::text like '%$LIVE_SID%' and detail::text like '%REVALIDATION_DENIED%'")
+  [ "${AUD_RVK:-0}" -ge 1 ] && ok "  and it ended as REVALIDATION_DENIED" || ko "  session_end reason for the revoked session"
   req "re-grant U2 MEMBER 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U1T")" \
     -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' \
     -d "{\"granteeType\":\"USER\",\"userId\":$U2ID,\"role\":\"MEMBER\"}"
-  U2GRANT=$(jq -r '.id' "$B")
 else
   ko "U2 could not hold a live session — removal convergence unchecked"
 fi
@@ -475,11 +489,13 @@ req "kill switch back on (200)" 200 -X PUT "$BASE/admin/settings/web_terminal_en
 # password" has to end the attacker's shell, and until the ticket carried the
 # token version it did not — the REST token died while the terminal kept running.
 echo "  waiting 65s for ticket TTL to clear the cap…"; sleep 65
+refresh_tokens
 if open_live_session "$U2T" 150; then ok "pw-change session established"; else ko "pw-change session established"; WSPID=""; fi
 PWCHG_SID=$LIVE_SID
 req "self password change (200)" 200 -X PUT "$BASE/me/password" -H "$(auth "$U2T")" \
   -H 'Content-Type: application/json' \
-  -d '{"currentPassword":"terminal-member-1","newPassword":"terminal-member-2"}'
+  -d "{\"currentPassword\":\"$U2PW\",\"newPassword\":\"terminal-member-2\"}"
+U2PW='terminal-member-2'
 U2T=$(jq -r '.accessToken // empty' "$B")   # the change returns a fresh pair
 echo "  waiting ≤90s for the revalidation poll to notice the token version…"
 CLOSED=0

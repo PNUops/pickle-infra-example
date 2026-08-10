@@ -131,7 +131,7 @@ TOKEN=$(pct exec "$CTID" -- sh -c "grep -o 'token=[A-Za-z0-9_-]*' /var/lib/pickl
 req "verify-email" 200 -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\"}" || exit 1
 req "user login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$USER_EMAIL\",\"password\":\"$USER_PW\"}" || exit 1
 SAT=$(jq -r .accessToken "$B")
-req "create group" 201 -X POST "$BASE/groups" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"name\":\"http e2e\",\"slug\":\"httpteam-${TS}\",\"kind\":\"TEAM\"}" || exit 1
+req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"name\":\"http e2e\",\"kind\":\"TEAM\"}" || exit 1
 GID=$(jq -r .id "$B")
 req "orgadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ORGADMIN_EMAIL\",\"password\":\"$ORGADMIN_PW\"}" || exit 1
 AAT=$(jq -r .accessToken "$B")
@@ -145,16 +145,16 @@ req "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $SAT" || exit 1
 TID=$(jq -r '.[0].id // empty' "$B"); INAME=$(jq -r '.[0].name // empty' "$B")
 [ -n "$TID" ] && ok "os image = $INAME (id=$TID)" || { ko "no ACTIVE OS image to request with"; exit 1; }
 # os-images is a pure OS catalog — the spec axis lives in vm-flavors, and
-# POST /vm-requests requires the chosen flavorId alongside the req* specs
+# POST /requests requires the chosen flavorId alongside the req* specs
 req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $SAT" || exit 1
 FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); MM=$(jq -r "$FSEL.memoryMb // empty" "$B"); DG=$(jq -r "$FSEL.diskGb // empty" "$B")
 [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)" || { ko "no ACTIVE vm-flavor"; exit 1; }
 
 echo "== request + approve (the request form carries no domain axis anymore) =="
-req "vm-request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"groupId\":$GID,\"orgId\":$OID,\"imageId\":$TID,\"flavorId\":$FID,\"purpose\":\"HTTP publish e2e\",\"courseOrProject\":null,\"specReason\":null,\"extraNote\":null,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"reqStartDate\":null,\"reqEndDate\":null}" || exit 1
+req "vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"HTTP publish e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || exit 1
 RID=$(jq -r .id "$B")
-req "approve" 200 -X POST "$BASE/admin/vm-requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"grantedStartDate\":null,\"grantedEndDate\":null,\"nodeId\":null,\"comment\":\"http e2e\"}" || exit 1
-req "vm list" 200 "$BASE/vms?groupId=$GID" -H "Authorization: Bearer $SAT" || exit 1
+req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"http e2e\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"nodeId\":null}}" || exit 1
+req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $SAT" || exit 1
 VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
 [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || { ko "vm id (empty list)"; exit 1; }
 curl -sS -o "$B" "$BASE/vms/$VM" -H "Authorization: Bearer $SAT"

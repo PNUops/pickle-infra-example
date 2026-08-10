@@ -7,8 +7,8 @@
 # endpoints, with the Proxmox token and the VM template both in place.
 #
 # Journey: signup -> verify (token from mock-mail log via pct) -> login ->
-# team group (slug dev-smoke-<ts>; the VM name is generated from the group
-# slug, giving the e2e VM the mandatory dev- prefix) ->
+# team workspace -> vm request with display name dev-smoke-<ts> (the VM name is
+# generated from it, giving the e2e VM the mandatory dev- prefix) ->
 # vm request -> ORG_ADMIN approve -> poll RUNNING (real pipeline, <= 15 min,
 # progress logged) -> SSH :22 reachable -> password reveal + re-read (masked;
 # re-read must be 200 since v0.7.0) -> shutdown/start round-trip (force-stop fallback
@@ -53,7 +53,7 @@ FAIL=0
 USER_AT=""
 ADMIN_AT=""
 SYSADMIN_AT=""
-GROUP_ID=""
+WORKSPACE_ID=""
 FLAVOR_ID=""
 REQ_ID=""
 VM_ID=""
@@ -231,7 +231,7 @@ phase_account() {
   fi
 
   # The OS axis (os-images) and the spec axis (flavors) are separate catalogs:
-  # os-images no longer carry default specs, and POST /vm-requests requires the
+  # os-images no longer carry default specs, and POST /requests requires the
   # chosen flavorId. Take the 'basic' preset, or the first ACTIVE row.
   step "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $USER_AT" || return 1
   local sel='(map(select(.name=="basic"))[0] // .[0])'
@@ -252,35 +252,38 @@ phase_account() {
   step "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $OA_LOOKUP_AT" || return 1
   ORG_ID=$(jq -r '.[0].id' "$BODY")
 
-  # VM name/hostname = <group slug> + random suffix (ApprovalService), so a
-  # dev-smoke-* slug stamps the e2e VM with the dev- prefix.
-  step "create group (slug dev-smoke-$TS)" 201 -X POST "$BASE/groups" \
+  # The VM's hostname is generated from the request's display name plus a random
+  # suffix, so the request below sends dev-smoke-$TS as the display name and the
+  # e2e VM keeps the dev- prefix the residue guard looks for.
+  step "create workspace" 201 -X POST "$BASE/workspaces" \
     -H "Authorization: Bearer $USER_AT" -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"TEAM\",\"name\":\"스모크팀 $TS\",\"slug\":\"dev-smoke-$TS\",\"description\":\"provisioning smoke\"}" || return 1
-  GROUP_ID=$(jq -r .id "$BODY")
+    -d "{\"kind\":\"TEAM\",\"name\":\"스모크팀 $TS\",\"description\":\"provisioning smoke\"}" || return 1
+  WORKSPACE_ID=$(jq -r .id "$BODY")
 }
 
 # ── phase 2: vm request + ORG_ADMIN approval ──
 phase_request_approve() {
-  step "create vm-request" 201 -X POST "$BASE/vm-requests" -H "Authorization: Bearer $USER_AT" \
+  step "create vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $USER_AT" \
     -H 'Content-Type: application/json' -d "{
-      \"groupId\":$GROUP_ID,\"orgId\":$ORG_ID,\"imageId\":$TEMPLATE_ID,\"flavorId\":$FLAVOR_ID,
-      \"purpose\":\"프로비저닝 스모크 테스트 (실제 프로비저닝 검증)\",\"courseOrProject\":null,\"specReason\":null,
-      \"extraNote\":null,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,
-      \"reqStartDate\":null,\"reqEndDate\":null}" || return 1
+      \"type\":\"VM\",\"workspaceId\":$WORKSPACE_ID,\"orgId\":$ORG_ID,
+      \"purpose\":\"프로비저닝 스모크 테스트 (실제 프로비저닝 검증)\",\"courseOrProject\":null,
+      \"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,
+      \"displayName\":\"dev-smoke-$TS\",
+      \"vm\":{\"imageId\":$TEMPLATE_ID,\"flavorId\":$FLAVOR_ID,\"reqVcpu\":$TPL_VCPU,
+      \"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"specReason\":null}}" || return 1
   REQ_ID=$(jq -r .id "$BODY")
 
   step "orgadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d "{\"email\":\"$ORGADMIN_EMAIL\",\"password\":\"$ORGADMIN_PW\"}" || return 1
   ADMIN_AT=$(jq -r .accessToken "$BODY")
 
-  step "approve" 200 -X POST "$BASE/admin/vm-requests/$REQ_ID/approve" \
+  step "approve" 200 -X POST "$BASE/admin/requests/$REQ_ID/approve" \
     -H "Authorization: Bearer $ADMIN_AT" -H 'Content-Type: application/json' -d "{
-      \"grantedVcpu\":$TPL_VCPU,\"grantedMemoryMb\":$TPL_MEM,\"grantedDiskGb\":$TPL_DISK,
-      \"grantedImageId\":$TEMPLATE_ID,\"grantedStartDate\":null,\"grantedEndDate\":null,
-      \"nodeId\":null,\"comment\":\"스모크 승인\"}" || return 1
+      \"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"스모크 승인\",
+      \"vm\":{\"grantedVcpu\":$TPL_VCPU,\"grantedMemoryMb\":$TPL_MEM,
+      \"grantedDiskGb\":$TPL_DISK,\"grantedImageId\":$TEMPLATE_ID,\"nodeId\":null}}" || return 1
 
-  step "vm visible in list" 200 "$BASE/vms?groupId=$GROUP_ID" -H "Authorization: Bearer $USER_AT" || return 1
+  step "vm visible in list" 200 "$BASE/vms?workspaceId=$WORKSPACE_ID" -H "Authorization: Bearer $USER_AT" || return 1
   VM_ID=$(jq -r '.content[0].id // empty' "$BODY")
   VM_NAME=$(jq -r '.content[0].name // empty' "$BODY")
   if [ -z "$VM_ID" ] || [ -z "$VM_NAME" ]; then
