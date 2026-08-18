@@ -17,7 +17,7 @@ CTID="${CTID:-100}"
 # shellcheck source=scripts/lib/ct.sh
 . "$(dirname "$0")/lib/ct.sh"
 require_ct "$CTID" reverse-proxy
-AGENT_DIR="${AGENT_DIR:-/root/pickle/proxy-agent}"
+AGENT_DIR="${AGENT_DIR:-/srv/pickle/proxy-agent}"
 GO="${GO:-/usr/local/go/bin/go}"
 REMOTE_BIN=/usr/local/bin/pickle-proxy-agent
 REMOTE_UNIT=/etc/systemd/system/pickle-proxy-agent.service

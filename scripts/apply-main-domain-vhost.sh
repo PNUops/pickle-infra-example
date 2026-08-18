@@ -80,7 +80,7 @@ LEGACY_TENANT="${PICKLE_LEGACY_TENANT_HOST:-opus.pusan.ac.kr}"
 PROXY_IP="${PICKLE_PROXY_IP:-198.18.1.10}"
 
 ts=$(date +%Y%m%d-%H%M%S)
-BK="/root/pickle/backup/main-domain-vhost-$ts"
+BK="/srv/pickle/backup/main-domain-vhost-$ts"
 mkdir -p "$BK"
 
 # Unpacking the archive restores files but never removes the sites-enabled links

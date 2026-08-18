@@ -13,7 +13,7 @@ CTID="${CTID:-101}"
 require_ct "$CTID" pickle-app
 DB="${DB:-pickle_dev}"
 LXC_DIR=/var/backups/pickle
-HOST_DIR=/root/pickle/backup/db
+HOST_DIR=/srv/pickle/backup/db
 RETENTION_DAYS=14
 TS=$(date +%Y%m%d-%H%M%S)
 FILE="$DB-$TS.sql.gz"

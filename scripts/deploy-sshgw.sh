@@ -21,7 +21,7 @@ CTID="${CTID:-102}"
 # shellcheck source=scripts/lib/ct.sh
 . "$(dirname "$0")/lib/ct.sh"
 require_ct "$CTID" pickle-sshgw
-SSHGW_DIR="${SSHGW_DIR:-/root/pickle/sshgw}"
+SSHGW_DIR="${SSHGW_DIR:-/srv/pickle/sshgw}"
 UNITS="sshpiperd.service sshgw-proxyfront.service sshgw-terminal-bridge.service"
 BIN_DIR=/opt/pickle/sshgw/bin
 RELEASES_DIR=/opt/pickle/sshgw/releases

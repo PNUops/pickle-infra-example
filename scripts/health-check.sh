@@ -48,7 +48,7 @@ DOMAIN="${PICKLE_DEV_DOMAIN:-https://pickle.pusan.ac.kr}"
 # see a second root, and after the domain cutover it would have kept reporting a
 # retired certificate as healthy while the live one went unwatched.
 ORIGIN_CERT_GLOB="${ORIGIN_CERT_GLOB:-/etc/nginx/pickle-certs/*.crt}"
-BACKUP_DIR="${BACKUP_DIR:-/root/pickle/backup/db}"
+BACKUP_DIR="${BACKUP_DIR:-/srv/pickle/backup/db}"
 
 # Per-recurring-job max age (seconds) before "stalled". Cadences per
 # the recurring-job schedule; thresholds ~4x the interval so one slow cycle (or the

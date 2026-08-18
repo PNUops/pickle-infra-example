@@ -429,7 +429,7 @@ echo "  preflight OK"
 
 # ── backup the rows about to be overwritten ─────────────────────────────────
 ts=$(date +%Y%m%d-%H%M%S)
-BK="${BK:-/root/pickle/backup/platform-inventory-$ts}"
+BK="${BK:-/srv/pickle/backup/platform-inventory-$ts}"
 mkdir -p "$BK"
 echo "== backup the inventory rows -> $BK/inventory-before.sql"
 pct exec "$CTID" -- su - postgres -c \

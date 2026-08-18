@@ -24,7 +24,7 @@ require_ct "$APP" pickle-app
 CONF=/etc/nginx/conf.d/pickle-tls.conf
 
 ts=$(date +%Y%m%d-%H%M%S)
-BK="${BK:-/root/pickle/backup/tls-ciphers-$ts}"
+BK="${BK:-/srv/pickle/backup/tls-ciphers-$ts}"
 mkdir -p "$BK"
 
 echo "== backup current nginx state of LXC $RP and LXC $APP -> $BK"

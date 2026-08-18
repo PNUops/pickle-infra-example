@@ -150,7 +150,7 @@ as procedure-shape only, never as values.
 ### 3. Workspace and vault
 
 Every script in this repo assumes the workspace layout on the host:
-`/root/pickle/<repo>` checkouts of this repo and the service repos it deploys
+`/srv/pickle/<repo>` checkouts of this repo and the service repos it deploys
 (api, console, sshgw, proxy-agent, relay-agent, image-builder), plus the
 git-crypt secrets vault at `$VAULT`. Clone them, then **HUMAN**:
 the git-crypt key is held by the operator and must be transferred out of band —

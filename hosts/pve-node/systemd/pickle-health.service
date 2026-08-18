@@ -1,6 +1,6 @@
 [Unit]
 Description=Pickle whole-system read-only health snapshot
-Documentation=file:///root/pickle/infra/README.md
+Documentation=file:///srv/pickle/infra/README.md
 After=pve-guests.service
 OnFailure=pickle-ops-failure@%n.service
 
@@ -9,7 +9,7 @@ Type=oneshot
 # Interpreter-invoked for both the wrapper and the check itself — see the
 # comment in pickle-db-backup.service. The snapshot never changes service
 # state; a non-zero exit only means some check reported FAIL.
-ExecStart=/bin/bash /root/pickle/infra/scripts/cron-wrap.sh health -- /bin/bash /root/pickle/infra/scripts/health-check.sh
+ExecStart=/bin/bash /srv/pickle/infra/scripts/cron-wrap.sh health -- /bin/bash /srv/pickle/infra/scripts/health-check.sh
 ExecStartPost=/bin/rm -f /var/lib/pickle-ops/unit-failure-%n.fail
 # The snapshot exits 1 when some check reports FAIL. That is the snapshot
 # doing its job, not the unit failing to run, and the wrapper already records

@@ -38,7 +38,7 @@ RELAY_SSH_PORT="${RELAY_SSH_PORT:-22}"
 VAULT="${VAULT:-/path/to/secrets-vault}"
 RELAY_SSH_KEY="${RELAY_SSH_KEY:-$VAULT/lightsail-ssh.pem}"
 RELAY_USER="${RELAY_USER:-admin}"
-RELAY_AGENT_DIR="${RELAY_AGENT_DIR:-/root/pickle/relay-agent}"
+RELAY_AGENT_DIR="${RELAY_AGENT_DIR:-/srv/pickle/relay-agent}"
 GO="${GO:-/usr/local/go/bin/go}"
 KEEP="${KEEP:-5}"
 # x2s per tick, and the gate consumes the WHOLE window rather than stopping at

@@ -21,7 +21,7 @@
 set -euo pipefail
 
 CTID="${CTID:-102}"
-SSHGW_DIR="${SSHGW_DIR:-/root/pickle/sshgw}"
+SSHGW_DIR="${SSHGW_DIR:-/srv/pickle/sshgw}"
 UNITS="sshpiperd.service sshgw-proxyfront.service sshgw-terminal-bridge.service"
 UNIT_STAGE=/run/pickle-sshgw-units
 HOSTNAME="${HOSTNAME_LXC:-pickle-sshgw}"

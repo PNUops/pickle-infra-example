@@ -1,7 +1,7 @@
 # DB Restore Runbook — pickle_dev (PostgreSQL in LXC 101)
 
 > Restores a `db-backup.sh` dump (`pickle_dev-YYYYMMDD-HHMMSS.sql.gz`, plain-format
-> pg_dump). Backups live on both sides: host `/root/pickle/backup/db/` and
+> pg_dump). Backups live on both sides: host `/srv/pickle/backup/db/` and
 > LXC 101 `/var/backups/pickle/` (14-day retention). This procedure was exercised
 > in essence during the 2026-07-17 full DB reset (drop → recreate → replay).
 > Production readiness additionally requires an OFF-HOST backup copy + a timed
@@ -21,8 +21,8 @@
 
 ```bash
 # 0) pick the dump (host side shown; LXC copies are identical)
-ls -lt /root/pickle/backup/db/ | head
-DUMP=/root/pickle/backup/db/pickle_dev-YYYYMMDD-HHMMSS.sql.gz
+ls -lt /srv/pickle/backup/db/ | head
+DUMP=/srv/pickle/backup/db/pickle_dev-YYYYMMDD-HHMMSS.sql.gz
 
 # 1) verify the dump BEFORE touching anything (content check, not just gzip -t)
 zcat "$DUMP" | head -5 | grep -q "PostgreSQL database dump" && echo dump-ok
@@ -31,7 +31,7 @@ zcat "$DUMP" | head -5 | grep -q "PostgreSQL database dump" && echo dump-ok
 pct exec 101 -- systemctl stop pickle-api
 
 # 3) take a safety dump of the CURRENT (broken) state first — always
-bash /root/pickle/infra/scripts/db-backup.sh   # or: suffix the file "-prerestore"
+bash /srv/pickle/infra/scripts/db-backup.sh   # or: suffix the file "-prerestore"
 
 # 4) drop & recreate (owner must stay `pickle`)
 pct exec 101 -- runuser -u postgres -- psql -qc \
@@ -178,13 +178,13 @@ this script serves a second host.
 
 ```bash
 PICKLE_RELAY_PUBLIC_HOST=ssh.example.dev \
-  bash /root/pickle/infra/scripts/apply-platform-inventory.sh
+  bash /srv/pickle/infra/scripts/apply-platform-inventory.sh
 ```
 
 The run ends by printing the node against the numbers just measured, the pool with
 its usage, the relay with its public host and every platform wildcard row, then a
 pass/fail list. Pre-change rows are dumped to
-`/root/pickle/backup/platform-inventory-<timestamp>/inventory-before.sql`
+`/srv/pickle/backup/platform-inventory-<timestamp>/inventory-before.sql`
 (data-only inserts) before anything is written.
 
 ### Environment — `apply-settings.sh`
@@ -199,7 +199,7 @@ pass/fail list. Pre-change rows are dumped to
 
 ```bash
 PICKLE_CONTACT_EMAIL=ops@example.org \
-  bash /root/pickle/infra/scripts/apply-settings.sh
+  bash /srv/pickle/infra/scripts/apply-settings.sh
 ```
 
 Two settings are lists the operator curates rather than values a default can
@@ -220,7 +220,7 @@ hand, or a rebuild silently reverts months of curation.
 | `PICKLE_DATA_DIR` | `<repo>/data` | Documents are read from `<data>/terms/*.md` |
 
 ```bash
-bash /root/pickle/infra/scripts/apply-terms.sh
+bash /srv/pickle/infra/scripts/apply-terms.sh
 ```
 
 Each document is one file: a four-line header (`doc_type`, `version`, `title`,

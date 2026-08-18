@@ -15,14 +15,14 @@
 # so the two schedules cannot both run.
 set -euo pipefail
 
-SRC_UNITS=/root/pickle/infra/hosts/pve-node/systemd
-SRC_MOTD=/root/pickle/infra/hosts/pve-node/motd/50-pickle-ops
+SRC_UNITS=/srv/pickle/infra/hosts/pve-node/systemd
+SRC_MOTD=/srv/pickle/infra/hosts/pve-node/motd/50-pickle-ops
 UNIT_DIR=/etc/systemd/system
 MOTD_DIR=/etc/update-motd.d
 STATE_DIR="${PICKLE_OPS_STATE_DIR:-/var/lib/pickle-ops}"
 
 ts=$(date +%Y%m%d-%H%M%S)
-BK="/root/pickle/backup/ops-timers-$ts"
+BK="/srv/pickle/backup/ops-timers-$ts"
 mkdir -p "$BK"
 
 echo "== backup the cron entries being replaced -> $BK"

@@ -39,7 +39,7 @@ require_ct "$RP" reverse-proxy
 require_ct "$APP" pickle-app
 
 ts=$(date +%Y%m%d-%H%M%S)
-BK="/root/pickle/backup/terminal-ingress-$ts"
+BK="/srv/pickle/backup/terminal-ingress-$ts"
 mkdir -p "$BK"
 
 echo "== backup current nginx state of LXC $RP and LXC $APP -> $BK"

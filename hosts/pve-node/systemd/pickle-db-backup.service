@@ -1,6 +1,6 @@
 [Unit]
 Description=Pickle dev database backup
-Documentation=file:///root/pickle/infra/runbooks/db-restore.md
+Documentation=file:///srv/pickle/infra/runbooks/db-restore.md
 # The dump runs `pct exec` into the app container, so the guests must be up
 # before this fires. Matters for the catch-up run a Persistent= timer does
 # after a boot: without this the catch-up would race container startup.
@@ -16,7 +16,7 @@ Type=oneshot
 # purpose. Invoking them directly makes the job depend on the file's execute
 # bit, and that dependency is exactly what silently stopped every backup and
 # health run for ten days: cron fired, exec failed, nothing was recorded.
-ExecStart=/bin/bash /root/pickle/infra/scripts/cron-wrap.sh db-backup -- /bin/bash /root/pickle/infra/scripts/db-backup.sh
+ExecStart=/bin/bash /srv/pickle/infra/scripts/cron-wrap.sh db-backup -- /bin/bash /srv/pickle/infra/scripts/db-backup.sh
 # Retract this unit's failure marker once it runs clean again. Without this a
 # single transient failure would leave the login notice complaining forever.
 ExecStartPost=/bin/rm -f /var/lib/pickle-ops/unit-failure-%n.fail
