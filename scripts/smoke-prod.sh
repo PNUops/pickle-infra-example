@@ -55,7 +55,7 @@ if [ -x "$HC" ]; then
 else ko "health-check.sh not executable at $HC"; fi
 
 echo "== [1] auth (probe account) =="
-EMAIL="${PICKLE_SMOKE_EMAIL:-orgadmin@pickle.local}"
+EMAIL="${PICKLE_SMOKE_EMAIL:-orgadmin@pnuops.com}"
 PW="${PICKLE_SMOKE_PASSWORD:-$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)}"
 AT=""
 if [ -z "$PW" ]; then
@@ -99,7 +99,8 @@ if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
   GID=$(jq -r '.id // empty' "$B")
   # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
   ADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
-  req "orgadmin login (org lookup)" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"orgadmin@pickle.local\",\"password\":\"$ADMIN_PW\"}"
+  ADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ADMIN_EMAIL="${ADMIN_EMAIL:-orgadmin@pnuops.com}"
+  req "orgadmin login (org lookup)" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PW\"}"
   AAT=$(jq -r '.accessToken // empty' "$B")
   req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT"; OID=$(jq -r '.[0].id // empty' "$B")
   req "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $OAT"
@@ -131,7 +132,8 @@ if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
       [ "$ST" = RUNNING ] && ok "VM RUNNING" || ko "VM not RUNNING (last=$ST)"
       # force-delete as seed SYS_ADMIN (confirmName only — no reason field)
       SYS_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
-      req "sysadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"admin@pickle.local\",\"password\":\"$SYS_PW\"}"
+      SYS_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYS_EMAIL="${SYS_EMAIL:-admin@pnuops.com}"
+      req "sysadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$SYS_EMAIL\",\"password\":\"$SYS_PW\"}"
       XAT=$(jq -r '.accessToken // empty' "$B")
       req "force-delete" 202 -X POST "$BASE/admin/vms/$VM/force-delete" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' -d "{\"confirmName\":\"$VNAME\"}"
       echo "-- poll DELETED (<=3min) --"

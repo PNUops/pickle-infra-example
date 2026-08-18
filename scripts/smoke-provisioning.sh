@@ -40,9 +40,9 @@ USER_PW="smoke-pass-${TS}!"
 seed_env() {
   pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"
 }
-ORGADMIN_EMAIL="${PICKLE_SEED_ORGADMIN_EMAIL:-orgadmin@pickle.local}"
+ORGADMIN_EMAIL="${PICKLE_SEED_ORGADMIN_EMAIL:-orgadmin@pnuops.com}"
 ORGADMIN_PW="${PICKLE_SEED_ORGADMIN_PASSWORD:-$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)}"
-SYSADMIN_EMAIL="${PICKLE_SEED_SYSADMIN_EMAIL:-admin@pickle.local}"
+SYSADMIN_EMAIL="${PICKLE_SEED_SYSADMIN_EMAIL:-admin@pnuops.com}"
 SYSADMIN_PW="${PICKLE_SEED_SYSADMIN_PASSWORD:-$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)}"
 if [ -z "$ORGADMIN_PW" ] || [ -z "$SYSADMIN_PW" ]; then
   echo "FATAL: seed admin passwords not found (env or CTID $CTID api.env)" >&2

@@ -33,8 +33,8 @@ done
 
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"; }
 pgq(){ pct exec "$CTID" -- su - postgres -c "psql -q -d pickle_dev -tAc \"$1\"" 2>/dev/null | tr -d '[:space:]'; }
-ORGADMIN_EMAIL="orgadmin@pickle.local"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
-SYSADMIN_EMAIL="admin@pickle.local"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
+ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGADMIN_EMAIL:-orgadmin@pnuops.com}"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
+SYSADMIN_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYSADMIN_EMAIL="${SYSADMIN_EMAIL:-admin@pnuops.com}"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
 JRU="$(seed_env PICKLE_JOBRUNR_DASH_USER)"; JRP="$(seed_env PICKLE_JOBRUNR_DASH_PASS)"
 if [ -z "$ORGADMIN_PW" ] || [ -z "$SYSADMIN_PW" ] || [ -z "$JRU" ] || [ -z "$JRP" ]; then
   echo "FATAL: seed admin / JobRunr dashboard credentials not found in CTID $CTID api.env"; exit 2

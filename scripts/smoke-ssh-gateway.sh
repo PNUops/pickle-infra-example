@@ -49,8 +49,8 @@ pgx(){
   fi
 }
 
-ORGADMIN_EMAIL="orgadmin@pickle.local"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
-SYSADMIN_EMAIL="admin@pickle.local"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
+ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGADMIN_EMAIL:-orgadmin@pnuops.com}"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
+SYSADMIN_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYSADMIN_EMAIL="${SYSADMIN_EMAIL:-admin@pnuops.com}"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
 
 P=0; F=0; ok(){ echo "PASS  $1"; P=$((P+1)); }; ko(){ echo "FAIL  $1"; F=$((F+1)); }
 req(){ local n="$1" e="$2"; shift 2; local c; c=$(curl -sS -o "$B" -w '%{http_code}' "$@"); [ "$c" = "$e" ] && { ok "$n ($c)"; return 0; } || { ko "$n (want $e got $c)"; head -c 300 "$B"; echo; return 1; }; }

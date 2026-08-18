@@ -33,8 +33,8 @@ SUB2="${SUB}-b"
 ROOT="${ROOT:-pusan.dev}"
 USER_EMAIL="http-${TS}@pusan.ac.kr"; USER_PW="http-pass-${TS}!"
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"; }
-ORGADMIN_EMAIL="orgadmin@pickle.local"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
-SYSADMIN_EMAIL="admin@pickle.local"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
+ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGADMIN_EMAIL:-orgadmin@pnuops.com}"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
+SYSADMIN_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYSADMIN_EMAIL="${SYSADMIN_EMAIL:-admin@pnuops.com}"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
 B=$(mktemp); RT_DIR=$(mktemp -d)   # RT_DIR: sudo-mode token cache (see reauth below)
 # Always-run cleanup (EXIT trap): a mid-run failure after the VM exists must
 # not leak a real guest + IP — force-delete best-effort, mirroring smoke-provisioning.
