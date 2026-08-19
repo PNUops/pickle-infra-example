@@ -60,6 +60,21 @@ for path in "${files[@]}"; do
   fi
 done
 
+# A repository can declare that this scan is advisory for it:
+#
+#     git config pickle.secretscan warn
+#
+# It is set per checkout, never here, because the repositories that must keep the
+# hard failure are the published ones and this file is installed into all of them.
+# The one that sets it is the private documentation repository, which holds real
+# credentials deliberately; blocking there would be answered with --no-verify on
+# every commit, and a check routinely bypassed protects nothing. Warning keeps the
+# finding visible without training anyone to skip the hook.
+if [ "$hit" = 1 ] && [ "$(git config --get pickle.secretscan 2>/dev/null)" = warn ]; then
+  echo "pre-commit: secret-shaped content above is advisory in this repository (pickle.secretscan=warn)" >&2
+  hit=0
+fi
+
 if [ "$hit" = 1 ]; then
   echo "pre-commit: aborting (secret pattern in staged content, or content that could not be scanned). Use --no-verify only for a confirmed false positive." >&2
   exit 1
