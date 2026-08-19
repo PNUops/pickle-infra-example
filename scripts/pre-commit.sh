@@ -49,7 +49,12 @@ for path in "${files[@]}"; do
     hit=1
     continue
   fi
-  if grep -EIq "${patterns[@]}" "$blob"; then
+  # A line that legitimately shows a secret-shaped string says so on itself, and
+  # the scan believes it — the same allowance the documentation gate honours. It
+  # was missing here, so a line the gate passed could still be unable to reach a
+  # commit, and the only way through was --no-verify, which switches off every
+  # other shape as well. Match on the line, never on the file.
+  if grep -EIn "${patterns[@]}" "$blob" | grep -qvF '# not-a-secret'; then
     echo "pre-commit: possible secret in staged content of: $path" >&2
     hit=1
   fi
