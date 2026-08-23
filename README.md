@@ -30,10 +30,16 @@ pve-node (Proxmox VE) ───────────────────�
  │   ├─ LXC 101 pickle-app     PostgreSQL + pickle-api + nginx(콘솔 정적·/api 프록시)
  │   └─ LXC 102 pickle-sshgw   proxyfront + sshpiperd + 터미널 브리지 + WireGuard 종단
  └─ vmbr2 (사용자, 격리)       사용자 VM (Ubuntu cloud-init 템플릿에서 클론)
+
+비Proxmox 노드:
+ ├─ gpu-node   aarch64 GPU 노드        캠퍼스망 192.0.2.20 — LLM 서빙 예정
+ └─ dept-node  x86 서버(Ubuntu)        dept-node.example.ac.kr:22 — 학과 공유 서버
 ```
 
 vmbr1은 인프라 전용, vmbr2는 사용자 전용이고 둘 사이에 직접 경로가 없습니다. 산출물은
-전부 셸과 마크다운입니다.
+전부 셸과 마크다운입니다. 주 대상은 Proxmox 호스트이고, 플랫폼에 편입된 비Proxmox
+노드의 편입 절차도 함께 다룹니다. 비Proxmox 노드 두 대는 접속 경로만 구성된 상태이고,
+플랫폼 서비스는 아직 배치되어 있지 않습니다.
 
 ## 주요 기능
 
@@ -69,6 +75,9 @@ scripts/          프로비저닝·배포·정책 적용·검증·스모크
 runbooks/         운영 절차                                    // 이 예시본에는 일부만 포함
 ```
 
+호스트별 설정 파일은 `hosts/<이름>/` 아래에 둡니다. 새 노드의 디렉터리는 첫 설정
+산출물이 생길 때 만들고, 편입 자체는 `runbooks/node-intake.md`를 따릅니다.
+
 ### scripts/
 
 | 분류 | 스크립트 |
@@ -90,9 +99,10 @@ runbooks/         운영 절차                                    // 이 예시
 ### runbooks/
 
 이 예시본에는 `new-environment.md`(신규 환경 관통 구축 순서 — 환경별로 바꿀 값 표와
-사람만 할 수 있는 단계·절차가 없는 지점 명시), `drift-resolution.md`(DB와 하이퍼바이저
-상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원)를 담았습니다. 나머지 재구축과
-복구 절차는 비공개 레포지토리에 둡니다.
+사람만 할 수 있는 단계·절차가 없는 지점 명시), `node-intake.md`(비Proxmox 노드 편입 절차 —
+실측 체크리스트, 운영자 접속 키 설치, 대역외 관리 평면 점검), `drift-resolution.md`(DB와
+하이퍼바이저 상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원)를 담았습니다.
+나머지 재구축과 복구 절차는 비공개 레포지토리에 둡니다.
 
 ## 검증
 
@@ -118,7 +128,9 @@ scripts/verify.sh        # 모든 셸 스크립트 shellcheck 전수 + 위생 �
 | 플랫폼 브리지 대역 | `198.18.0.0/16` |
 | 게스트 대역 | `198.19.0.0/16` |
 | 릴레이 터널 대역 | `100.64.0.0/30` |
-| 호스트 이름 | `pve-node` |
+| 호스트 이름 | `pve-node`, `gpu-node`, `dept-node` |
+| 비Proxmox 노드 주소·접속명 | `192.0.2.20`, `dept-node.example.ac.kr` |
+| 비Proxmox 노드 하드웨어 모델 | 아키텍처만 남기고 제조사·모델명 생략 |
 
 `192.0.2.0/24`와 `198.51.100.0/24`, `203.0.113.0/24`는 RFC 5737이 문서화 용도로 예약한
 대역이라 실제 인터넷에 존재하지 않습니다. 관리 SSH 포트도 한눈에 자리표시자로 보이도록
