@@ -55,8 +55,8 @@ vmbr1은 인프라 전용, vmbr2는 사용자 전용이고 둘 사이에 직접 
 - **배포는 헬스 게이트를 통과해야 끝납니다.** `deploy-api.sh`는 새 jar로 서비스를 올린 뒤
   헬스 체크가 통과하지 못하면 직전 아티팩트로 되돌립니다. `deploy-sshgw.sh`는 바이너리
   세 개를 한 세트로 원자 교체해, 절반만 새 버전인 상태를 만들지 않습니다.
-- **위생 검사에 셀프테스트가 붙어 있습니다.** `hygiene.sh`는 매 실행마다 합성 위반
-  케이스로 자기 검사 로직이 살아 있는지 먼저 확인한 뒤 본 검사를 수행합니다.
+- **정제 검사에 셀프테스트가 붙어 있습니다.** `sanitization-check.sh`는 매 실행마다 합성
+  위반 케이스로 자기 검사 로직이 살아 있는지 먼저 확인한 뒤 본 검사를 수행합니다.
 - **주기 작업의 실패가 남습니다.** `cron-wrap.sh`가 성공과 실패 마커를 기록하고, systemd
   `OnFailure`가 `ops-unit-failed.sh`로 알림을 띄웁니다.
 
@@ -77,7 +77,7 @@ runbooks/         운영 절차                                    // 이 예시
 | 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `apply-relay-token.sh` |
 | 운영 | `db-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh` |
-| 검증 | `verify.sh`, `hygiene.sh`, `setup-hooks.sh`, `pre-commit.sh`, `commit-msg.sh` |
+| 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
 
 스모크는 목이 아니라 살아 있는 시스템에 실제 요청을 보냅니다. `smoke-provisioning.sh`는
