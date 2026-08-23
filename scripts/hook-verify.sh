@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Per-commit verification for this repo, run by scripts/pre-commit.sh.
-# Cheap here: shellcheck over the scripts plus the publication hygiene gate.
+# Per-commit verification for this repo, run by the commit hook when it is
+# executable. Cheap here: shellcheck over the scripts and the sample checks.
 #
 # Git exports GIT_DIR, GIT_INDEX_FILE and friends while a hook runs, and they
-# follow every git command the verification makes. The hygiene selftest builds
-# a throwaway repository and stages files in it; with those variables inherited
-# it stages into the repository being committed instead, which empties that
+# follow every git command the verification makes. A selftest that builds a
+# throwaway repository and stages files in it would, with those variables
+# inherited, stage into the repository being committed instead and empty that
 # index. Clear them before handing over.
 set -eu
 cd "$(dirname "$0")/.."

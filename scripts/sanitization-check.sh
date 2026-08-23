@@ -89,14 +89,10 @@ sanitization_check() {
     addr=${line#*:}
     addr_allowed "$addr" && continue
     sfail "$file carries $addr, which is neither a documentation range nor private addressing"
-    # Two files are skipped, both because they are made of samples the rules
-    # exist to reject. This one's selftest needs values the address rule must
-    # refuse, so scanning itself would bury a real finding among its own probes.
-    # hygiene.sh is the shared publication scanner, byte-identical across every
-    # repository, so its samples cannot be rewritten to suit this tree alone —
-    # and they are synthetic already, which is the property that matters.
+    # This file is skipped because it is made of samples the rules exist to
+    # reject: its selftest needs values the address rule must refuse, so
+    # scanning itself would bury a real finding among its own probes.
   done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$' \
-    | grep -zv '^scripts/hygiene\.sh$' \
     | xargs -0 grep -EoI '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 2>/dev/null | sort -u)
 
   # 1b. The same question for IPv6.

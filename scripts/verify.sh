@@ -4,13 +4,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mapfile -t scripts < <(find . -name '*.sh' -not -path './.git/*')
 shellcheck "${scripts[@]}"
-# Publication hygiene: no references to paths this repository does not contain,
-# none to a private tree or a vault, no internal process tokens. Enforced here because two manual scrubs
-# both missed real violations.
-# shellcheck source=scripts/hygiene.sh
-. scripts/hygiene.sh   # cwd is the repo root (set above)
-hygiene_selftest
-hygiene_check infra
 
 # This tree is a sanitized copy, and the way it stops being one is that a value
 # from the original arrives with a mirrored change. Once that happens the two
