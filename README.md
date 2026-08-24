@@ -97,11 +97,11 @@ runbooks/         운영 절차                                    // 이 예시
 ## 검증
 
 ```bash
-scripts/verify.sh        # 모든 셸 스크립트 shellcheck 전수 + 위생 검사
+scripts/verify.sh        # 모든 셸 스크립트 shellcheck 전수 + 정제·스케줄 유닛 검사
 ```
 
 `verify.sh`는 커밋 전 필수입니다. shellcheck 위반이 하나라도 있으면 실패하고, 이어서 도는
-위생 검사는 레포지토리에 남으면 안 되는 참조나 표기를 찾습니다.
+정제 검사는 이 샘플에 실제 주소나 실제 값이 섞이지 않았는지 확인합니다.
 
 ## 무엇을 바꿨나
 
