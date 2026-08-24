@@ -32,7 +32,7 @@ pve-node (Proxmox VE) ───────────────────�
  └─ vmbr2 (사용자, 격리)       사용자 VM (Ubuntu cloud-init 템플릿에서 클론)
 
 비Proxmox 노드:
- ├─ gpu-node   aarch64 GPU 노드        캠퍼스망 192.0.2.20 — LLM 서빙 예정
+ ├─ gpu-node   aarch64 GPU 노드        캠퍼스망 192.0.2.20 — vLLM 서빙 :8000 (pickle-vllm)
  └─ dept-node  x86 서버(Ubuntu)        dept-node.example.ac.kr:22 — 학과 공유 서버
 ```
 
@@ -83,7 +83,7 @@ runbooks/         운영 절차                                    // 이 예시
 | 분류 | 스크립트 |
 |---|---|
 | 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh` |
-| 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh` |
+| 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `apply-relay-token.sh` |
 | 운영 | `db-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh` |
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh` |
@@ -101,8 +101,9 @@ runbooks/         운영 절차                                    // 이 예시
 이 예시본에는 `new-environment.md`(신규 환경 관통 구축 순서 — 환경별로 바꿀 값 표와
 사람만 할 수 있는 단계·절차가 없는 지점 명시), `node-intake.md`(비Proxmox 노드 편입 절차 —
 실측 체크리스트, 운영자 접속 키 설치, 대역외 관리 평면 점검), `drift-resolution.md`(DB와
-하이퍼바이저 상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원)를 담았습니다.
-나머지 재구축과 복구 절차는 비공개 레포지토리에 둡니다.
+하이퍼바이저 상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원),
+`gpu-node-vllm.md`(GPU 노드 vLLM 서빙 운영 — 시작·종료, 모델·플래그 교체와 롤백, 장애
+복구, 재부팅)를 담았습니다. 나머지 재구축과 복구 절차는 비공개 레포지토리에 둡니다.
 
 ## 검증
 

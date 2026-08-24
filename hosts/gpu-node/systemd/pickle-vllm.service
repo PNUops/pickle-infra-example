@@ -1,0 +1,49 @@
+# pickle-vllm.service — vLLM OpenAI-compatible serving on the GPU node.
+# Master copy: infra hosts/gpu-node/systemd/; installed by scripts/apply-gpu-node-vllm.sh.
+# The container pin and model are deliberate values — change them here and
+# re-apply, never by editing /etc/systemd/system on the host.
+[Unit]
+Description=Pickle vLLM serving
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+# VLLM_API_KEY lives here (vault master).
+EnvironmentFile=/etc/pickle/vllm.env
+# Unified-memory workaround: vLLM's startup memory check counts reclaimable
+# page cache as used on UMA boxes (vllm-project/vllm#35313); drop caches first.
+ExecStartPre=/bin/sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+ExecStartPre=-/usr/bin/docker rm -f pickle-vllm
+ExecStart=/usr/bin/docker run --name pickle-vllm --rm \
+  --gpus all \
+  --env VLLM_API_KEY \
+  --env VLLM_USE_DEEP_GEMM=0 \
+  -v /var/lib/pickle-vllm/hf-cache:/root/.cache/huggingface \
+  -p 192.0.2.20:8000:8000 \
+  vllm/vllm-openai:v0.27.1 \
+  --model Qwen/Qwen3.6-35B-A3B-FP8 \
+  --served-model-name qwen3.6-35b-a3b-fp8 \
+  --kv-cache-dtype fp8 \
+  --gpu-memory-utilization 0.70 \
+  --max-model-len 65536 \
+  --max-num-seqs 8 \
+  --max-num-batched-tokens 8192 \
+  --enable-prefix-caching \
+  --async-scheduling \
+  --reasoning-parser qwen3 \
+  --tool-call-parser qwen3_xml \
+  --enable-auto-tool-choice
+ExecStop=/usr/bin/docker stop -t 30 pickle-vllm
+# Type=exec means "started" the moment docker run execs, not when the model is
+# ready — so systemd never waits on the minutes-long load and never shoots a
+# warming server. TimeoutStartSec is a generous backstop for the exec itself,
+# NOT a readiness bound; do not switch to Type=notify trusting this number to
+# gate the model load without re-checking it.
+TimeoutStartSec=1800
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
