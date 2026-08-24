@@ -19,6 +19,19 @@ sanitization_check
 # health run died at exec for ten days with the error going nowhere. A unit that
 # names a repo script directly would reintroduce exactly that.
 unit_fail=0
+# Materialise the list first, then refuse an empty one. `find hosts … 2>/dev/null`
+# piped straight into the loop walks zero units when `hosts/` is renamed or
+# absent and reports success -- and the count printed at the end comes from the
+# lint array instead, so the number corroborates the lie. A tree with no units
+# is a broken checkout, not a clean one.
+units_list="$(mktemp)"
+trap 'rm -f "$units_list"' EXIT
+find hosts -name '*.service' > "$units_list" 2>/dev/null || true
+if [ ! -s "$units_list" ]; then
+  echo "verify: no systemd units found under hosts/ — the search itself is broken" >&2
+  exit 1
+fi
+unit_count=$(grep -c '' "$units_list")
 while IFS= read -r unit; do
   while IFS= read -r line; do
     # The command word is whatever follows the directive, minus systemd's
@@ -37,7 +50,7 @@ while IFS= read -r unit; do
         ;;
     esac
   done < <(grep -hE '^(ExecStart|ExecStartPre|ExecStartPost|ExecStop|ExecReload)=' "$unit" || true)
-done < <(find hosts -name '*.service' 2>/dev/null)
+done < "$units_list"
 [ "$unit_fail" -eq 0 ] || { echo "verify: scheduled-unit check failed" >&2; exit 1; }
 
-echo "infra verify OK (${#scripts[@]} scripts)"
+echo "infra-example verify OK (${#scripts[@]} scripts, $unit_count scheduled units)"
