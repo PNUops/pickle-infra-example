@@ -78,6 +78,36 @@ addr_allowed() {
   return 1
 }
 
+# Domain names, recognised by a final label that is actually a top-level domain.
+# Without that condition the pattern reads `api.env` and `origin.key` as hosts.
+SANITIZE_HOST_TLD='(com|net|org|edu|gov|int|mil|io|dev|app|ai|cloud|info|biz|me|co|kr|jp|cn|tw|uk|us|de|fr|eu|ru|in)'
+SANITIZE_HOST='\b([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)+'"$SANITIZE_HOST_TLD"'\b'
+
+# sanitize_host_allowed NAME -> 0 when a domain name may appear in this tree.
+# The reserved example and test names cover every substituted host; github.com
+# and its raw file host are the project's own links, public by definition.
+sanitize_host_allowed() {
+  local h
+  h=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$h" in
+    example.com | example.net | example.org | *.example.com | *.example.net | *.example.org) return 0 ;;
+    example.ac.kr | *.example.ac.kr) return 0 ;;
+    example.dev | *.example.dev) return 0 ;;
+    *.example | *.invalid | *.test | *.localhost) return 0 ;;
+    # The project's own public addresses: the service answers at them, the
+    # organisation page prints them, and every published repository names them.
+    # Withholding them here would hide nothing and would only make these
+    # scripts read less like the ones they mirror.
+    pusan.ac.kr | *.pusan.ac.kr | pusan.dev | *.pusan.dev) return 0 ;;
+    pnuops.com | *.pnuops.com | pcl.kr | *.pcl.kr) return 0 ;;
+    # Public infrastructure these scripts genuinely fetch from.
+    github.com | *.github.com | githubusercontent.com | *.githubusercontent.com) return 0 ;;
+    *.debian.org | *.ubuntu.com | *.postgresql.org | *.proxmox.com | *.docker.com) return 0 ;;
+    *.letsencrypt.org | *.cloudflare.com | *.npmjs.org | *.golang.org | *.maven.org) return 0 ;;
+  esac
+  return 1
+}
+
 sanitization_check() {
   SANITIZE_FAIL=0
   local file line addr count=0
@@ -126,11 +156,30 @@ sanitization_check() {
   done < <(git ls-files -z \
     | xargs -0 grep -EnI '(RELAY_SSH_PORT|SSH_PORT)="?\$\{[A-Z_]+:-[0-9]+\}' 2>/dev/null \
     | grep -vE ':-22\}')
+  # Case-insensitive on BOTH sides. The finder was case-sensitive while the
+  # allowance that drops the standard value was not, so one capital letter --
+  # `Admin sshd` against `admin sshd` -- turned the rule off for that line. The
+  # spellings that actually occur are added too: `ssh -p N`, sshd's own
+  # `Port N`, a bare `SSH_PORT=N`, and the Korean prose these runbooks are
+  # written in, which the English-only pattern could never reach.
   while IFS= read -r line; do
     sfail "an administrative SSH port is written out as something other than the standard one: $line"
   done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$' \
-    | xargs -0 grep -EnI '(admin(istrative)? ssh[^0-9]{0,24}|_SSH_PORT[^0-9]{0,8})[`:]?[0-9]+' 2>/dev/null \
-    | grep -viE '(admin(istrative)? ssh[^0-9]{0,24}|_SSH_PORT[^0-9]{0,8})[`:]?22([^0-9]|$)')
+    | xargs -0 grep -EnIi '(admin(istrative)? ssh[^0-9/]{0,24}|관리(용)? ?ssh[^0-9/]{0,24}|_SSH_PORT[^0-9/]{0,8}|\bSSH_PORT=|ssh +-p +|^[[:space:]]*Port +)[`:]?[0-9]+' 2>/dev/null \
+    | grep -viE '(admin(istrative)? ssh[^0-9/]{0,24}|관리(용)? ?ssh[^0-9/]{0,24}|_SSH_PORT[^0-9/]{0,8}|\bSSH_PORT=|ssh +-p +|^[^:]*:[0-9]+:[[:space:]]*Port +)[`:]?22([^0-9]|$)')
+
+  # 4. Host names. `CLAUDE.md` lists "host names -> example names" as one of the
+  # substitutions this copy promises, and nothing checked it: the real console,
+  # gateway and SSH host names all passed. The sibling gate on the vault copy
+  # has had this rule since it was written; this one never received it.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    file=${line%%:*}
+    host=${line#*:}
+    sanitize_host_allowed "$host" && continue
+    sfail "$file names the host $host, which is not one of the reserved example names"
+  done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$' \
+    | xargs -0 grep -HoIE "$SANITIZE_HOST" 2>/dev/null | sort -u)
 
   [ "$SANITIZE_FAIL" -eq 0 ] || return 1
   echo "sanitization OK"
