@@ -12,6 +12,9 @@ already exists — each step points at the runbook or script that owns it.
 (Runbooks not carried in this sample copy are kept in the private repository;
 they are named descriptively below.)
 
+This runbook targets a Proxmox node. A host that is not a Proxmox node joins
+the platform via [node-intake.md](node-intake.md) instead.
+
 Three markers are used throughout, and they are the point of the document:
 
 - **HUMAN** — only the operator can do this step: purchases, account creation,
