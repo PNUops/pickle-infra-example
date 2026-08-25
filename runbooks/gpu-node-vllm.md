@@ -16,9 +16,10 @@ The moving parts, and where each is mastered:
 
 The serving endpoint is `http://192.0.2.20:8000/v1` (campus band only, no public
 inbound), OpenAI-compatible, authenticated with the `VLLM_API_KEY` bearer value
-from the env file. The LLM gateway is the only intended client; until the
-cutover round points the gateway here, nothing in production depends on this
-service — restarts are free.
+from the env file. The LLM gateway is the only intended client and routes the
+self-serve catalog model here — a restart is a brief self-serve outage that
+the gateway surfaces as upstream errors and absorbs on its own; no other
+service is affected.
 
 ## Start / stop
 
@@ -50,6 +51,11 @@ curl -s -H "Authorization: Bearer $KEY" http://192.0.2.20:8000/v1/models
 
 Unauthenticated requests must get 401 — if `/v1/models` answers without the
 bearer, the env file did not reach the process; stop the service and re-apply.
+
+After any model or quantization change, make the first request a known-answer
+prompt (e.g. "What is 2+2?" must contain "4") before trusting the endpoint: a
+mis-selected FP4 GEMM backend on this GPU class emits plausible garbage
+instead of failing, and only an answer check catches it.
 
 ## Model or flag change, and rollback
 
@@ -83,8 +89,9 @@ Old weights stay in the cache and make rollback instant; prune consciously.
 - **Service flapping (Restart=on-failure loop)**: `journalctl -u pickle-vllm
   --since -30min`. A bad flag or a model id typo fails identically every time —
   stop the service, fix the unit, re-apply.
-- **Serving wedged but process alive**: `systemctl restart pickle-vllm` is safe
-  pre-cutover.
+- **Serving wedged but process alive**: `systemctl restart pickle-vllm` is the
+  right move — the gateway retries upstreams and its own error envelope covers
+  the brief self-serve gap.
 
 ## Box reboot
 
@@ -104,7 +111,7 @@ check.
 - The gateway reaches the GPU node over the existing infra-bridge egress; no
   host firewall rule is involved and none should be added for this path.
 - The serving API key is one value in two places by design: the vault master
-  here, and (post-cutover) the gateway env's upstream block. Rotate by
+  here, and the gateway env's upstream block. Rotate by
   generating a new value into the vault, re-applying here, then updating the
   gateway env — in that order, the gap is a brief upstream-auth failure the
   gateway absorbs as upstream error.
