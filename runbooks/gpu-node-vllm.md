@@ -4,7 +4,7 @@ Operates the self-hosted model behind the campus LLM API. The serving box is an
 aarch64 GPU node with a unified-memory architecture (no dedicated VRAM; the
 model-size budget and the OS share one pool). Access rides the operator root
 key (`Host gpu-node-root` in the development machine's ssh config, key in the
-workspace key store); nothing here runs on the box's own crontab or checkout.
+operator's key store); nothing here runs on the box's own crontab or checkout.
 
 The moving parts, and where each is mastered:
 
