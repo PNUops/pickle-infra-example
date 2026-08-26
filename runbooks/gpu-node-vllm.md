@@ -106,19 +106,52 @@ The unit is `WantedBy=multi-user.target` and docker is enabled, so serving
 returns on its own; the model load makes that minutes, then run the health
 check.
 
-**Measured 2026-08-25** (first reboot of this box in weeks, run deliberately
-before a planned power outage): ssh answered again **37 seconds** after the
-reboot command, the unit was already `active` with no intervention, and the
-endpoint answered a known-answer prompt about **6 minutes** in. So the number to
-wait before suspecting a problem is minutes, not seconds — a cold boot is slower
-than a `systemctl restart` of the same unit (360s against 165s measured the same
-day) because driver initialisation and reading the weights off local storage are
-paid on top of the model load.
+**Measured** on a deliberate `systemctl reboot`, the box's first reboot in
+weeks, confirmed against `journalctl --list-boots`:
 
-What that test does NOT cover: whether the machine powers itself on when AC
-returns. That is a BIOS setting, systemd has no say in it, and on a node with no
-BMC it cannot be read or changed remotely — the only way to know is a real power
-cut. Plan for someone being able to reach the power button after an outage.
+| Milestone | Time from the reboot command |
+|---|---|
+| ssh answers again | **37 s** |
+| `pickle-vllm` reports `active` | ~37 s, no intervention |
+| endpoint answers a known-answer prompt | **~6 min** (360 s) |
+
+**`active` is not ready.** The unit is `Type=exec`, so systemd calls it started
+the moment `docker run` execs and never waits for the model. The only readiness
+signal is a real answer from the endpoint. Reporting a node recovered on
+`is-active` will have the gateway returning 502 for another five minutes.
+
+**Escalation thresholds** (a node with no BMC needs someone physically present
+when a boot fails):
+
+- **ssh not answering by ~3 min** — the boot itself failed. Nothing further will
+  happen on its own; start arranging physical access rather than waiting out the
+  six-minute figure above.
+- **ssh up, endpoint silent past ~12 min** — investigate (`journalctl -u
+  pickle-vllm`, `docker logs pickle-vllm`). Do **not** restart the unit before
+  then: a restart mid-load throws away the loading already done and resets the
+  clock.
+
+**A cold boot is slower than a warm `systemctl restart` of the same unit** (360 s
+against 165 s, measured the same day), but note the two are counted from
+different points — the 360 s includes shutdown and the whole OS boot, the 165 s
+starts at the restart command. **The extra time is firmware POST, kernel boot,
+GPU driver init and the docker daemon starting**, not the weight read: the
+unit's `ExecStartPre` drops the page cache on *every* start, so a warm restart
+re-reads the full weights off local storage exactly as a cold one does. That
+line is there for the unified-memory startup-check bug; removing it to "keep
+restarts warm" would reintroduce that failure and would not speed anything up.
+
+**Scope of the test**: one clean in-OS reboot, n=1. A boot after an unplanned
+power loss can be slower — cold POST, and filesystem recovery if the shutdown
+was unclean — so treat the thresholds above as guidance, not as a contract.
+
+**What it does not cover at all: whether the machine powers itself on when AC
+returns.** That is firmware behaviour, not systemd's, and on a node with no BMC
+it cannot be read or changed over the network. It can be settled without waiting
+for an outage: read the firmware setup at the physical console, or do an
+attended plug pull. Until one of those happens, do not assume the option even
+exists on the model in use — plan for someone being able to reach the power
+button.
 
 ## Interactions to keep in mind
 
