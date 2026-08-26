@@ -106,6 +106,20 @@ The unit is `WantedBy=multi-user.target` and docker is enabled, so serving
 returns on its own; the model load makes that minutes, then run the health
 check.
 
+**Measured 2026-08-25** (first reboot of this box in weeks, run deliberately
+before a planned power outage): ssh answered again **37 seconds** after the
+reboot command, the unit was already `active` with no intervention, and the
+endpoint answered a known-answer prompt about **6 minutes** in. So the number to
+wait before suspecting a problem is minutes, not seconds — a cold boot is slower
+than a `systemctl restart` of the same unit (360s against 165s measured the same
+day) because driver initialisation and reading the weights off local storage are
+paid on top of the model load.
+
+What that test does NOT cover: whether the machine powers itself on when AC
+returns. That is a BIOS setting, systemd has no say in it, and on a node with no
+BMC it cannot be read or changed remotely — the only way to know is a real power
+cut. Plan for someone being able to reach the power button after an outage.
+
 ## Interactions to keep in mind
 
 - The gateway reaches the GPU node over the existing infra-bridge egress; no
