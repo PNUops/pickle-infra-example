@@ -223,9 +223,17 @@ conf=/etc/nginx/nginx.conf
 grep -q "worker_connections 4096;" "$conf" \
   || sed -i "s/^\tworker_connections 768;$/\tworker_connections 4096;/" "$conf"
 grep -q "^worker_rlimit_nofile" "$conf" \
-  || sed -i "/^worker_processes auto;$/a worker_rlimit_nofile 16384;" "$conf"
-grep -q "worker_connections 4096;" "$conf" && grep -q "^worker_rlimit_nofile 16384;" "$conf"'
-echo "  OK   worker_connections 4096, worker_rlimit_nofile 16384"
+  || sed -i "/^worker_processes /a worker_rlimit_nofile 16384;" "$conf"
+# auto resolves to one worker per HOST cpu, which on a many-core host is far
+# more than this single-core container can use. Each worker carries its own
+# connection pool and its own memory, so the count multiplied the footprint
+# without buying throughput: the cgroup peaked 2 MiB short of its 512 MiB
+# ceiling. Two is pinned here; revisit only when this container gets more cores.
+grep -q "^worker_processes 2;" "$conf" \
+  || sed -i "s/^worker_processes .*/worker_processes 2;/" "$conf"
+grep -q "worker_connections 4096;" "$conf" && grep -q "^worker_rlimit_nofile 16384;" "$conf" \
+  && grep -q "^worker_processes 2;" "$conf"'
+echo "  OK   worker_processes 2, worker_connections 4096, worker_rlimit_nofile 16384"
 
 echo "== LXC $RP: rate-limit zones + TLS session cache (http context)"
 pct exec "$RP" -- bash -c 'cat > /etc/nginx/conf.d/pickle-ratelimit.conf' <<EOF
@@ -433,6 +441,15 @@ server {
     location / {
         limit_req zone=pickle_api burst=200 nodelay;
         limit_conn pickle_perip 100;
+        # Notice images upload through this location (one multipart file, 2 MB
+        # cap on the api side); 4m mirrors the api's whole-request multipart
+        # cap so this tier is never the tighter bound. The app tier behind
+        # it carries the same value, set by create-app-lxc.sh; a request
+        # crosses both nginx tiers and the tighter one decides, so the two
+        # values have to move together. Scoped here on purpose: the auth and
+        # terminal locations above carry no bodies of that size and keep
+        # nginx's 1m default.
+        client_max_body_size 4m;
         proxy_pass http://198.18.1.20:80;
         # snippets/proxy-common.conf, except X-Real-IP carries the validated
         # client IP instead of the raw peer address.

@@ -80,7 +80,7 @@ install -d -o pickle -g pickle -m 700 /var/lib/pickle
 # pveproxy cert's SANs cover the hostname (pve-node), not the vmbr1 bridge IP, so
 # the API must be addressed as https://pve-node:8006 (nodes.api_host, api V10).
 # Outside the PVE-managed block, so pct config rewrites leave it alone.
-if ! grep -q '^172\.30\.0\.1 pve-node$' /etc/hosts; then
+if ! grep -q '^198\.18\.0\.1 pve-node$' /etc/hosts; then
   printf '\n# pve-node Proxmox API via vmbr1 (cert SAN is the hostname)\n198.18.0.1 pve-node\n' >> /etc/hosts
   echo "added pve-node hosts mapping"
 fi
@@ -235,6 +235,14 @@ server {
     add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'" always;
 
     location /api/ {
+        # Notice images upload through here (one multipart file, 2 MB cap on
+        # the api side); 4m mirrors the api's whole-request multipart cap so
+        # this tier is never the tighter bound. The LXC 100 vhost in front
+        # carries the same value on its own catch-all location: a request
+        # crosses both nginx tiers, so raising only the edge leaves the reject
+        # here instead of removing it. That vhost is written by
+        # apply-main-domain-vhost.sh; the two values have to move together.
+        client_max_body_size 4m;
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
