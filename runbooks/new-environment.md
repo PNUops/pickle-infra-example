@@ -340,7 +340,7 @@ Smoke tests run on the host as root (they need the guest bridge); defaults
 target the main domain through the hairpin entry — see the smoke section of
 [README.md](../README.md) for the prerequisites and the variables to override.
 Minimum set for a new environment, in order: `smoke-provisioning.sh` (the
-end-to-end proof), `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`,
+end-to-end proof), `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`,
 `smoke-web-terminal.sh`. Then `health-check.sh` for the snapshot, confirm the
 backup timer's first run left a marker and a dump, and re-run the network
 runbook's post-reboot checklist once after a deliberate host reboot — a
