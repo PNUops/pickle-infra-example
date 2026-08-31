@@ -7,10 +7,16 @@
 # organisation, leaves a retained audit trail, and then exercises request ->
 # typed approval context -> approval -> token issue -> one real chat call ->
 # limit replacement -> suspend -> resume -> revoke.
+# This lifecycle deliberately keeps creditLimit at 0.00 so it exercises the
+# TOKEN axis without requiring a registered OpenRouter business account.
+# Positive CREDIT first binding and cross-org account isolation require a real
+# account and binding ON, followed by a separate smoke that is not implemented
+# yet. They are outside this script's coverage.
 set -uo pipefail
 
 BASE="${BASE:-https://pickle.pusan.ac.kr/api/v1}"
 LLM_BASE="${LLM_BASE:-https://llm.pcl.kr/v1}"
+LLM_SMOKE_MODEL="${LLM_SMOKE_MODEL:-pickle-general}"
 CTID="${CTID:-101}"
 SYNC_TIMEOUT="${LLM_SYNC_TIMEOUT:-90}"
 TS="$(date +%s)-$RANDOM"
@@ -151,7 +157,7 @@ jq -e '.type == "LLM_API_KEY" and .llmKey != null and .vm == null' "$BODY" >/dev
   && ok 'approval context selects only llmKey' \
   || { ko 'approval context selects only llmKey'; exit 1; }
 
-APPROVAL_BODY='{"grantedStartDate":null,"grantedEndDate":null,"comment":"LLM lifecycle smoke","llmKey":{"grantedRpm":20,"grantedTpm":1000,"grantedConcurrency":2,"grantedDailyTokens":10000,"grantedCreditLimit":1.00,"grantedCreditLimitReset":null}}'
+APPROVAL_BODY='{"grantedStartDate":null,"grantedEndDate":null,"comment":"LLM lifecycle smoke","llmKey":{"grantedRpm":20,"grantedTpm":1000,"grantedConcurrency":2,"grantedDailyTokens":10000,"grantedCreditLimit":0.00,"grantedCreditLimitReset":null}}'
 request 'approve LLM request' 200 -X POST "$BASE/admin/requests/$REQUEST_ID/approve" \
   -H "Authorization: Bearer $APPROVER_TOKEN" -H 'Content-Type: application/json' \
   -d "$APPROVAL_BODY" || exit 1
@@ -161,6 +167,10 @@ request 'find pending key in admin list' 200 \
   -H "Authorization: Bearer $APPROVER_TOKEN" || exit 1
 KEY_ID=$(jq -r '.content[0].id // empty' "$BODY")
 [ -n "$KEY_ID" ] && ok 'pending key materialized' || { ko 'pending key materialized'; exit 1; }
+jq -e '.content[0] | (.creditLimit == 0 and .creditLimitReset == null
+  and .creditAxisConnected == false)' "$BODY" >/dev/null \
+  && ok 'pending key is TOKEN-only' \
+  || { ko 'pending key is TOKEN-only'; exit 1; }
 jq -e '.content[0] | (has("token") or has("tokenHash") or has("tokenPrefix")) | not' \
   "$BODY" >/dev/null && ok 'admin list contains no key secret' \
   || { ko 'admin list contains no key secret'; exit 1; }
@@ -175,20 +185,23 @@ LLM_TOKEN=$(jq -r '.token // empty' "$BODY")
   || { ko 'plaintext key received'; exit 1; }
 
 wait_gateway 'issued key reaches gateway' 200 '' || exit 1
-MODEL=$(jq -r '.data[0].id // empty' "$BODY")
-[ -n "$MODEL" ] && ok 'at least one model is available' \
-  || { ko 'at least one model is available'; exit 1; }
+jq -e --arg model "$LLM_SMOKE_MODEL" '.data | any(.id == $model)' "$BODY" >/dev/null \
+  && ok "TOKEN smoke model is available ($LLM_SMOKE_MODEL)" \
+  || { ko "TOKEN smoke model is available ($LLM_SMOKE_MODEL)"; exit 1; }
+MODEL="$LLM_SMOKE_MODEL"
 CHAT_BODY=$(jq -nc --arg model "$MODEL" \
   '{model:$model,messages:[{role:"user",content:"Reply with OK."}],max_tokens:1}')
 request 'one real chat completion' 200 -X POST "$LLM_BASE/chat/completions" \
   -H "Authorization: Bearer $LLM_TOKEN" -H 'Content-Type: application/json' \
   -d "$CHAT_BODY" || exit 1
 
-LIMIT_BODY='{"rpm":30,"tpm":2000,"concurrency":2,"dailyTokens":20000,"creditLimit":1.00,"creditLimitReset":null}'
+LIMIT_BODY='{"rpm":30,"tpm":2000,"concurrency":2,"dailyTokens":20000,"creditLimit":0.00,"creditLimitReset":null}'
 request 'replace all six limits' 200 -X PUT "$BASE/admin/llm/keys/$KEY_ID/limits" \
   -H "Authorization: Bearer $APPROVER_TOKEN" -H 'Content-Type: application/json' \
   -d "$LIMIT_BODY" || exit 1
-jq -e '.rpm == 30 and .tpm == 2000 and .concurrency == 2 and .dailyTokens == 20000' \
+jq -e '.rpm == 30 and .tpm == 2000 and .concurrency == 2 and .dailyTokens == 20000
+  and .creditLimit == 0 and .creditLimitReset == null
+  and .creditAxisConnected == false' \
   "$BODY" >/dev/null && ok 'admin detail returns replaced limits' \
   || { ko 'admin detail returns replaced limits'; exit 1; }
 

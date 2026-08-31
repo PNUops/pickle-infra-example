@@ -94,7 +94,12 @@ runbooks/         운영 절차                                    // 이 예시
 회원가입부터 인증, 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기, SSH 도달 확인,
 전원 왕복, 삭제, DB 정합 검증까지 한 번에 통과시킵니다.
 `smoke-llm-key-lifecycle.sh`는 LLM gateway까지 배포한 뒤 평문 키를 출력하지 않고 실제
-1-token 호출과 snapshot 기반 정지·재개·폐기 반영을 확인합니다.
+1-token 호출과 snapshot 기반 정지·재개·폐기 반영을 확인합니다. 이 일반 lifecycle은
+OpenRouter 사업 account가 없어도 실행할 수 있도록 금액 한도를 0으로 둔 TOKEN 축 smoke입니다.
+호출 모델은 기본 `pickle-general`이며 다른 TOKEN 모델을 검증할 때만 `LLM_SMOKE_MODEL`로
+바꿉니다. 지정한 모델이 gateway `/models`에 없으면 호출 전에 실패합니다.
+양수 CREDIT 최초 binding과 cross-org account isolation은 실제 account 준비·binding ON 뒤 별도
+smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙니다.
 
 사용자 VM 템플릿을 만드는 빌드 레시피는 이 레포지토리에 없습니다. 공개 레포지토리
 **pickle-image-builder**가 그 역할을 맡습니다.
