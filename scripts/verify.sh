@@ -5,6 +5,34 @@ cd "$(dirname "$0")/.."
 mapfile -t scripts < <(find . -name '*.sh' -not -path './.git/*')
 shellcheck "${scripts[@]}"
 
+readiness_url='readonly HEALTH_URL="http://127.0.0.1:8080/actuator/health/readiness"'
+grep -Fxq "$readiness_url" scripts/deploy-api.sh || {
+  echo "verify: deploy-api rollback gate must use actuator readiness" >&2
+  exit 1
+}
+deploy_health_assignments=$(grep -Ec '^[[:space:]]*(export[[:space:]]+|readonly[[:space:]]+)?HEALTH_URL=' scripts/deploy-api.sh)
+[ "$deploy_health_assignments" -eq 1 ] || {
+  echo "verify: deploy-api must have exactly one HEALTH_URL assignment" >&2
+  exit 1
+}
+grep -Fq "if curl -fsS \$HEALTH_URL >/dev/null 2>&1;" scripts/deploy-api.sh || {
+  echo "verify: deploy-api health loop must call the canonical HEALTH_URL" >&2
+  exit 1
+}
+if grep -F 'actuator/health' scripts/deploy-api.sh | grep -Fv 'actuator/health/readiness' >/dev/null; then
+  echo "verify: deploy-api must not call the aggregate actuator health endpoint" >&2
+  exit 1
+fi
+smoke_readiness="HH=\$(pct exec \"\$CTID\" -- curl -sS -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health/readiness)"
+grep -Fq "$smoke_readiness" scripts/smoke-account-ops.sh || {
+  echo "verify: maintenance smoke must probe actuator readiness" >&2
+  exit 1
+}
+if grep -F 'actuator/health' scripts/smoke-account-ops.sh | grep -Fv 'actuator/health/readiness' >/dev/null; then
+  echo "verify: maintenance smoke must not probe aggregate actuator health" >&2
+  exit 1
+fi
+
 # This tree is a sanitized copy, and the way it stops being one is that a value
 # from the original arrives with a mirrored change. Once that happens the two
 # trees agree and no comparison between them can notice, so the check runs from

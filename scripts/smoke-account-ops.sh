@@ -513,8 +513,8 @@ if has_phase maint; then
     -d "{\"email\":\"$U8\",\"password\":\"maint-password-10\"}"
   req "  meta/status exempt + true" 200 "$BASE/meta/status"
   [ "$(jq -r '.maintenance' "$B")" = "true" ] && ok "  maintenance=true visible" || ko "  maintenance flag"
-  HH=$(pct exec "$CTID" -- curl -sS -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health)
-  [ "$HH" = 200 ] && ok "  actuator health exempt (200)" || ko "  actuator health ($HH)"
+  HH=$(pct exec "$CTID" -- curl -sS -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health/readiness)
+  [ "$HH" = 200 ] && ok "  actuator readiness exempt (200)" || ko "  actuator readiness ($HH)"
   req "maintenance off (200)" 200 -X PUT "$BASE/admin/settings/maintenance_mode" -H "$(auth "$SAT")" \
     -H 'Content-Type: application/json' -d '{"value":false}'
   sleep 16

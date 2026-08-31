@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds pickle-api on the host and deploys it into the pickle-app LXC.
-# Keeps the last 5 releases; rolls back automatically if the health check fails.
+# Keeps the last 5 releases; rolls back automatically if readiness fails.
 set -euo pipefail
 
 CTID="${CTID:-101}"
@@ -9,7 +9,13 @@ CTID="${CTID:-101}"
 require_ct "$CTID" pickle-app
 API_DIR="${API_DIR:-/srv/pickle/api}"
 RELEASES_DIR=/opt/pickle/api/releases
-HEALTH_URL="http://127.0.0.1:8080/actuator/health"
+# Deployment asks whether the new application finished startup and accepts
+# traffic, not whether every external dependency is reachable at that instant.
+# The aggregate endpoint includes the SMTP health indicator: a transient
+# DNS/provider outage once rolled back a
+# healthy, already-migrated jar and left its JobRunr targets for the old jar to
+# misread. Whole-system health still probes the aggregate endpoint separately.
+readonly HEALTH_URL="http://127.0.0.1:8080/actuator/health/readiness"
 
 cd "$API_DIR"
 scripts/verify.sh
@@ -25,7 +31,7 @@ jar=$(find target -maxdepth 1 -name 'pickle-api-*.jar' | head -1)
 [ -n "$jar" ] || { echo "deploy FAILED: no pickle-api-*.jar under target/ (build layout changed?)" >&2; exit 1; }
 ts=$(date +%Y%m%d-%H%M%S)
 
-# Health deadline is parameterizable: Flyway runs inside the new jar's startup,
+# Readiness deadline is parameterizable: Flyway runs inside the new jar's startup,
 # so long migrations need a longer window — killing the JVM mid-migration via
 # the rollback restart leaves a Flyway lock. 30 ticks x 2s = 60s default.
 HEALTH_TICKS="${HEALTH_TICKS:-30}"

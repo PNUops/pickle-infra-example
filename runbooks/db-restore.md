@@ -59,7 +59,7 @@ pct exec 101 -- runuser -u postgres -- psql -d pickle_dev -qtAc \
 # 7) start the api — Flyway validates (and applies any migrations newer than
 #    the dump); seeders are idempotent (insert-if-absent)
 pct exec 101 -- systemctl start pickle-api
-for i in $(seq 1 30); do sleep 2; pct exec 101 -- curl -fsS http://127.0.0.1:8080/actuator/health >/dev/null 2>&1 && { echo health-ok; break; }; done
+for i in $(seq 1 30); do sleep 2; pct exec 101 -- curl -fsS http://127.0.0.1:8080/actuator/health/readiness >/dev/null 2>&1 && { echo readiness-ok; break; }; done
 ```
 
 ## Post-restore checks
