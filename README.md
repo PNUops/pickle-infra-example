@@ -34,6 +34,10 @@ pve-node (Proxmox VE) ───────────────────�
 비Proxmox 노드:
  ├─ gpu-node   aarch64 GPU 노드        캠퍼스망 192.0.2.20 — vLLM 서빙 :8000 (pickle-vllm)
  └─ dept-node  x86 서버(Ubuntu)        dept-node.example.ac.kr:22 — 학과 공유 서버
+
+Proxmox 노드 후보 (인수 실측만, OS 초기화 전, 미등록):
+ ├─ pve-node-2  x86 서버               캠퍼스망 192.0.2.30 — pve-node와 같은 L2
+ └─ pve-node-3  x86 서버, GPU 1장      캠퍼스망 192.0.2.31
 ```
 
 vmbr1은 인프라 전용, vmbr2는 사용자 전용이고 둘 사이에 직접 경로가 없습니다. 산출물은
@@ -111,7 +115,9 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 실측 체크리스트, 운영자 접속 키 설치, 대역외 관리 평면 점검), `drift-resolution.md`(DB와
 하이퍼바이저 상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원),
 `gpu-node-vllm.md`(GPU 노드 vLLM 서빙 운영 — 시작·종료, 모델·플래그 교체와 롤백, 장애
-복구, 재부팅)를 담았습니다. 나머지 재구축과 복구 절차는 비공개 레포지토리에 둡니다.
+복구, 재부팅), `proxmox-node-intake.md`(Proxmox 노드 후보 인수 절차 초안 — 초기화 전
+실측, 설치 전 결정 항목, standalone 설치, 등록 전에 실행하면 안 되는 스크립트)를
+담았습니다. 나머지 재구축과 복구 절차는 비공개 레포지토리에 둡니다.
 
 ## 검증
 
@@ -137,8 +143,9 @@ scripts/verify.sh        # 모든 셸 스크립트 shellcheck 전수 + 정제·�
 | 플랫폼 브리지 대역 | `198.18.0.0/16` |
 | 게스트 대역 | `198.19.0.0/16` |
 | 릴레이 터널 대역 | `100.64.0.0/30` |
-| 호스트 이름 | `pve-node`, `gpu-node`, `dept-node` |
+| 호스트 이름 | `pve-node`, `gpu-node`, `dept-node`, `pve-node-2`, `pve-node-3` |
 | 비Proxmox 노드 주소·접속명 | `192.0.2.20`, `dept-node.example.ac.kr` |
+| Proxmox 노드 후보 주소 | `192.0.2.30`, `192.0.2.31` |
 | 비Proxmox 노드 하드웨어 모델 | 아키텍처만 남기고 제조사·모델명 생략 |
 
 `192.0.2.0/24`와 `198.51.100.0/24`, `203.0.113.0/24`는 RFC 5737이 문서화 용도로 예약한
