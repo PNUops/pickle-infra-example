@@ -6,8 +6,10 @@ operator access over SSH, and the records this repository keeps. First walked
 
 Intake stops before any service lands on the box. Serving configuration, deploy
 scripts, and per-host directories under `hosts/<name>/` arrive with the round
-that first needs them. A Proxmox node is a different procedure entirely —
-[new-environment.md](new-environment.md).
+that first needs them. A Proxmox node is a different procedure entirely: one
+added to the platform that already exists follows
+[proxmox-node-intake.md](proxmox-node-intake.md), and a whole new platform on
+a blank host follows [new-environment.md](new-environment.md).
 
 Two boundaries hold throughout:
 

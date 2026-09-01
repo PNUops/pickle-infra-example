@@ -81,7 +81,8 @@ runbooks/         운영 절차                                    // 이 예시
 ```
 
 호스트별 설정 파일은 `hosts/<이름>/` 아래에 둡니다. 새 노드의 디렉터리는 첫 설정
-산출물이 생길 때 만들고, 편입 자체는 `runbooks/node-intake.md`를 따릅니다.
+산출물이 생길 때 만들고, 편입 자체는 `runbooks/node-intake.md`(비Proxmox 노드)나
+`runbooks/proxmox-node-intake.md`(기존 플랫폼에 더하는 Proxmox 노드)를 따릅니다.
 
 ### scripts/
 

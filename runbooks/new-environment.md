@@ -12,8 +12,11 @@ already exists — each step points at the runbook or script that owns it.
 (Runbooks not carried in this sample copy are kept in the private repository;
 they are named descriptively below.)
 
-This runbook targets a Proxmox node. A host that is not a Proxmox node joins
-the platform via [node-intake.md](node-intake.md) instead.
+This runbook targets a Proxmox node that becomes a whole new platform. A
+Proxmox node added to a platform that already exists follows
+[proxmox-node-intake.md](proxmox-node-intake.md) instead (its step 12 scripts
+must not be run against such a node), and a host that is not a Proxmox node
+joins via [node-intake.md](node-intake.md).
 
 Three markers are used throughout, and they are the point of the document:
 
