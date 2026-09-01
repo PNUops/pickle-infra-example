@@ -291,7 +291,12 @@ phase_recovery(){
 phase_teardown(){
   echo "== teardown =="
   [ -z "$VM" ] && { echo "      no VM created; nothing to tear down"; return 0; }
-  XAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
+  # This is the call that actually removes the guest, so an empty token here
+  # leaves it running on the host.
+  if ! XAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW"); then
+    ko "sysadmin login (teardown)"
+    return 1
+  fi
   req "force-delete" 202 -X POST "$BASE/admin/vms/$VM/force-delete" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' -d "{\"confirmName\":\"$VNAME\",\"reason\":\"dash e2e cleanup\"}" || return 1
   local dl=$((SECONDS+300)) dc="" dst=""
   while :; do

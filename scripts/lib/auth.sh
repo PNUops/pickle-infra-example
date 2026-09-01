@@ -60,11 +60,29 @@ sysadmin_totp_secret() {
   tr -d '[:space:]' < "$file"
 }
 
+# The 30-second TOTP step this process last spent, kept in a file because every
+# caller reads the token through `$(...)` and a variable set inside that subshell
+# would not survive.
+#
+# A code buys exactly one authentication: the api records the matched step and
+# refuses anything at or below it, so that a code used to sign in cannot also
+# turn 2FA off a second later. Two logins inside one step therefore cannot both
+# succeed -- and the web-terminal cleanup logs in twice, seconds apart, to
+# restore the kill switch and then delete the VM. Waiting for the next step is
+# cheaper than spending a round trip to be told no, and the file also covers two
+# smoke scripts run back to back.
+_auth_step_file() { echo "${TMPDIR:-/tmp}/.pickle-auth-totp-step"; }
+_auth_step_now() { python3 -c 'import time;print(int(time.time())//30)'; }
+_auth_wait_past() {
+  local spent="$1"
+  while [ "$(_auth_step_now)" = "$spent" ]; do sleep 2; done
+}
+
 # Sign in and echo an access token. Empty output and a non-zero status mean the
 # caller could not authenticate; every caller here treats that as fatal.
 login_token() {
   local base="$1" email="$2" password="$3"
-  local body token challenge secret code
+  local body token challenge secret code spent
   body=$(mktemp) || return 1
 
   curl -sS -o "$body" -X POST "$base/auth/login" \
@@ -93,12 +111,40 @@ login_token() {
     return 1
   fi
 
-  code=$(totp "$secret")
+  spent=$(cat "$(_auth_step_file)" 2>/dev/null || true)
+  if [ -n "$spent" ]; then _auth_wait_past "$spent"; fi
+
+  # A locked vault reads as a git-crypt blob rather than base32, and python
+  # would print a traceback and nothing else. Without this the empty code goes
+  # to the server and comes back as "refused", which names the wrong cause.
+  if ! code=$(totp "$secret"); then
+    echo "auth: could not compute a code from the stored secret (is the vault unlocked?)" >&2
+    rm -f "$body"
+    return 1
+  fi
+  _auth_step_now > "$(_auth_step_file)"
+
   curl -sS -o "$body" -X POST "$base/auth/mfa" \
     -H 'Content-Type: application/json' \
     -d "{\"mfaToken\":\"$challenge\",\"code\":\"$code\"}"
-
   token=$(jq -r '.accessToken // empty' "$body")
+
+  # Another process may have spent this step. One retry on the next code covers
+  # that without hiding a genuinely wrong secret, which fails again.
+  if [ -z "$token" ]; then
+    _auth_wait_past "$(cat "$(_auth_step_file)")"
+    code=$(totp "$secret") || { rm -f "$body"; return 1; }
+    _auth_step_now > "$(_auth_step_file)"
+    curl -sS -o "$body" -X POST "$base/auth/login" \
+      -H 'Content-Type: application/json' \
+      -d "{\"email\":\"$email\",\"password\":\"$password\"}"
+    challenge=$(jq -r '.mfaToken // empty' "$body")
+    curl -sS -o "$body" -X POST "$base/auth/mfa" \
+      -H 'Content-Type: application/json' \
+      -d "{\"mfaToken\":\"$challenge\",\"code\":\"$code\"}"
+    token=$(jq -r '.accessToken // empty' "$body")
+  fi
+
   if [ -z "$token" ]; then
     echo "auth: the second factor was refused for $email" >&2
     head -c 300 "$body" >&2
