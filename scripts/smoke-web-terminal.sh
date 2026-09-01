@@ -47,6 +47,10 @@ ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGAD
 P=0; F=0; ok(){ echo "PASS  $1"; P=$((P+1)); }; ko(){ echo "FAIL  $1"; F=$((F+1)); }
 req(){ local n="$1" e="$2"; shift 2; local c; c=$(curl -sS -o "$B" -w '%{http_code}' "$@"); [ "$c" = "$e" ] && { ok "$n ($c)"; return 0; } || { ko "$n (want $e got $c)"; head -c 300 "$B"; echo; return 1; }; }
 login(){ curl -sS -o "$B" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"password\":\"$2\"}"; jq -r '.accessToken // empty' "$B"; }
+# The scratch users above stay on `login`; enforcement is sys-tier only. The
+# administrator goes through login_token, which answers the 2FA challenge.
+# shellcheck source=scripts/lib/auth.sh
+. "$(dirname "$0")/lib/auth.sh"
 auth(){ echo "Authorization: Bearer $1"; }
 # Sudo-mode reauth: group-member mutations (and the VM password/settings/ssh-key
 # endpoints) answer 403 REAUTH_REQUIRED without a fresh password proof. The
@@ -93,7 +97,7 @@ mk_user(){
 # after the long waits takes a fresh one.
 refresh_tokens(){
   U1T=$(login "$U1" "$U1PW")
-  SAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
+  SAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || SAT=""
   # U2 only once it exists, and against whatever password it currently has —
   # this run changes it on purpose partway through.
   [ -z "${U2:-}" ] || U2T=$(login "$U2" "$U2PW")
@@ -158,7 +162,7 @@ cleanup(){
   local now_kill
   now_kill=$(pgq "select value::text from settings where key='web_terminal_enabled'")
   if [ -n "$KILL_INITIAL" ] && [ "$now_kill" != "$KILL_INITIAL" ]; then
-    SAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
+    SAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || SAT=""
     local kc
     kc=$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "$BASE/admin/settings/web_terminal_enabled" \
       -H "$(auth "$SAT")" -H 'Content-Type: application/json' \
@@ -167,7 +171,7 @@ cleanup(){
   fi
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
     echo "-- cleanup: removing leftover VM $VM --"
-    local at; at=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
+    local at; at=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || at=""
     local vname; vname=$(pgq "select name from vms where id=$VM")
     # curl succeeds on a rejection as readily as on a 202; without the code the
     # trap reports a cleanup it never performed and a real guest stays up.
@@ -226,7 +230,7 @@ trap cleanup EXIT
 
 command -v websocat >/dev/null || { echo "FATAL: websocat not installed"; exit 1; }
 
-SAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
+SAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || SAT=""
 [ -n "$SAT" ] && ok "sysadmin login" || { ko "sysadmin login"; exit 1; }
 OAT=$(login "$ORGADMIN_EMAIL" "$ORGADMIN_PW")
 [ -n "$OAT" ] && ok "orgadmin login" || ko "orgadmin login"

@@ -48,6 +48,8 @@ req(){ local n="$1" e="$2"; shift 2; local c
   [ "$c" = "$e" ] && ok "$n ($c)" || { ko "$n (want $e got $c)"; head -c 200 "$B"; echo; }
 }
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-" 2>/dev/null; }
+# shellcheck source=scripts/lib/auth.sh
+. "$(dirname "$0")/lib/auth.sh"
 
 echo "== [0] infra health snapshot (health-check.sh) =="
 if [ -x "$HC" ]; then
@@ -133,8 +135,11 @@ if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
       # force-delete as seed SYS_ADMIN (confirmName only — no reason field)
       SYS_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
       SYS_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYS_EMAIL="${SYS_EMAIL:-admin@pnuops.com}"
-      req "sysadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$SYS_EMAIL\",\"password\":\"$SYS_PW\"}"
-      XAT=$(jq -r '.accessToken // empty' "$B")
+      # An enrolled administrator answers the login with a challenge, and a bare
+      # status assertion would call that a pass while leaving XAT empty. This is
+      # the cleanup path for a VM that is already running, so a silent empty
+      # token here leaves it on the host.
+      if XAT=$(login_token "$BASE" "$SYS_EMAIL" "$SYS_PW"); then ok "sysadmin login"; else ko "sysadmin login"; fi
       req "force-delete" 202 -X POST "$BASE/admin/vms/$VM/force-delete" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' -d "{\"confirmName\":\"$VNAME\"}"
       echo "-- poll DELETED (<=3min) --"
       DL=$((SECONDS+180)); DC=""; DST=""

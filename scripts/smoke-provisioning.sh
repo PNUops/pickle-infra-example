@@ -35,6 +35,9 @@ CTID="${CTID:-101}"
 TS=$(date +%s)
 USER_EMAIL="smoke-${TS}@pusan.ac.kr"
 USER_PW="smoke-pass-${TS}!"
+# shellcheck source=scripts/lib/auth.sh
+. "$(dirname "$0")/lib/auth.sh"
+
 # seed passwords live in the LXC's api.env (rotated 2026-07-12 — the repo
 # defaults are dead); env vars still override for non-standard setups
 seed_env() {
@@ -403,9 +406,15 @@ cleanup() {
     echo "      no VM was created; nothing to clean up"
     return 0
   fi
-  step "sysadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$SYSADMIN_EMAIL\",\"password\":\"$SYSADMIN_PW\"}" || return 1
-  SYSADMIN_AT=$(jq -r .accessToken "$BODY")
+  # login_token, not a raw login: an enrolled administrator gets a challenge
+  # rather than a token, and a bare `step ... 200` would pass on that challenge
+  # and leave SYSADMIN_AT empty. This runs in cleanup, so the VM created above
+  # would survive the failure.
+  if ! SYSADMIN_AT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW"); then
+    ko "sysadmin login"
+    return 1
+  fi
+  ok "sysadmin login"
 
   if [ "$(db_vm_status)" = "DELETED" ]; then
     echo "      vm row already DELETED; force delete not needed"

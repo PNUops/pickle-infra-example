@@ -127,6 +127,18 @@ login=$(api_call POST /auth/login \
   "$(jq -nc --arg e "$PICKLE_ADMIN_EMAIL" --arg p "$PICKLE_ADMIN_PASSWORD" \
        '{email:$e, password:$p}')")
 ACCESS=$(jq -r '.accessToken // empty' <<<"$login")
+# An account enrolled in 2FA gets a challenge instead of a token, and the token
+# only comes from a second call. The code is asked for rather than computed:
+# this script acts as whichever administrator the operator names, so the seeded
+# account's stored secret would be the wrong second factor for anyone else.
+if [ -z "$ACCESS" ] && [ -n "$(jq -r '.mfaToken // empty' <<<"$login")" ]; then
+  printf '  2단계 인증 코드: ' >&2
+  read -r PICKLE_ADMIN_TOTP </dev/tty
+  login=$(api_call POST /auth/mfa \
+    "$(jq -nc --arg t "$(jq -r .mfaToken <<<"$login")" --arg c "$PICKLE_ADMIN_TOTP" \
+         '{mfaToken:$t, code:$c}')")
+  ACCESS=$(jq -r '.accessToken // empty' <<<"$login")
+fi
 [ -n "$ACCESS" ] || { echo "  login failed: $(jq -r '.message // .' <<<"$login")" >&2; exit 1; }
 role=$(jq -r '.user.role // empty' <<<"$login")
 [ "$role" = "SYS_ADMIN" ] || { echo "  that account is $role, not SYS_ADMIN" >&2; exit 1; }

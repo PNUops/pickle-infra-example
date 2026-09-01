@@ -54,6 +54,11 @@ ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGAD
 P=0; F=0; ok(){ echo "PASS  $1"; P=$((P+1)); }; ko(){ echo "FAIL  $1"; F=$((F+1)); }
 req(){ local n="$1" e="$2"; shift 2; local c; c=$(curl -sS -o "$B" -w '%{http_code}' "$@"); [ "$c" = "$e" ] && { ok "$n ($c)"; return 0; } || { ko "$n (want $e got $c)"; head -c 300 "$B"; echo; return 1; }; }
 login(){ curl -sS -o "$B" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"password\":\"$2\"}"; jq -r '.accessToken // empty' "$B"; }
+# The org tier and scratch users stay on `login` above: enforcement is sys-tier
+# only, so those still get a token straight from the login call. The system
+# administrator goes through login_token, which answers the 2FA challenge.
+# shellcheck source=scripts/lib/auth.sh
+. "$(dirname "$0")/lib/auth.sh"
 auth(){ echo "Authorization: Bearer $1"; }
 # Sudo-mode reauth: VM delete/settings, SSH keys and group-member mutations
 # answer 403 REAUTH_REQUIRED without a fresh password proof (X-Reauth-Token).
@@ -103,7 +108,7 @@ cleanup(){
   local rc=$?
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
     echo "-- cleanup: removing leftover VM $VM (protection setting off + force-delete) --"
-    local at; at=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
+    local at; at=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || at=""
     # the logical setting may still be on; owner-only, so clear via DB as root.
     # No qm --protection 0 here: the destroy pipeline clears the always-on PVE
     # flag itself — clearing it out-of-band would mask a broken clear step.
@@ -198,7 +203,7 @@ approve_payload(){
   printf '{"grantedStartDate":null,"grantedEndDate":null,"comment":"스모크 승인","vm":{"grantedVcpu":%s,"grantedMemoryMb":%s,"grantedDiskGb":%s,"grantedImageId":%s,"nodeId":null}}' "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK" "$TPL"
 }
 
-SAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
+SAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || SAT=""
 [ -n "$SAT" ] && ok "sysadmin login" || { ko "sysadmin login"; exit 1; }
 OAT=$(login "$ORGADMIN_EMAIL" "$ORGADMIN_PW")
 [ -n "$OAT" ] && ok "orgadmin login" || ko "orgadmin login"
@@ -409,16 +414,8 @@ if has_phase sweep; then
 fi
 
 # ───────────────────────── phase: mfa ─────────────────────────
-# TOTP is computed with stdlib python3 (oathtool is not installed on pve-node by design).
-totp(){ python3 - "$1" <<'PY'
-import base64,hmac,hashlib,struct,sys,time
-key=base64.b32decode(sys.argv[1].upper()+'='*((8-len(sys.argv[1])%8)%8))
-ctr=int(time.time())//30
-mac=hmac.new(key,struct.pack('>Q',ctr),hashlib.sha1).digest()
-off=mac[-1]&0xf
-print('{:06d}'.format((struct.unpack('>I',mac[off:off+4])[0]&0x7fffffff)%1000000))
-PY
-}
+# totp() comes from lib/auth.sh, which needs the same computation to answer
+# the administrator's own 2FA challenge.
 if has_phase mfa; then
   echo "── mfa: enroll → step-up login → recovery → admin reset"
   U6="smoke-acct-mfa-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U6")

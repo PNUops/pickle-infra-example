@@ -32,6 +32,8 @@ for cmd in curl jq pct; do
 done
 
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"; }
+# shellcheck source=scripts/lib/auth.sh
+. "$(dirname "$0")/lib/auth.sh"
 pgq(){ pct exec "$CTID" -- su - postgres -c "psql -q -d pickle_dev -tAc \"$1\"" 2>/dev/null | tr -d '[:space:]'; }
 ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGADMIN_EMAIL:-orgadmin@pnuops.com}"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
 SYSADMIN_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYSADMIN_EMAIL="${SYSADMIN_EMAIL:-admin@pnuops.com}"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
@@ -70,7 +72,10 @@ poll_mail(){ local dl=$((SECONDS+$2)); nudge_dispatcher || true
 login(){ curl -sS -o "$B" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
   -d "{\"email\":\"$1\",\"password\":\"$2\"}" && jq -r '.accessToken // empty' "$B"; }
 fresh_tokens(){
-  SAT=$(login "$EM" "$PW"); AAT=$(login "$ORGADMIN_EMAIL" "$ORGADMIN_PW"); XAT=$(login "$SYSADMIN_EMAIL" "$SYSADMIN_PW")
+  # The first two are org tier and below, where enforcement does not reach, so
+  # they keep the direct login. Only the administrator has a challenge to answer.
+  SAT=$(login "$EM" "$PW"); AAT=$(login "$ORGADMIN_EMAIL" "$ORGADMIN_PW")
+  XAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || XAT=""
   { [ -n "$SAT" ] && [ -n "$AAT" ] && [ -n "$XAT" ]; } || { ko "token refresh (user/orgadmin/sysadmin login)"; return 1; }
 }
 
@@ -166,8 +171,10 @@ phase_notifications(){
 # ── 3. announcements ──
 phase_announcements(){
   echo "== announcements =="
-  req "sysadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$SYSADMIN_EMAIL\",\"password\":\"$SYSADMIN_PW\"}" || return 1
-  XAT=$(jq -r .accessToken "$B")
+  # The administrator is 2FA-enrolled, so the login answers with a challenge and
+  # a status assertion alone would read as a pass with no token behind it.
+  if ! XAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW"); then ko "sysadmin login"; return 1; fi
+  ok "sysadmin login"
   req "ALL announcement (sys)" 201 -X POST "$BASE/admin/announcements" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' \
     -d "{\"title\":\"$ATITLE\",\"body\":\"e2e 전체 공지 본문\",\"scope\":\"ALL\",\"orgId\":null,\"workspaceId\":null}" \
     && jqc "ALL recipientCount >= 1" '.recipientCount >= 1'

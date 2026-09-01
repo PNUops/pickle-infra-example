@@ -33,6 +33,8 @@ SUB2="${SUB}-b"
 ROOT="${ROOT:-pusan.dev}"
 USER_EMAIL="http-${TS}@pusan.ac.kr"; USER_PW="http-pass-${TS}!"
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"; }
+# shellcheck source=scripts/lib/auth.sh
+. "$(dirname "$0")/lib/auth.sh"
 ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGADMIN_EMAIL:-orgadmin@pnuops.com}"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
 SYSADMIN_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYSADMIN_EMAIL="${SYSADMIN_EMAIL:-admin@pnuops.com}"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
 B=$(mktemp); RT_DIR=$(mktemp -d)   # RT_DIR: sudo-mode token cache (see reauth below)
@@ -44,8 +46,7 @@ cleanup(){
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
     echo "-- cleanup: force-deleting leftover VM $VM --"
     local at
-    at=$(curl -sS -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-      -d "{\"email\":\"$SYSADMIN_EMAIL\",\"password\":\"$SYSADMIN_PW\"}" | jq -r '.accessToken // empty')
+    at=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || at=""
     if [ -n "$at" ] && [ -n "${VNAME:-}" ]; then
       # This is the last chance to avoid leaking a real guest and its IP, so the
       # response code decides what gets printed — a swallowed failure here reads
@@ -298,8 +299,9 @@ DREL=$(jq -r --arg f "$FQDN2" '[.content[] | select(.fqdn==$f)][0].releasedAt //
 [ -z "$DREL" ] && ok "returned name carries no release stamp" || ko "release stamp survived the return ($DREL)"
 
 echo "== platform subdomain cap (settings-driven, not hardcoded) =="
-req "sysadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$SYSADMIN_EMAIL\",\"password\":\"$SYSADMIN_PW\"}" || true
-XAT=$(jq -r .accessToken "$B")
+# The administrator answers a 2FA challenge, so the token no longer arrives on
+# the login response.
+if XAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW"); then ok "sysadmin login"; else ko "sysadmin login"; XAT=""; fi
 curl -sS -o "$B" "$BASE/admin/settings" -H "Authorization: Bearer $XAT"
 # No DB row means the server falls back to its code default (3) — mirror that.
 LIMIT=$(jq -r '[.[] | select(.key=="platform_subdomains_per_vm")][0].value // 3' "$B")

@@ -35,6 +35,8 @@ B=$(mktemp)
 declare -a TMPFILES=("$B")
 
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"; }
+# shellcheck source=scripts/lib/auth.sh
+. "$(dirname "$0")/lib/auth.sh"
 pgq(){ pct exec "$CTID" -- su - postgres -c "psql -d pickle_dev -tAc \"$1\"" 2>/dev/null | tr -d '[:space:]'; }
 # psql -c travels through the shell `su -c` spawns, which re-parses the statement
 # (a `$$` there would expand to that shell's PID). Feed it on stdin instead, and
@@ -131,7 +133,7 @@ cleanup(){
   [ -n "$ORIG_KILL" ] && pgx "update settings set value='$ORIG_KILL'::jsonb where key='ssh_gateway_enabled'"
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
     echo "-- cleanup: force-deleting leftover VM $VM --"
-    local at; at=$(curl -sS -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$SYSADMIN_EMAIL\",\"password\":\"$SYSADMIN_PW\"}" | jq -r '.accessToken // empty')
+    local at; at=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || at=""
     # The warning used to hang off `||` at the end of an && chain, so it could
     # only fire when the token or the name was missing: curl itself exits 0 on a
     # 403 or a 500, and the rejection printed nothing at all.
@@ -416,8 +418,9 @@ pgx "update settings set value='$ORIG_KILL'::jsonb where key='ssh_gateway_enable
 
 # --- cleanup: force-delete the VM ---
 echo "== cleanup: force-delete VM =="
-req "sysadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$SYSADMIN_EMAIL\",\"password\":\"$SYSADMIN_PW\"}" || true
-XAT=$(jq -r .accessToken "$B")
+# The administrator answers a 2FA challenge, so the token cannot be read off the
+# login response any more.
+if XAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW"); then ok "sysadmin login"; else ko "sysadmin login"; XAT=""; fi
 req "force-delete" 202 -X POST "$BASE/admin/vms/$VM/force-delete" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' -d "{\"confirmName\":\"$VNAME\",\"reason\":\"ssh gateway e2e\"}" || true
 DL=$((SECONDS+180)); DC=""; DST=""
 while :; do
