@@ -103,14 +103,7 @@ mklocalkey(){ ssh-keygen -q -t ed25519 -N '' -C '' -f "$1"; TMPFILES+=("$1" "$1.
 fp_of(){ ssh-keygen -lf "$1" | awk '{print $2}'; }
 
 # mk_user EMAIL PW NAME → echoes "<accessToken> <userId>" (signup→verify→login).
-mk_user(){
-  curl -sS -o /dev/null -X POST "$BASE/auth/signup" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"password\":\"$2\",\"name\":\"$3\",\"consents\":$CONSENTS_JSON}"
-  sleep 2
-  local tok; tok=$(pct exec "$CTID" -- sh -c "grep -o 'token=[A-Za-z0-9_-]*' /var/lib/pickle/mock-mail.log | tail -1 | cut -d= -f2")
-  curl -sS -o /dev/null -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' -d "{\"token\":\"$tok\"}"
-  curl -sS -o "$B" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"password\":\"$2\"}"
-  echo "$(jq -r .accessToken "$B") $(pgq "select id from users where email='$1'")"
-}
+mk_user(){ mk_verified_user "$BASE" "$@"; }
 # reg_key TOKEN PW NAME PUBKEYLINE → echoes keyId (paste-registration).
 # The account's own password is needed for the sudo-mode token; without it the
 # call 403s and the caller would silently receive an empty key id.

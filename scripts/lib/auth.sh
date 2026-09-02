@@ -80,8 +80,13 @@ _auth_wait_past() {
 
 # Sign in and echo an access token. Empty output and a non-zero status mean the
 # caller could not authenticate; every caller here treats that as fatal.
+#
+# A fourth argument supplies the enrolled secret for accounts other than the
+# seeded administrator. A smoke that promotes a scratch user to the system tier
+# has to enrol it too -- enforcement covers the tier, not the account -- and the
+# secret for that one comes from the enrolment response, not the vault.
 login_token() {
-  local base="$1" email="$2" password="$3"
+  local base="$1" email="$2" password="$3" given="${4:-}"
   local body token challenge secret code spent
   body=$(mktemp) || return 1
 
@@ -106,7 +111,9 @@ login_token() {
     return 1
   fi
 
-  if ! secret=$(sysadmin_totp_secret); then
+  if [ -n "$given" ]; then
+    secret="$given"
+  elif ! secret=$(sysadmin_totp_secret); then
     rm -f "$body"
     return 1
   fi
@@ -155,4 +162,72 @@ login_token() {
 
   rm -f "$body"
   printf '%s' "$token"
+}
+
+# mk_verified_user EMAIL PASSWORD NAME → "<accessToken> <publicId> <internalId>"
+#
+# The account is written straight into the database rather than signed up for.
+# Signup sends a real verification mail on this deployment -- it runs the prod
+# profile -- and these addresses are fabricated, so every run would post bounces
+# to a real domain. Reading the token back is not an option either: it is stored
+# hashed, and the mock spool that two of these scripts still read stopped filling
+# on 2026-08-18 when the profile changed. They had been making unverified
+# accounts ever since, and because the helper echoes three fields, an empty token
+# shifted them and handed callers an internal id where a public one was expected.
+# smoke-ssh-gateway already worked this way; this is that same function, moved
+# here so the other two stop drifting from it.
+#
+# What signup would have produced is reproduced: a verified ACTIVE account with
+# the current consents recorded. The id comes back twice because callers want
+# different halves -- the API takes the public UUID, while foreign keys such as
+# `audit_logs.actor_id` still hold the internal bigint.
+#
+# Requires `pgq` and `pgx` from the calling script.
+bcrypt_hash() {
+  python3 -c "import bcrypt,sys; print(bcrypt.hashpw(sys.argv[1].encode(), bcrypt.gensalt(12)).decode())" "$1" 2>/dev/null
+}
+
+mk_verified_user() {
+  local base="$1" email="$2" password="$3" name="$4"
+  local hash body
+  hash=$(bcrypt_hash "$password")
+  if [ -z "$hash" ]; then
+    echo "mk_verified_user: could not hash the password" >&2
+    return 1
+  fi
+  pgx "insert into users (email, password_hash, name, role, status, email_verified_at)
+       values ('$email', '$hash', '$name', 'USER'::user_role, 'ACTIVE'::user_status, now())
+       on conflict (email) do nothing"
+  pgx "insert into user_consents (user_id, terms_version_id, consented_at)
+       select u.id, t.id, now() from users u cross join terms_versions t
+        where u.email = '$email'
+       on conflict do nothing"
+  # Signup also gives the account its personal workspace, and phases that check
+  # withdrawal or the refusal to delete a personal workspace look for it. Without
+  # this the account exists but owns nothing, and those checks answer 404 rather
+  # than the 409 they are asserting.
+  pgx "with w as (
+         insert into workspaces (kind, name)
+         select 'PERSONAL'::workspace_kind, '$name'
+          where not exists (
+            select 1 from workspace_members m
+              join users u on u.id = m.user_id
+              join workspaces ws on ws.id = m.workspace_id
+             where u.email = '$email' and ws.kind = 'PERSONAL')
+         returning id)
+       insert into workspace_members (workspace_id, user_id, role)
+       select w.id, u.id, 'OWNER'::workspace_member_role from w cross join users u
+        where u.email = '$email'"
+  # Every request in a smoke run leaves the host by one address, so the per-IP
+  # login window fills partway through and the rest of the run gets 429 with an
+  # empty token -- which then reads as a wall of 401s in phases that have nothing
+  # to do with authentication. The signup-based helper this replaced cleared the
+  # counters for the same reason.
+  pgx "delete from auth_rate_limits"
+  body=$(mktemp) || return 1
+  curl -sS -o "$body" -X POST "$base/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$email\",\"password\":\"$password\"}"
+  echo "$(jq -r '.accessToken // empty' "$body") $(pgq "select public_id from users where email='$email'") $(pgq "select id from users where email='$email'")"
+  rm -f "$body"
 }

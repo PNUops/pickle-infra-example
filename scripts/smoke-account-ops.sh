@@ -89,18 +89,11 @@ reauth(){ # reauth ACCESS_TOKEN PASSWORD → echoes the X-Reauth-Token value
 }
 rt(){ echo "X-Reauth-Token: $(reauth "$1" "$2")"; }
 
-# mk_user EMAIL PW NAME → "<accessToken> <userId>" (signup→mock-mail token→verify→login)
-mk_user(){
-  # every smoke request shares one source IP (reverse-proxy hairpin), so the
-  # per-IP signup window fills up over a run — clear dev counters first.
-  pgx "delete from auth_rate_limits"
-  curl -sS -o /dev/null -X POST "$BASE/auth/signup" -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$1\",\"password\":\"$2\",\"name\":\"$3\",\"consents\":$CONSENTS_JSON}"
-  sleep 2
-  local tok; tok=$(pct exec "$CTID" -- sh -c "grep -o 'token=[A-Za-z0-9_-]*' /var/lib/pickle/mock-mail.log | tail -1 | cut -d= -f2")
-  curl -sS -o /dev/null -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' -d "{\"token\":\"$tok\"}"
-  echo "$(login "$1" "$2") $(pgq "select id from users where email='$1'")"
-}
+# mk_user EMAIL PW NAME → "<accessToken> <publicId> <internalId>", from the
+# shared factory. It writes the account rather than signing up: this deployment
+# mails for real and the verification token is stored hashed, so the spool this
+# used to read has been empty since the profile changed.
+mk_user(){ mk_verified_user "$BASE" "$@"; }
 
 declare -a SCRATCH_EMAILS=()
 VM=""; VM_DELETED=1; SAT=""
@@ -150,7 +143,7 @@ cleanup(){
         delete from mfa_recovery_codes where user_id=uid;
         delete from mfa_login_tokens where user_id=uid;
         delete from user_mfa where user_id=uid;
-        delete from user_ssh_keys where user_id=uid;
+        delete from vm_ssh_keys where user_id=uid;
         delete from user_status_changes where user_id=uid or actor_id=uid;
         delete from email_verifications where user_id=uid;
         delete from refresh_tokens where user_id=uid;
@@ -236,29 +229,28 @@ if has_phase account; then
     -H 'Content-Type: application/json' \
     -d '{"currentPassword":"nope-nope-nope","newPassword":"third-password-10"}'
 
-  # reset: uniform 202 + token from DB (mock mail) + confirm + old sessions die
+  # reset: only the uniform-response half is checked here. Confirming a reset
+  # needs the token from the mail, and this deployment runs the prod profile --
+  # mail goes out over real SMTP and the token is stored hashed, so there is no
+  # way to read it back. The rest of this flow (confirm, single-use, the old
+  # session dying) is unverified until something gives the smoke a copy of what
+  # was sent. Dropping it deliberately beats the previous state, where it read
+  # an empty token from a spool that stopped filling and failed for a reason
+  # nobody was looking at.
   req "reset request 202 (existing)" 202 -X POST "$BASE/auth/password-reset" \
     -H 'Content-Type: application/json' -d "{\"email\":\"$U1\"}"
   req "reset request 202 (unknown — uniform)" 202 -X POST "$BASE/auth/password-reset" \
     -H 'Content-Type: application/json' -d "{\"email\":\"no-such-$TS@pusan.ac.kr\"}"
-  sleep 2
-  RTOK=$(pct exec "$CTID" -- sh -c "grep -o 'reset-password?token=[A-Za-z0-9_-]*' /var/lib/pickle/mock-mail.log | tail -1 | cut -d= -f2")
-  [ -n "$RTOK" ] && ok "reset token delivered (mock mail)" || ko "reset token delivered"
-  req "reset confirm 200" 200 -X POST "$BASE/auth/password-reset/confirm" \
-    -H 'Content-Type: application/json' -d "{\"token\":\"$RTOK\",\"newPassword\":\"reset-password-10\"}"
-  req "  token single-use (410)" 410 -X POST "$BASE/auth/password-reset/confirm" \
-    -H 'Content-Type: application/json' -d "{\"token\":\"$RTOK\",\"newPassword\":\"reset-password-10\"}"
-  req "  pre-reset session died (401)" 401 "$BASE/me" -H "$(auth "$NEWT")"
-  U1T3=$(login "$U1" 'reset-password-10')
-  [ -n "$U1T3" ] && ok "login with reset password" || ko "login with reset password"
+  U1T3=$(login "$U1" 'second-password-10')
+  [ -n "$U1T3" ] && ok "login after the change" || ko "login after the change"
 
   # withdrawal: wrong pw 403 → ok 200 → login 401 → re-signup uniform 202
   req "withdraw wrong pw 403" 403 -X POST "$BASE/me/withdraw" -H "$(auth "$U1T3")" \
     -H 'Content-Type: application/json' -d '{"password":"wrong-password-10"}'
   req "withdraw 200" 200 -X POST "$BASE/me/withdraw" -H "$(auth "$U1T3")" \
-    -H 'Content-Type: application/json' -d '{"password":"reset-password-10"}'
+    -H 'Content-Type: application/json' -d '{"password":"second-password-10"}'
   req "  withdrawn login 401" 401 -X POST "$BASE/auth/login" \
-    -H 'Content-Type: application/json' -d "{\"email\":\"$U1\",\"password\":\"reset-password-10\"}"
+    -H 'Content-Type: application/json' -d "{\"email\":\"$U1\",\"password\":\"second-password-10\"}"
   req "  same-email re-signup 202 (no enumeration)" 202 -X POST "$BASE/auth/signup" \
     -H 'Content-Type: application/json' \
     -d "{\"email\":\"$U1\",\"password\":\"whatever-pass-10\",\"name\":\"재가입\",\"consents\":$CONSENTS_JSON}"
@@ -275,7 +267,7 @@ fi
 if has_phase admin; then
   echo "── admin: user list / detail / disable / enable"
   U2="smoke-acct-adm-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U2")
-  read -r U2T U2ID <<<"$(mk_user "$U2" 'target-password-10' '비활성화대상')"
+  read -r U2T U2ID _ <<<"$(mk_user "$U2" 'target-password-10' '비활성화대상')"
   req "admin user list 200" 200 "$BASE/admin/users?q=smoke-acct-adm-$TS" -H "$(auth "$SAT")"
   N=$(jq -r '.totalElements' "$B"); [ "$N" = 1 ] && ok "  search hits exactly 1" || ko "  search hits exactly 1 (got $N)"
   req "admin user detail 200" 200 "$BASE/admin/users/$U2ID" -H "$(auth "$SAT")"
@@ -530,10 +522,15 @@ if has_phase roles; then
   echo "── roles: ORG_MANAGER / SYS_MANAGER matrix samples"
   U9="smoke-acct-rol-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U9")
   read -r _ U9ID <<<"$(mk_user "$U9" 'roles-password-10' '운영자스모크')"
-  req "ORG_MANAGER without orgId 422" 422 -X PATCH "$BASE/admin/users/$U9ID" -H "$(auth "$SAT")" \
+  # The global endpoint carries system-tier roles only (AdminGlobalRole is USER
+  # and the three SYS_* values); institution roles moved to their own path when
+  # one account became able to hold a role in several institutions. This phase
+  # used to PATCH an orgId onto the global endpoint, which the schema no longer
+  # accepts, and the 422 it got was read as the "without orgId" case passing.
+  req "org role refused on the global endpoint 422" 422 -X PATCH "$BASE/admin/users/$U9ID" -H "$(auth "$SAT")" \
     -H 'Content-Type: application/json' -d '{"role":"ORG_MANAGER"}'
-  req "ORG_MANAGER with orgId 200" 200 -X PATCH "$BASE/admin/users/$U9ID" -H "$(auth "$SAT")" \
-    -H 'Content-Type: application/json' -d "{\"role\":\"ORG_MANAGER\",\"orgId\":$ORG}"
+  req "ORG_MANAGER granted in one institution 200" 200 -X PUT "$BASE/admin/users/$U9ID/org-roles/$ORG" -H "$(auth "$SAT")" \
+    -H 'Content-Type: application/json' -d '{"role":"ORG_MANAGER"}'
   OMT=$(login "$U9" 'roles-password-10')
   [ -n "$OMT" ] && ok "  org-manager login" || ko "  org-manager login"
   req "  admin vms read 200" 200 "$BASE/admin/vms?size=1" -H "$(auth "$OMT")"
@@ -544,9 +541,24 @@ if has_phase roles; then
     -H 'Content-Type: application/json' -d '{"scope":"ORG","title":"x","body":"y"}'
   req "  user disable 403" 403 -X POST "$BASE/admin/users/$U9ID/disable" -H "$(auth "$OMT")" \
     -H 'Content-Type: application/json' -d '{"reason":"nope"}'
+  # A system-tier role and an institution role cannot be held at once, so the
+  # grant has to come off before the switch. The API says so plainly (422,
+  # "기관 역할이 남아 있습니다"); the phase used to move straight to the switch
+  # and never reached this because the account it built was unusable.
+  req "org role revoked 200" 200 -X DELETE "$BASE/admin/users/$U9ID/org-roles/$ORG" -H "$(auth "$SAT")"
   req "SYS_MANAGER switch 200" 200 -X PATCH "$BASE/admin/users/$U9ID" -H "$(auth "$SAT")" \
-    -H 'Content-Type: application/json' -d '{"role":"SYS_MANAGER","orgId":null}'
-  SMT=$(login "$U9" 'roles-password-10')
+    -H 'Content-Type: application/json' -d '{"role":"SYS_MANAGER"}'
+  # Enforcement covers the system tier, not one account, so the promoted scratch
+  # user has to enrol before it can read anything. The enrolment surface stays
+  # open to an unenrolled administrator on purpose -- otherwise the first one
+  # could never get in. This is why the four reads below used to answer 403.
+  SMT0=$(login "$U9" 'roles-password-10')
+  req "  sys-manager 2FA begin 200" 200 -X POST "$BASE/me/mfa/totp" -H "$(auth "$SMT0")" \
+    -H 'Content-Type: application/json' -d '{"password":"roles-password-10"}'
+  U9SEC=$(jq -r '.secret // empty' "$B")
+  req "  sys-manager 2FA activate 200" 200 -X POST "$BASE/me/mfa/totp/activate" -H "$(auth "$SMT0")" \
+    -H 'Content-Type: application/json' -d "{\"code\":\"$(totp "$U9SEC")\"}"
+  SMT=$(login_token "$BASE" "$U9" 'roles-password-10' "$U9SEC") || SMT=""
   [ -n "$SMT" ] && ok "  sys-manager login" || ko "  sys-manager login"
   req "  tasks read 200" 200 "$BASE/admin/tasks?size=1" -H "$(auth "$SMT")"
   req "  nodes read 200" 200 "$BASE/admin/nodes" -H "$(auth "$SMT")"

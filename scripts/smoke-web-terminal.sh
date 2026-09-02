@@ -80,15 +80,7 @@ reauth(){ # reauth ACCESS_TOKEN PASSWORD → echoes the X-Reauth-Token value
 }
 rt(){ echo "X-Reauth-Token: $(reauth "$1" "$2")"; }
 
-mk_user(){
-  pgx "delete from auth_rate_limits"
-  curl -sS -o /dev/null -X POST "$BASE/auth/signup" -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$1\",\"password\":\"$2\",\"name\":\"$3\",\"consents\":$CONSENTS_JSON}"
-  sleep 2
-  local tok; tok=$(pct exec "$CTID" -- sh -c "grep -o 'token=[A-Za-z0-9_-]*' /var/lib/pickle/mock-mail.log | tail -1 | cut -d= -f2")
-  curl -sS -o /dev/null -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' -d "{\"token\":\"$tok\"}"
-  echo "$(login "$1" "$2") $(pgq "select id from users where email='$1'")"
-}
+mk_user(){ mk_verified_user "$BASE" "$@"; }
 
 # Access tokens live 15 minutes; this run is longer than that, because half of
 # it is spent waiting out revalidation windows and a provisioning cycle. A token
@@ -300,7 +292,7 @@ done
 # entirely. U1 requested the VM and is therefore its listed owner.
 U2="smoke-term-mem-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U2")
 U2PW='terminal-member-1'
-read -r U2T U2ID <<<"$(mk_user "$U2" "$U2PW" '터미널멤버')"
+read -r U2T U2ID _ <<<"$(mk_user "$U2" "$U2PW" '터미널멤버')"
 U3="smoke-term-view-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U3")
 read -r U3T _ <<<"$(mk_user "$U3" 'terminal-viewer-1' '터미널뷰어')"
 U4="smoke-term-out-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U4")
