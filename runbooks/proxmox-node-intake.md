@@ -54,6 +54,67 @@ While the vendor OS is still up and `ipmitool` is on it, this is the cheapest
 moment to change the BMC `admin` password (`ipmitool user set password <id>`
 over `/dev/ipmi0`, root). After the wipe it needs `apt install ipmitool` first.
 
+Two things are worth pulling out of the vendor OS before it goes, because both
+are gone the moment the installer writes a partition table:
+
+- **The FRU.** `dmidecode` on these boards can be all placeholders — chassis,
+  product and asset serials reading as one repeated digit string. `ipmitool fru`
+  is where the real board serial and manufacturing date live, and a board serial
+  is the only value an asset record can rely on. Capture it and write it down.
+- **The partition table.** `sfdisk -d /dev/<disk>` is a few lines of text that
+  reproduce the exact GPT the vendor shipped. Keeping it costs nothing and it is
+  the one artefact a bare-metal restore cannot reconstruct by guessing.
+
+## 1b. Preserving the delivered state
+
+Decide deliberately whether the vendor's OS is worth keeping, and do not confuse
+the three ways of keeping it. They cost very different amounts and preserve very
+different things.
+
+**First, ask the vendor for the source image.** These machines usually ship with
+a customised installer image (a Cubic build, an OEM preseed) and its build date
+is stamped in `/etc/lsb-release`. The vendor has that ISO; it is cleaner than
+anything cloned off a running disk, it costs nothing to request, and storing it
+is their problem rather than ours. Ask before spending an evening on a block
+copy — this is the cheapest correct answer and it is the one most often skipped.
+
+**Second, the text capture is usually what you actually wanted.** Package lists,
+enabled units, network configuration, firmware versions, accounts, the FRU and
+the partition table answer nearly every question a restore was going to answer,
+and they diff cleanly against a later state. A block image answers "boot exactly
+this again", which is a much narrower need.
+
+**Third, if a block image is genuinely wanted**, note that the disk is mostly
+empty: a fresh vendor install is tens of gigabytes on a terabyte device, so copy
+used blocks, not the device.
+
+Offline, the accurate way, from live media (SystemRescue and Clonezilla both
+carry `partclone`), with a target host that has the room:
+
+```bash
+sfdisk -d /dev/nvme0n1 > gpt.txt                     # keep with the image
+dd if=/dev/nvme0n1p1 bs=1M | zstd -T0 | ssh <target> 'cat > esp.img.zst'
+partclone.ext4 -c -s /dev/nvme0n1p2 | zstd -T0 | ssh <target> 'cat > root.pcl.zst'
+```
+
+Online, without live media, when the machine is about to be wiped anyway and a
+crash-consistent copy is acceptable insurance (ext4 replays its journal on
+restore; a file being written at that instant is the risk you accept):
+
+```bash
+sudo partclone.ext4 -c -s /dev/nvme0n1p2 --force | zstd -T0 | ssh <target> 'cat > root.pcl.zst'
+```
+
+Restoring is the same three steps in reverse — write the GPT, `dd` the ESP back,
+`partclone.ext4 -r` the root — followed by fixing the EFI boot entry, which the
+Proxmox installer will have replaced.
+
+Two rules about where the image goes. **Compress on the source**, or the whole
+device crosses the network uncompressed. And **the image contains the vendor
+account's password hash and every key on the box**: keep it on a host the
+platform owns, never in a repository, and record its location and checksum in
+the host records rather than the image itself.
+
 ## 2. Decisions the install needs (operator)
 
 Answer before booting the installer; each one changes what the installer is
