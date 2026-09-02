@@ -195,8 +195,11 @@ request 'one real chat completion' 200 -X POST "$LLM_BASE/chat/completions" \
   -H "Authorization: Bearer $LLM_TOKEN" -H 'Content-Type: application/json' \
   -d "$CHAT_BODY" || exit 1
 
-LIMIT_BODY='{"rpm":30,"tpm":2000,"concurrency":2,"dailyTokens":20000,"creditLimit":0.00,"creditLimitReset":null}'
-request 'replace all six limits' 200 -X PUT "$BASE/admin/llm/keys/$KEY_ID/limits" \
+# Every limit the endpoint replaces, including the money-axis model allow list:
+# a body missing any one of them is a 422, because the replacement is total.
+# null is unrestricted for the list, unlike creditLimit where null is refused.
+LIMIT_BODY='{"rpm":30,"tpm":2000,"concurrency":2,"dailyTokens":20000,"creditLimit":0.00,"creditLimitReset":null,"creditAllowedModels":null}'
+request 'replace all seven limits' 200 -X PUT "$BASE/admin/llm/keys/$KEY_ID/limits" \
   -H "Authorization: Bearer $APPROVER_TOKEN" -H 'Content-Type: application/json' \
   -d "$LIMIT_BODY" || exit 1
 jq -e '.rpm == 30 and .tpm == 2000 and .concurrency == 2 and .dailyTokens == 20000
