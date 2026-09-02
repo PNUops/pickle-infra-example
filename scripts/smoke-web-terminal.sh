@@ -200,7 +200,7 @@ cleanup(){
         delete from user_status_changes where user_id=uid or actor_id=uid;
         delete from email_verifications where user_id=uid;
         delete from refresh_tokens where user_id=uid;
-        delete from user_ssh_keys where user_id=uid;
+        delete from vm_ssh_keys where user_id=uid;
         delete from auth_reverifications where user_id=uid;
         delete from workspace_members where user_id=uid;
         delete from workspaces g where g.id = any(gids) and g.kind='PERSONAL' and g.deleted_by is null

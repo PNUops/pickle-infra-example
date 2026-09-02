@@ -214,7 +214,7 @@ TPL_MEM=$(jq -r "$FSEL.memoryMb // empty" "$B"); TPL_DISK=$(jq -r "$FSEL.diskGb 
 if has_phase account; then
   echo "── account: password change / reset / withdrawal"
   U1="smoke-acct-acc-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U1")
-  read -r U1T U1ID <<<"$(mk_user "$U1" 'first-password-10' '계정스모크')"
+  read -r U1T U1ID _ <<<"$(mk_user "$U1" 'first-password-10' '계정스모크')"
   [ -n "$U1T" ] && ok "scratch user created (id=$U1ID)" || ko "scratch user created"
 
   # change: keeps this session (fresh pair), kills others
@@ -291,7 +291,7 @@ fi
 if has_phase group; then
   echo "── group: delete + request-cancel + personal 409"
   U3="smoke-acct-grp-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U3")
-  read -r U3T U3ID <<<"$(mk_user "$U3" 'group-password-10' '그룹스모크')"
+  read -r U3T U3ID _ <<<"$(mk_user "$U3" 'group-password-10' '그룹스모크')"
   req "create team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U3T")" \
     -H 'Content-Type: application/json' \
     -d "{\"kind\":\"TEAM\",\"name\":\"smoke-acct-team-$TS\"}"
@@ -356,7 +356,7 @@ if has_phase protect; then
     -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' -d '{"settings":{"stop_protection":true}}'
   # add a MEMBER who must be blocked from stopping
   U5="smoke-acct-mem-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U5")
-  read -r U5T U5ID <<<"$(mk_user "$U5" 'member-password-10' '중지보호구성원')"
+  read -r U5T U5ID _ <<<"$(mk_user "$U5" 'member-password-10' '중지보호구성원')"
   req "  add to group 201" 201 -X POST "$BASE/workspaces/$PGID4/members" -H "$(auth "$U4T")" \
     -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U5\",\"role\":\"MEMBER\"}"
   # Put them on this VM's list at the rung that may power it. Without the entry
@@ -521,7 +521,7 @@ fi
 if has_phase roles; then
   echo "── roles: ORG_MANAGER / SYS_MANAGER matrix samples"
   U9="smoke-acct-rol-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U9")
-  read -r _ U9ID <<<"$(mk_user "$U9" 'roles-password-10' '운영자스모크')"
+  read -r _ U9ID _ <<<"$(mk_user "$U9" 'roles-password-10' '운영자스모크')"
   # The global endpoint carries system-tier roles only (AdminGlobalRole is USER
   # and the three SYS_* values); institution roles moved to their own path when
   # one account became able to hold a role in several institutions. This phase

@@ -180,7 +180,7 @@ fi
 
 echo "== provision (owner O creates group + VM) =="
 OWNER_EMAIL="sgw-owner-${TS}@pusan.ac.kr"; OWNER_PW="sgw-pass-${TS}!"
-read -r OAT OUID < <(mk_user "$OWNER_EMAIL" "$OWNER_PW" "SGW Owner")
+read -r OAT OUID _ < <(mk_user "$OWNER_EMAIL" "$OWNER_PW" "SGW Owner")
 [ -n "$OAT" ] && [ -n "$OUID" ] && ok "owner user id=$OUID" || { ko "owner signup"; exit 1; }
 req "group" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"sgw\",\"kind\":\"TEAM\"}" || exit 1
 GID=$(jq -r .id "$B")
@@ -311,7 +311,7 @@ kssh "$NMKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "non-member routed" || { sl
 # stranger, so the refusal leaks nothing about who is a colleague.
 echo "== [6] group member absent from the access list → deny =="
 VW_PW="vw-pw-${TS}!"
-read -r VWAT VW_ID < <(mk_user "sgw-unlisted-${TS}@pusan.ac.kr" "$VW_PW" "SGW Unlisted")
+read -r VWAT VW_ID _ < <(mk_user "sgw-unlisted-${TS}@pusan.ac.kr" "$VW_PW" "SGW Unlisted")
 addmember "sgw-unlisted-${TS}@pusan.ac.kr"
 VWKEY=$(mktemp -u); mklocalkey "$VWKEY"; VW_FP=$(fp_of "$VWKEY.pub")
 reg_key "$VWAT" "$VW_PW" "vw-key" "$(cat "$VWKEY.pub")" >/dev/null
@@ -340,7 +340,7 @@ try_connect PICKLE-PW-OK pssh "$VMPW" "$SLUG" 'echo PICKLE-PW-OK' >/dev/null && 
 # --- 10. MEMBER cannot change VM settings → 403 ---
 echo "== [10] MEMBER PATCH settings → 403 =="
 MB_PW="mb-pw-${TS}!"
-read -r MBAT MB_ID < <(mk_user "sgw-member-${TS}@pusan.ac.kr" "$MB_PW" "SGW Member")
+read -r MBAT MB_ID _ < <(mk_user "sgw-member-${TS}@pusan.ac.kr" "$MB_PW" "SGW Member")
 addmember "sgw-member-${TS}@pusan.ac.kr"
 # Listed at the rung that carries access but not editing. Granting first is what
 # makes this a test of the rung: an unlisted person is refused one step earlier,
@@ -355,7 +355,7 @@ code_is WORKSPACE_ROLE_INSUFFICIENT "  refused by the role gate, not by reauth"
 # --- 12. EDITOR cannot raise password_reveal_min_role (OWNER-gated) → 403 ---
 echo "== [12] EDITOR raise min_role → 403 =="
 ED_PW="ed-pw-${TS}!"
-read -r EDAT ED_ID < <(mk_user "sgw-editor-${TS}@pusan.ac.kr" "$ED_PW" "SGW Editor")
+read -r EDAT ED_ID _ < <(mk_user "sgw-editor-${TS}@pusan.ac.kr" "$ED_PW" "SGW Editor")
 addmember "sgw-editor-${TS}@pusan.ac.kr"
 addgrant "$ED_ID" EDITOR
 # valid sudo-mode token here too — the OWNER-only key is what must refuse

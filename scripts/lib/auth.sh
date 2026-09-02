@@ -189,7 +189,7 @@ bcrypt_hash() {
 
 mk_verified_user() {
   local base="$1" email="$2" password="$3" name="$4"
-  local hash body
+  local hash body token
   hash=$(bcrypt_hash "$password")
   if [ -z "$hash" ]; then
     echo "mk_verified_user: could not hash the password" >&2
@@ -197,11 +197,19 @@ mk_verified_user() {
   fi
   pgx "insert into users (email, password_hash, name, role, status, email_verified_at)
        values ('$email', '$hash', '$name', 'USER'::user_role, 'ACTIVE'::user_status, now())
-       on conflict (email) do nothing"
+       on conflict (email) do nothing" || return 1
+  # The version of each document that is in force, not every version ever
+  # published. Signup records what the consent screen showed, and the terms phase
+  # counts those rows back. A plain cross join happens to agree today because
+  # nothing has been revised yet, and would stop agreeing on the first revision.
   pgx "insert into user_consents (user_id, terms_version_id, consented_at)
-       select u.id, t.id, now() from users u cross join terms_versions t
+       select u.id, t.id, now()
+         from users u
+         join (select distinct on (doc_type) id from terms_versions
+                where effective_at <= now()
+                order by doc_type, effective_at desc, id desc) t on true
         where u.email = '$email'
-       on conflict do nothing"
+       on conflict do nothing" || return 1
   # Signup also gives the account its personal workspace, and phases that check
   # withdrawal or the refusal to delete a personal workspace look for it. Without
   # this the account exists but owns nothing, and those checks answer 404 rather
@@ -217,17 +225,28 @@ mk_verified_user() {
          returning id)
        insert into workspace_members (workspace_id, user_id, role)
        select w.id, u.id, 'OWNER'::workspace_member_role from w cross join users u
-        where u.email = '$email'"
+        where u.email = '$email'" || return 1
   # Every request in a smoke run leaves the host by one address, so the per-IP
   # login window fills partway through and the rest of the run gets 429 with an
   # empty token -- which then reads as a wall of 401s in phases that have nothing
   # to do with authentication. The signup-based helper this replaced cleared the
   # counters for the same reason.
-  pgx "delete from auth_rate_limits"
+  pgx "delete from auth_rate_limits" || return 1
   body=$(mktemp) || return 1
   curl -sS -o "$body" -X POST "$base/auth/login" \
     -H 'Content-Type: application/json' \
     -d "{\"email\":\"$email\",\"password\":\"$password\"}"
-  echo "$(jq -r '.accessToken // empty' "$body") $(pgq "select public_id from users where email='$email'") $(pgq "select id from users where email='$email'")"
+  token=$(jq -r '.accessToken // empty' "$body")
   rm -f "$body"
+  # Never echo a line with an empty first field. Callers `read -r A B C`, and the
+  # shell folds leading whitespace, so a missing token slides the public id into
+  # A and the internal id into B -- the exact shift this function was written to
+  # end. Login can still fail here: the counters cleared above are the
+  # application's, not the reverse proxy's, and a row left by an earlier run
+  # under a different password survives the `on conflict do nothing` insert.
+  if [ -z "$token" ]; then
+    echo "mk_verified_user: created $email but could not sign in as it" >&2
+    return 1
+  fi
+  echo "$token $(pgq "select public_id from users where email='$email'") $(pgq "select id from users where email='$email'")"
 }
