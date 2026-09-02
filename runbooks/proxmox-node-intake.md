@@ -54,15 +54,19 @@ While the vendor OS is still up and `ipmitool` is on it, this is the cheapest
 moment to change the BMC `admin` password (`ipmitool user set password <id>`
 over `/dev/ipmi0`, root). After the wipe it needs `apt install ipmitool` first.
 
-Two things are worth pulling out of the vendor OS before it goes, because both
-are gone the moment the installer writes a partition table:
+Two more things are worth reading here, for different reasons:
 
-- **The FRU.** `dmidecode` on these boards can be all placeholders — chassis,
-  product and asset serials reading as one repeated digit string. `ipmitool fru`
-  is where the real board serial and manufacturing date live, and a board serial
-  is the only value an asset record can rely on. Capture it and write it down.
-- **The partition table.** `sfdisk -d /dev/<disk>` is a few lines of text that
-  reproduce the exact GPT the vendor shipped. Keeping it costs nothing and it is
+- **The FRU**, because `ipmitool` is already installed. `dmidecode` on these
+  boards can be all placeholders — chassis, product and asset serials reading as
+  one repeated digit string — while `ipmitool fru` carries the real board serial
+  and manufacturing date. That is the most stable value an asset record can
+  hold; the NIC MAC and the NVMe serial also identify the box, and the SMBIOS
+  UUID is derived from the MAC rather than independent of it. This one **is not**
+  lost to the wipe (the FRU lives in the BMC's own storage, not on the disk), so
+  a later `apt install ipmitool` recovers it — the same trade the BMC-password
+  paragraph above describes.
+- **The partition table**, because this one *is* lost. `sfdisk -d /dev/<disk>` is
+  a few lines of text that reproduce the exact GPT the vendor shipped, and it is
   the one artefact a bare-metal restore cannot reconstruct by guessing.
 
 ## 1b. Preserving the delivered state
@@ -73,10 +77,12 @@ different things.
 
 **First, ask the vendor for the source image.** These machines usually ship with
 a customised installer image (a Cubic build, an OEM preseed) and its build date
-is stamped in `/etc/lsb-release`. The vendor has that ISO; it is cleaner than
-anything cloned off a running disk, it costs nothing to request, and storing it
-is their problem rather than ours. Ask before spending an evening on a block
-copy — this is the cheapest correct answer and it is the one most often skipped.
+is stamped in `/etc/lsb-release`. The vendor should still have that ISO, and it
+is cleaner than anything cloned off a running disk, costs nothing to request,
+and is stored at their expense rather than ours. Ask before spending an evening
+on a block copy — this is the cheapest correct answer and the one most often
+skipped. It is also the only one of the three that can fail for a reason outside
+our control, so ask early enough that a "no" still leaves time for the others.
 
 **Second, the text capture is usually what you actually wanted.** Package lists,
 enabled units, network configuration, firmware versions, accounts, the FRU and
@@ -88,32 +94,55 @@ this again", which is a much narrower need.
 empty: a fresh vendor install is tens of gigabytes on a terabyte device, so copy
 used blocks, not the device.
 
+**A usable set is three artefacts, not one**: the partition table, the ESP, and
+the root filesystem. A capture missing any of them cannot be restored by the
+procedure below. Confirm the device first — `lsblk` — and substitute it for
+`<disk>` and its partitions throughout; the literals below match a single-NVMe
+box and are wrong on anything else.
+
 Offline, the accurate way, from live media (SystemRescue and Clonezilla both
-carry `partclone`), with a target host that has the room:
+carry `partclone` and `zstd`), with a target host that has the room:
 
 ```bash
-sfdisk -d /dev/nvme0n1 > gpt.txt                     # keep with the image
-dd if=/dev/nvme0n1p1 bs=1M | zstd -T0 | ssh <target> 'cat > esp.img.zst'
-partclone.ext4 -c -s /dev/nvme0n1p2 | zstd -T0 | ssh <target> 'cat > root.pcl.zst'
+sfdisk -d /dev/<disk> > gpt.txt                       # artefact 1
+dd if=/dev/<disk>p1 bs=1M | zstd -T0 | ssh <target> 'cat > esp.img.zst'      # 2
+partclone.ext4 -c -s /dev/<disk>p2 | zstd -T0 | ssh <target> 'cat > root.pcl.zst'  # 3
 ```
 
-Online, without live media, when the machine is about to be wiped anyway and a
-crash-consistent copy is acceptable insurance (ext4 replays its journal on
-restore; a file being written at that instant is the risk you accept):
+Online, without live media, when the machine is about to be wiped anyway. Two
+things to know before choosing this path. `partclone` is **not** on a stock
+vendor image, so this begins by installing it — which mutates the state being
+captured, acceptable only because the disk is about to be erased. And the copy
+is weaker than the offline one: partclone reads the used-block map once and then
+copies for several minutes, so the result mixes states from different instants
+rather than capturing one. Journal replay does not repair that. Stop what can be
+stopped, `sync`, and treat the result as approximate insurance rather than a
+faithful copy.
 
 ```bash
-sudo partclone.ext4 -c -s /dev/nvme0n1p2 --force | zstd -T0 | ssh <target> 'cat > root.pcl.zst'
+sudo apt install partclone
+sudo sfdisk -d /dev/<disk> > gpt.txt
+sudo dd if=/dev/<disk>p1 bs=1M | zstd -T0 | ssh <target> 'cat > esp.img.zst'
+sync
+sudo partclone.ext4 -c -s /dev/<disk>p2 --force | zstd -T0 | ssh <target> 'cat > root.pcl.zst'
 ```
 
-Restoring is the same three steps in reverse — write the GPT, `dd` the ESP back,
+`--force` is what lets partclone read a mounted source, and it also suppresses
+the exits it would otherwise take on a read error mid-copy — so an online image
+can be silently incomplete. Run `e2fsck -f` on the restored filesystem before
+trusting it either way.
+
+Restoring is the three artefacts in reverse — write the GPT, `dd` the ESP back,
 `partclone.ext4 -r` the root — followed by fixing the EFI boot entry, which the
-Proxmox installer will have replaced.
+Proxmox installer will have replaced. **This direction writes to a disk, so
+confirm the target with `lsblk` before each step**; the forward direction only
+reads, this one destroys whatever is there.
 
 Two rules about where the image goes. **Compress on the source**, or the whole
 device crosses the network uncompressed. And **the image contains the vendor
-account's password hash and every key on the box**: keep it on a host the
-platform owns, never in a repository, and record its location and checksum in
-the host records rather than the image itself.
+account's password hash and every on-disk key**: keep it on a host the platform
+owns, never in a repository, and record its location and checksum in this
+README's `## 운영 대상` row for the host rather than beside the image itself.
 
 ## 2. Decisions the install needs (operator)
 
