@@ -1,123 +1,105 @@
-# Runbook — Proxmox node intake (draft)
+# 런북: Proxmox 노드 인수 (초안)
 
-Brings a server the platform owns into the fleet as a **Proxmox placement node
-candidate**: measured intake before the OS wipe, the install itself, and the
-records this repository keeps. First walked 2026-09-01 for two internal
-server-room hosts (`192.0.2.30` and `192.0.2.31`, provisional names
-`pve-node-2` and `pve-node-3`); the install step is written ahead of being
-walked and is marked so.
+플랫폼이 소유한 서버를 **Proxmox 배치 노드 후보**로 편입한다. OS 초기화 전 실측, 설치
+자체, 그리고 이 레포지토리가 남기는 기록까지가 범위다. 설치 절은 아직 걸어보기 전에
+쓴 것이고 그렇게 표시해 두었다.
 
-This is the counterpart of [node-intake.md](node-intake.md), which covers a
-host that is *not* a Proxmox node. [new-environment.md](new-environment.md)
-brings up a whole platform on a blank host; this runbook adds a node to a
-platform that already exists, and **stops before the node is registered**.
+Proxmox 노드가 **아닌** 호스트를 다루는 [node-intake.md](node-intake.md)의 짝이다.
+[new-environment.md](new-environment.md)는 빈 호스트에 플랫폼 전체를 세우고, 이 런북은
+이미 있는 플랫폼에 노드를 더하며 **노드 등록 직전에 멈춘다**.
 
-Two boundaries hold throughout:
+두 가지 경계가 전 구간에 걸린다.
 
-- **Intake and install do not register the node.** No `nodes` row, no OS
-  catalog row, no pool. Registration needs tooling that does not exist yet
-  (a node-only registration script and a per-node OS catalog), and the current
-  scripts are unsafe against a second node — see "Never run" below. A `nodes`
-  row that lands as ACTIVE changes every org's approval headroom at once, and
-  one whose `disk_capacity_gb` is empty blanks the platform's disk capacity
-  (the dashboard disk bar and trend) until it is measured.
-- **Cluster membership is a separate decision.** The install is standalone.
-  Joining a cluster is done later, while the node still has no guests, and only
-  after the cluster shape has been decided.
+- **인수와 설치는 노드를 등록하지 않는다.** `nodes` 행도, OS 카탈로그 행도, 풀도 만들지
+  않는다. 등록에는 아직 없는 도구가 필요하고(노드 전용 등록 스크립트와 노드별 OS
+  카탈로그), 지금 스크립트는 두 번째 노드에 안전하지 않다. 아래 "실행 금지" 절을 본다.
+  ACTIVE로 들어간 `nodes` 행은 모든 기관의 승인 여유를 한꺼번에 바꾸고,
+  `disk_capacity_gb`가 빈 행은 실측될 때까지 플랫폼의 디스크 용량을 비운다(대시보드의
+  디스크 막대와 추이).
+- **클러스터 참여는 별개 결정이다.** 설치는 standalone이다. 클러스터 참여는 노드에 게스트가
+  아직 없을 때, 클러스터 형태가 정해진 뒤에 한다.
 
-## 1. Before the wipe: measured intake
+## 1. 초기화 전 실측
 
-Read-only, over the vendor account (a password account on a vendor image is
-normal). Run it from pve-node, which has `sshpass`, and keep the password out of
-the shell history: `read -rs SSHPASS; export SSHPASS`, then
-`sshpass -e ssh <account>@<addr> ...`, then `unset SSHPASS`. Record what is,
-not what was expected:
+벤더 계정으로 읽기만 한다(벤더 이미지에 비밀번호 계정이 있는 것은 정상이다). `sshpass`가
+있는 pve-node에서 돌리고 비밀번호를 셸 히스토리에 남기지 않는다.
+`read -rs SSHPASS; export SSHPASS` 다음 `sshpass -e ssh <account>@<addr> ...`,
+끝나면 `unset SSHPASS`. 기대한 값이 아니라 있는 그대로 기록한다.
 
-| Item | How | Why it matters here |
+| 항목 | 방법 | 여기서 중요한 이유 |
 |---|---|---|
-| Board, BIOS, serials | `/sys/class/dmi/id/{sys_vendor,product_name,bios_version}`, `dmidecode -t 1,3` (root) | Vendor images ship with placeholder serials; if so, identify the box by UUID and MAC and say so in the README row |
-| GPU | `lspci \| grep -iE 'vga\|3d\|nvidia'`, `nvidia-smi -L` | The platform has no GPU resource model. A GPU decides BIOS settings before the install (§2) and whether a driver is installed at all |
-| CPU and ISA level | `lscpu`, `/lib64/ld-linux-x86-64.so.2 --help \| grep x86-64-v` | The Rocky 10 template requires x86-64-v3; a lower node accepts the clone and the guest hangs silently |
-| Memory | `free -g`, `dmidecode -t 17` (root) | Count empty slots: capacity is what `apply-platform-inventory.sh` measures at registration, so later upgrades mean a re-run |
-| Disks | `lsblk -o NAME,SIZE,TYPE,ROTA,MODEL`, `nvme smart-log` or `smartctl` (root) | One consumer NVMe means the OS and the thin pool share a device with no power-loss protection; decide on a second or enterprise device **before** the install |
-| NICs | `ip -br link`, `/sys/class/net/*/speed` | Note uncabled 10G ports; the guest VLAN trunk and migration traffic want them |
-| Band and L2 | `ip -br addr`, `ip route`; from pve-node `ip neigh show <addr>` and `ping -c 1000 -i 0.01 -q <addr>` | Same L2 as pve-node makes a stretched guest VLAN a switch question; record max and mdev, not the mean |
-| BMC | `ls -l /dev/ipmi0`, `ipmitool mc info`, `ipmitool lan print 1`, `ipmitool user list 1` (root) | Three answers: is the dedicated port on a network (an address of 0.0.0.0 on DHCP means no), which users exist, and who on the host can reach `/dev/ipmi0`. Never probe default credentials by logging in |
-| sshd, listeners, time | `ss -tlnup`, `/etc/ssh/sshd_config*`, `timedatectl` | Snapshot only; the wipe replaces all of it |
-| Host keys | `ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub` | Recorded so the post-install keys are seen to be new |
-| Address ownership | ask the network owner | Whether the campus address the vendor image carries is a static assignment to this host or a DHCP lease; the install makes it static, so it has to be the host's |
+| 보드, BIOS, 시리얼 | `/sys/class/dmi/id/{sys_vendor,product_name,bios_version}`, `dmidecode -t 1,3` (root) | 벤더 이미지는 시리얼이 플레이스홀더인 채로 나온다. 그렇다면 UUID와 MAC으로 상자를 식별하고 README 행에 그렇게 적는다 |
+| GPU | `lspci \| grep -iE 'vga\|3d\|nvidia'`, `nvidia-smi -L` | 플랫폼에 GPU 리소스 모델이 없다. GPU가 있으면 설치 전에 BIOS 설정이 갈리고(§2) 드라이버를 아예 깔지 말지도 갈린다 |
+| CPU와 ISA 레벨 | `lscpu`, `/lib64/ld-linux-x86-64.so.2 --help \| grep x86-64-v` | Rocky 10 템플릿은 x86-64-v3를 요구한다. 그보다 낮은 노드는 클론을 받아들이고 게스트가 조용히 멈춘다 |
+| 메모리 | `free -g`, `dmidecode -t 17` (root) | 빈 슬롯을 센다. 용량은 등록 시점에 `apply-platform-inventory.sh`가 실측하므로 나중의 증설은 재실행을 뜻한다 |
+| 디스크 | `lsblk -o NAME,SIZE,TYPE,ROTA,MODEL`, `nvme smart-log` 또는 `smartctl` (root) | 컨슈머 NVMe 한 장이면 OS와 씬풀이 전원 손실 보호 없는 장치를 공유한다는 뜻이다. 두 번째 장치나 엔터프라이즈 장치를 **설치 전에** 결정한다 |
+| NIC | `ip -br link`, `/sys/class/net/*/speed` | 미배선 10G 포트를 적어 둔다. 게스트 VLAN 트렁크와 마이그레이션 트래픽이 그것을 원한다 |
+| 대역과 L2 | `ip -br addr`, `ip route`, pve-node에서 `ip neigh show <addr>`와 `ping -c 1000 -i 0.01 -q <addr>` | pve-node와 같은 L2면 게스트 VLAN을 늘리는 것이 스위치 문제가 된다. 평균이 아니라 max와 mdev를 적는다 |
+| BMC | `ls -l /dev/ipmi0`, `ipmitool mc info`, `ipmitool lan print 1`, `ipmitool user list 1` (root) | 답이 셋이다. 전용 포트가 네트워크에 물려 있는가(DHCP인데 주소가 0.0.0.0이면 아니다), 어떤 사용자가 있는가, 이 호스트의 누가 `/dev/ipmi0`에 닿는가. 기본 자격증명을 로그인으로 확인하지 않는다 |
+| sshd, 리스너, 시각 | `ss -tlnup`, `/etc/ssh/sshd_config*`, `timedatectl` | 스냅샷 용도다. 초기화가 전부 갈아엎는다 |
+| 호스트 키 | `ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub` | 설치 후 키가 새것임을 확인할 수 있도록 기록한다 |
+| 주소 소유 | 네트워크 담당자에게 확인 | 벤더 이미지가 들고 있는 캠퍼스 주소가 이 호스트에 고정 할당된 것인지 DHCP 임대인지. 설치가 그것을 static으로 만들므로 이 호스트의 것이어야 한다 |
 
-Record the results as a pre-wipe snapshot, marked as such, in the same unit of
-work as the intake; the install rewrites every row.
+결과는 초기화 전 스냅샷임을 명시해서 인수와 같은 작업 단위에 기록한다. 설치가 모든 행을
+다시 쓴다.
 
-While the vendor OS is still up and `ipmitool` is on it, this is the cheapest
-moment to change the BMC `admin` password (`ipmitool user set password <id>`
-over `/dev/ipmi0`, root). After the wipe it needs `apt install ipmitool` first.
+벤더 OS가 아직 살아 있고 `ipmitool`이 그 위에 있는 지금이 BMC `admin` 비밀번호를 바꾸기
+가장 싼 시점이다(`/dev/ipmi0` 경유 `ipmitool user set password <id>`, root). 초기화
+뒤에는 `apt install ipmitool`부터 해야 한다.
 
-Two more things are worth reading here, for different reasons:
+여기서 두 가지를 더 읽어 둔다. 이유는 서로 다르다.
 
-- **The FRU**, because `ipmitool` is already installed. `dmidecode` on these
-  boards can be all placeholders — chassis, product and asset serials reading as
-  one repeated digit string — while `ipmitool fru` carries the real board serial
-  and manufacturing date. That is the most stable value an asset record can
-  hold; the NIC MAC and the NVMe serial also identify the box, and the SMBIOS
-  UUID is derived from the MAC rather than independent of it. This one **is not**
-  lost to the wipe (the FRU lives in the BMC's own storage, not on the disk), so
-  a later `apt install ipmitool` recovers it — the same trade the BMC-password
-  paragraph above describes.
-- **The partition table**, because this one *is* lost. `sfdisk -d /dev/<disk>` is
-  a few lines of text that reproduce the exact GPT the vendor shipped, and it is
-  the one artefact a bare-metal restore cannot reconstruct by guessing.
+- **FRU**. `ipmitool`이 이미 깔려 있기 때문이다. 이 보드들의 `dmidecode`는 섀시와 제품,
+  자산 시리얼이 전부 같은 숫자열 플레이스홀더로 나올 수 있는데 `ipmitool fru`는 진짜 보드
+  시리얼과 제조일을 담는다. 이것은 초기화로 **사라지지 않으므로**(FRU는 디스크가 아니라
+  BMC 자체 저장소에 있다) 나중에 `apt install ipmitool`로 되찾을 수 있다. 위 BMC 비밀번호
+  문단과 같은 거래다.
+- **파티션 테이블**. 이쪽은 사라지기 때문이다. `sfdisk -d /dev/<disk>`는 벤더가 출고한
+  GPT를 그대로 재현하는 몇 줄짜리 텍스트이고, 베어메탈 복원이 추측으로 되살릴 수 없는
+  유일한 산출물이다.
 
-## 1b. Preserving the delivered state
+## 1b. 납품 상태 보존
 
-Decide deliberately whether the vendor's OS is worth keeping, and do not confuse
-the three ways of keeping it. They cost very different amounts and preserve very
-different things.
+벤더 OS를 남길 가치가 있는지 의식적으로 정하고, 남기는 세 가지 방법을 혼동하지 않는다.
+비용과 보존하는 것이 서로 크게 다르다.
 
-**First, ask the vendor for the source image.** These machines usually ship with
-a customised installer image (a Cubic build, an OEM preseed) and its build date
-is stamped in `/etc/lsb-release`. The vendor should still have that ISO, and it
-is cleaner than anything cloned off a running disk, costs nothing to request,
-and is stored at their expense rather than ours. Ask before spending an evening
-on a block copy — this is the cheapest correct answer and the one most often
-skipped. It is also the only one of the three that can fail for a reason outside
-our control, so ask early enough that a "no" still leaves time for the others.
+**첫째, 벤더에게 원본 이미지를 요청한다.** 이 기계들은 보통 맞춤 설치 이미지로 출고되고
+(Cubic 빌드나 OEM preseed) 빌드 날짜가 `/etc/lsb-release`에 찍혀 있다. 벤더가 그 ISO를
+아직 갖고 있을 것이고, 동작 중인 디스크에서 뜬 어떤 것보다 깨끗하며, 요청하는 데 드는
+비용이 없고, 보관 비용도 우리가 아니라 벤더가 낸다. 블록 복사에 저녁 하나를 쓰기 전에
+물어본다. 가장 싼 정답인데 가장 자주 건너뛴다. 셋 중 우리 통제 밖의 이유로 실패할 수
+있는 유일한 방법이기도 하므로, "없다"는 답이 와도 나머지를 할 시간이 남도록 일찍 묻는다.
 
-**Second, the text capture is usually what you actually wanted.** Package lists,
-enabled units, network configuration, firmware versions, accounts, the FRU and
-the partition table answer nearly every question a restore was going to answer,
-and they diff cleanly against a later state. A block image answers "boot exactly
-this again", which is a much narrower need.
+**둘째, 텍스트 수집이 대개 실제로 원했던 것이다.** 패키지 목록, 활성 유닛, 네트워크 설정,
+펌웨어 버전, 계정, FRU, 파티션 테이블이 복원으로 답하려던 질문의 거의 전부를 답하고,
+나중 상태와 깔끔하게 diff된다. 블록 이미지는 "정확히 이것을 다시 부팅한다"에 답하는데
+그것은 훨씬 좁은 요구다.
 
-**Third, if a block image is genuinely wanted**, note that the disk is mostly
-empty: a fresh vendor install is tens of gigabytes on a terabyte device, so copy
-used blocks, not the device.
+**셋째, 블록 이미지가 정말로 필요하다면** 디스크가 대부분 비어 있다는 점을 이용한다.
+갓 설치한 벤더 OS는 테라바이트 장치 위의 수십 기가바이트이므로 장치가 아니라 사용
+블록을 복사한다.
 
-**A usable set is three artefacts, not one**: the partition table, the ESP, and
-the root filesystem. A capture missing any of them cannot be restored by the
-procedure below. Confirm the device first — `lsblk` — and substitute it for
-`<disk>` and its partitions throughout; the literals below match a single-NVMe
-box and are wrong on anything else.
+**쓸 수 있는 한 벌은 산출물 하나가 아니라 셋이다.** 파티션 테이블, ESP, 루트 파일시스템.
+하나라도 빠지면 아래 절차로 복원할 수 없다. 장치부터 `lsblk`로 확인하고 아래의 `<disk>`와
+그 파티션 자리에 넣는다. 아래 리터럴은 NVMe 한 장짜리 상자 기준이라 다른 구성에서는
+틀리다.
 
-Offline, the accurate way, from live media (SystemRescue and Clonezilla both
-carry `partclone` and `zstd`), with a target host that has the room:
+라이브 미디어에서 오프라인으로 뜨는 것이 정확하다(SystemRescue와 Clonezilla 모두
+`partclone`과 `zstd`를 담고 있다). 받는 호스트에 공간이 있어야 한다.
 
 ```bash
-sfdisk -d /dev/<disk> > gpt.txt                       # artefact 1
+sfdisk -d /dev/<disk> > gpt.txt                       # 산출물 1
 dd if=/dev/<disk>p1 bs=1M | zstd -T0 | ssh <target> 'cat > esp.img.zst'      # 2
 partclone.ext4 -c -s /dev/<disk>p2 | zstd -T0 | ssh <target> 'cat > root.pcl.zst'  # 3
 ```
 
-Online, without live media, when the machine is about to be wiped anyway. Two
-things to know before choosing this path. `partclone` is **not** on a stock
-vendor image, so this begins by installing it — which mutates the state being
-captured, acceptable only because the disk is about to be erased. And the copy
-is weaker than the offline one: partclone reads the used-block map once and then
-copies for several minutes, so the result mixes states from different instants
-rather than capturing one. Journal replay does not repair that. Stop what can be
-stopped, `sync`, and treat the result as approximate insurance rather than a
-faithful copy.
+라이브 미디어 없이 온라인으로 뜨는 경로는 어차피 곧 지울 기계일 때 쓴다. 고르기 전에 알아야
+할 것이 둘이다. `partclone`은 순정 벤더 이미지에 **없으므로** 설치부터 하게 되는데, 그것이
+지금 담으려는 상태를 바꾼다. 디스크를 곧 지울 것이라서만 받아들일 수 있는 거래다. 그리고
+사본이 오프라인 쪽보다 약하다. partclone은 사용 블록 맵을 한 번 읽고 몇 분에 걸쳐
+복사하므로 결과가 한 시점이 아니라 여러 시점이 섞인 것이 된다. 저널 재생으로 고쳐지지
+않는다. 멈출 수 있는 것을 멈추고 `sync`한 다음, 결과를 충실한 사본이 아니라 근사한 보험으로
+취급한다.
 
 ```bash
 sudo apt install partclone
@@ -127,114 +109,95 @@ sync
 sudo partclone.ext4 -c -s /dev/<disk>p2 --force | zstd -T0 | ssh <target> 'cat > root.pcl.zst'
 ```
 
-`--force` is what lets partclone read a mounted source, and it also suppresses
-the exits it would otherwise take on a read error mid-copy — so an online image
-can be silently incomplete. Run `e2fsck -f` on the restored filesystem before
-trusting it either way.
+`--force`가 마운트된 소스를 읽게 해 주는데, 동시에 복사 도중 읽기 오류에서 빠져나가는
+동작도 억제한다. 그래서 온라인 이미지는 조용히 불완전할 수 있다. 어느 쪽으로 떴든 복원한
+파일시스템은 믿기 전에 `e2fsck -f`를 돌린다.
 
-Restoring is the three artefacts in reverse — write the GPT, `dd` the ESP back,
-`partclone.ext4 -r` the root — followed by fixing the EFI boot entry, which the
-Proxmox installer will have replaced. **This direction writes to a disk, so
-confirm the target with `lsblk` before each step**; the forward direction only
-reads, this one destroys whatever is there.
+복원은 세 산출물을 역순으로 되돌리는 것이다. GPT를 쓰고, ESP를 `dd`로 되돌리고, 루트를
+`partclone.ext4 -r`로 되돌린 다음, Proxmox 설치 프로그램이 갈아치웠을 EFI 부트 항목을
+고친다. **이 방향은 디스크에 쓰므로 매 단계 전에 `lsblk`로 대상을 확인한다.** 뜨는 방향은
+읽기만 하지만 이 방향은 거기 있는 것을 파괴한다.
 
-Two rules about where the image goes. **Compress on the source**, or the whole
-device crosses the network uncompressed. And **the image contains the vendor
-account's password hash and every on-disk key**: keep it on a host the platform
-owns, never in a repository, and record its location and checksum in this
-README's `## 운영 대상` row for the host rather than beside the image itself.
+이미지를 어디에 두는지에 대한 규칙이 둘이다. **소스에서 압축한다.** 아니면 장치 전체가
+압축되지 않은 채로 네트워크를 건넌다. 그리고 **이미지에는 벤더 계정의 비밀번호 해시와
+디스크 위의 모든 키가 들어 있다.** 플랫폼이 소유한 호스트에 두고, 어떤 레포지토리에도
+넣지 않으며, 위치와 체크섬은 이미지 옆이 아니라 이 README의 해당 호스트 `## 운영 대상`
+행에 적는다.
 
-## 2. Decisions the install needs (operator)
+## 2. 설치 전에 운영자가 정할 것
 
-Answer before booting the installer; each one changes what the installer is
-told or what is cabled first:
+설치 프로그램을 띄우기 전에 답한다. 각각이 설치 프로그램에 넘길 값이나 먼저 배선할
+대상을 바꾼다.
 
-1. **Storage layout.** A second or enterprise NVMe goes in before the install.
-   Record the installer's disk values (`swapsize`, `maxroot`, `minfree`,
-   `maxvz`) at the prompt: pve-node's were never recorded and its VG ended with
-   16 GiB free. Keep the storage id `local-lvm`, which the registration script
-   defaults to.
-2. **Management NIC and 10G.** If the guest VLAN trunk will ride the 10G
-   ports, cable them first and pick the 1G port as management.
-3. **Hostname.** Provisional names are provisional; the name becomes the
-   pveproxy certificate SAN and the `api_host` the api pins, so changing it
-   after registration is a certificate and a database change.
-4. **BMC.** Change the `admin` password **before** the dedicated port is
-   cabled: on DHCP the BMC appears on the campus band the moment the link is
-   up. Decide the management network first, then cable.
-5. **BIOS and GPU.** A host with a GPU needs the BIOS choices made before the
-   installer boots if passthrough is ever wanted (VT-d/IOMMU, Above-4G
-   decoding, SR-IOV where offered, Secure Boot off) and a kernel command line
-   with vfio at first boot. If no use is decided, leave IOMMU on and install no
-   driver: a driver bound to the card is what passthrough later has to undo.
-6. **Cluster shape.** Not needed for the install; needed before any join. A
-   join requires the same Proxmox major as pve-node (`pveversion`).
+1. **스토리지 구성.** 두 번째 장치나 엔터프라이즈 NVMe는 설치 전에 꽂는다. 설치 프로그램의
+   디스크 값(`swapsize`, `maxroot`, `minfree`, `maxvz`)을 프롬프트에서 기록한다. pve-node는
+   그것을 기록하지 않았고 VG에 16 GiB만 남은 채로 끝났다. 스토리지 id는 등록 스크립트가
+   기본값으로 쓰는 `local-lvm`을 유지한다.
+2. **관리 NIC와 10G.** 게스트 VLAN 트렁크가 10G 포트를 탈 것이면 그쪽을 먼저 배선하고 1G
+   포트를 관리용으로 고른다.
+3. **호스트명.** 가칭은 가칭이다. 이 이름이 pveproxy 인증서 SAN이 되고 api가 고정하는
+   `api_host`가 되므로, 등록 뒤에 바꾸는 것은 인증서 변경이자 데이터베이스 변경이다.
+4. **BMC.** 전용 포트를 배선하기 **전에** `admin` 비밀번호를 바꾼다. DHCP면 링크가 올라오는
+   순간 BMC가 캠퍼스 대역에 나타난다. 관리 네트워크를 먼저 정하고 배선한다.
+5. **BIOS와 GPU.** GPU가 있는 호스트에서 패스스루를 언젠가 쓸 생각이면 설치 프로그램을
+   띄우기 전에 BIOS 선택을 끝내야 하고(VT-d/IOMMU, Above-4G decoding, 제공되면 SR-IOV,
+   Secure Boot 끄기) 첫 부팅에 vfio가 들어간 커널 커맨드라인이 필요하다. 용도가 정해지지
+   않았으면 IOMMU는 켠 채로 두고 드라이버는 깔지 않는다. 카드에 바인딩된 드라이버가
+   나중에 패스스루가 풀어야 할 대상이다.
+6. **클러스터 형태.** 설치에는 필요 없고 참여 전에는 필요하다. 참여하려면 pve-node와 Proxmox
+   메이저 버전이 같아야 한다(`pveversion`).
 
-## 3. Install (standalone) — UNVERIFIED, written ahead of the first walk
+## 3. Standalone 설치 (미검증, 첫 실행 전에 작성)
 
-1. Boot the Proxmox VE installer of the same major as pve-node, choose the disk
-   layout decided above, set the hostname, the 1G management interface, and
-   the campus address the host already had (confirmed as the host's in §1).
-2. First boot: set the repositories the way pve-node has them (enterprise and Ceph
-   lists disabled, `pve-no-subscription` enabled, per
-   [new-environment.md](new-environment.md)), then confirm `timedatectl` is
-   synchronized against the source pve-node uses (read it off pve-node with
-   `chronyc sources`), and that `pveproxy` answers on `:8006`.
-3. Operator key first: one ed25519 key per node, comment `pickle-node-<name>`,
-   kept in the operator's encrypted key archive as
-   [node-intake.md](node-intake.md) §2 describes; `~/.ssh/config` entry with
-   the ProxyJump through pve-node spelled out (user, port, key), since campus
-   addresses are not reachable from a development machine directly. Prove it
-   from a second session: `ssh -o BatchMode=yes <name> hostname`.
-4. Only then sshd: key-only for `root`, `PasswordAuthentication no`, with the
-   proving session kept open until the change is verified from another one
-   (the pattern [new-environment.md](new-environment.md) prescribes for the
-   port move). Whether the port stays 22 or moves like pve-node's is a per-host
-   choice; write it into this README's `## 운영 대상` row, because every later
-   command reads the port from the host records.
-5. Firewall: do **not** copy pve-node's `interfaces` file wholesale. Its 8006 rule
-   only restricts the infra bridge (`-i vmbr1`); on the campus side pve-node's
-   8006 is reachable from the whole campus band today, and a new host with no
-   infra bridge would carry the same posture. Decide explicitly whether that
-   is acceptable here, remembering that once the node is registered the api on
-   pve-node has to reach this 8006 over the campus network.
-6. Do not create `vmbr2` yet. A guest bridge on this host is a separate L2
-   from pve-node's until a VLAN trunk or an SDN zone joins them; creating it
-   early invites a pool to be pointed at it.
-7. Do not build templates yet if the node may join a cluster: a joining node
-   must hold no guests.
+1. pve-node와 같은 메이저의 Proxmox VE 설치 프로그램으로 부팅한다. 위에서 정한 디스크 구성,
+   호스트명, 1G 관리 인터페이스, 그리고 §1에서 이 호스트의 것으로 확인한 캠퍼스 주소를
+   넣는다.
+2. 첫 부팅에서 리포지토리를 pve-node와 같게 맞추고(enterprise와 Ceph 목록 비활성화,
+   `pve-no-subscription` 활성화, [new-environment.md](new-environment.md) 참조),
+   `timedatectl`이 pve-node가 쓰는 소스에 동기화되었는지 확인하고(pve-node에서 `chronyc sources`로
+   읽는다), `pveproxy`가 `:8006`에 응답하는지 확인한다.
+3. 운영자 키가 먼저다. 노드마다 ed25519 키 하나, 주석 `pickle-node-<name>`,
+   [node-intake.md](node-intake.md) §2가 설명하는 대로 운영자의 암호화된 키 보관소에
+   보관한다. `~/.ssh/config` 항목에는 pve-node 경유 ProxyJump를 사용자와 포트, 키까지 명시한다.
+   캠퍼스 주소는 개발 머신에서 직접 닿지 않는다. 다른 세션에서 증명한다.
+   `ssh -o BatchMode=yes <name> hostname`
+4. 그다음에야 sshd다. `root`는 키 전용, `PasswordAuthentication no`. 증명에 쓴 세션을 열어
+   둔 채로 다른 세션에서 확인될 때까지 유지한다([new-environment.md](new-environment.md)가
+   포트 이동에 대해 지시하는 방식과 같다). 포트를 22로 둘지 pve-node처럼 옮길지는 호스트별
+   선택이고, 이 README의 `## 운영 대상` 행에 적는다. 이후 모든 명령이 호스트 기록에서
+   포트를 읽는다.
+5. 방화벽. pve-node의 `interfaces` 파일을 통째로 베끼지 **않는다**. 그 파일의 8006 규칙은 인프라
+   브리지만 제한하고(`-i vmbr1`), 캠퍼스 쪽에서 pve-node의 8006은 지금 캠퍼스 대역 전체에서
+   닿는다. 인프라 브리지가 없는 새 호스트는 같은 자세를 그대로 물려받게 된다. 여기서
+   그것이 받아들일 만한지 명시적으로 정한다. 노드가 등록되면 pve-node의 api가 캠퍼스 네트워크
+   너머로 이 8006에 닿아야 한다는 점을 함께 고려한다.
+6. `vmbr2`를 아직 만들지 않는다. 이 호스트의 게스트 브리지는 VLAN 트렁크나 SDN 존이 이어
+   주기 전까지 pve-node의 것과 별개 L2다. 일찍 만들면 풀이 그쪽을 가리키게 되기 쉽다.
+7. 노드가 클러스터에 참여할 수 있으면 템플릿을 아직 빌드하지 않는다. 참여하는 노드는
+   게스트를 갖고 있으면 안 된다.
 
-## 4. Never run against a new node before registration is redesigned
+## 4. 등록 방식이 다시 설계되기 전에 실행 금지
 
-Neither script can run *on* the new node (no LXC 100/101 there); the dangerous
-invocation is on pve-node with `PICKLE_NODE=<new node>`.
+두 스크립트 모두 새 노드 **위에서는** 돌 수 없다(거기에 LXC 100과 101이 없다). 위험한
+호출은 pve-node에서 `PICKLE_NODE=<새 노드>`로 돌리는 것이다.
 
-- `apply-platform-inventory.sh` — the guards that stop it today are the SAN
-  check against the local pveproxy certificate, the hosts-file lookup inside
-  LXC 101 and the node-status query; after a cluster join, a certificate
-  override and a hosts entry all three can be satisfied, and then the pool
-  guard is the last one and it catches a *changed* CIDR but not a *shared*
-  one, so the run binds the node to pve-node's pool.
-- `apply-os-catalog.sh` with `PICKLE_NODE=<new node>` — the catalog rows are
-  unique on (name, version) and the upsert rewrites `node_id` while never
-  touching status, so it **moves** every catalog row off pve-node as ACTIVE rows
-  of the new node. Placement then sends every new VM to that node and the
-  clone fails there (the template VMIDs live on pve-node): provisioning is broken
-  platform-wide until the rows are moved back.
-- Any manual insert into `nodes`. If one is unavoidable, PATCH it to
-  MAINTENANCE immediately.
-- `pvecm create` on pve-node, or `pvecm add` anywhere, before the cluster shape
-  is decided. Before a `pvecm create` on pve-node is ever run, verify on a
-  throwaway host whether cluster creation regenerates the pveproxy certificate
-  or CA, because the api pins pve-node's CA and would lose Proxmox the moment it
-  changed.
+- `apply-platform-inventory.sh`. 지금 있는 가드는 이 호출을 막아 주지 못한다. 돌리면 새
+  노드가 pve-node의 풀에 묶인다.
+- `apply-os-catalog.sh`를 `PICKLE_NODE=<새 노드>`로. 카탈로그 행 전체가 pve-node에서 새 노드의
+  ACTIVE 행으로 **옮겨간다.** 그러면 배치가 모든 신규 VM을 그 노드로 보내고 거기서 클론이
+  실패한다(템플릿 VMID는 pve-node에 있다). 행을 되돌릴 때까지 프로비저닝이 플랫폼 전체에서
+  깨진다.
+- `nodes`에 손으로 insert하는 것. 불가피했다면 즉시 MAINTENANCE로 PATCH한다.
+- 클러스터 형태가 정해지기 전의 pve-node `pvecm create`나 아무 곳에서의 `pvecm add`. pve-node에서
+  `pvecm create`를 처음 돌리기 전에, 클러스터 생성이 pveproxy 인증서나 CA를 재생성하는지
+  버려도 되는 호스트에서 먼저 확인한다. api가 pve-node의 CA를 고정하고 있어서 그것이 바뀌는
+  순간 Proxmox를 잃는다.
 
-## 5. What this repository keeps
+## 5. 이 레포지토리가 남기는 것
 
-- A row for the node in the `## 운영 대상` block of the [README](../README.md),
-  in the same unit of work as the intake.
-- `hosts/<name>/` and an apply script — only when the first config artifact
-  exists (the install's `interfaces` and sshd choices are the first
-  candidates), per the README's 관례 section.
-- The registration tooling this runbook says does not exist yet arrives with
-  the round that builds it, and this runbook gains a §6 then.
+- [README](../README.md)의 `## 운영 대상` 블록에 노드 한 행. 인수와 같은 작업 단위에서
+  적는다.
+- `hosts/<name>/`와 apply 스크립트. 첫 설정 산출물이 생겼을 때만 만들고(설치의
+  `interfaces`와 sshd 선택이 첫 후보다) README의 구성 절을 따른다.
+- 이 런북이 아직 없다고 말하는 등록 도구는 그것을 만드는 작업에서 도착하고, 그때 이
+  런북에 §6이 생긴다.
