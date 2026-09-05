@@ -1,350 +1,296 @@
-# Runbook — new environment bring-up (bare host → working platform)
+# 런북: 신규 환경 구축 (빈 호스트에서 동작하는 플랫폼까지)
 
-The through-line for standing the whole platform up from nothing: a bare
-Proxmox-capable machine to a deployment that provisions VMs, serves the console,
-answers SSH, and survives a reboot. Written 2026-08-07, after a reproduction
-review asked "can a fresh session build this from the committed material alone?"
-and the honest answer was **no** — the database bootstrap and the relay could be
-completed from their runbooks, but the host and reverse-proxy skeleton under
-them could not. This document is the order, the dependencies, and the values
-that change per environment. It deliberately restates **no** procedure that
-already exists — each step points at the runbook or script that owns it.
-(Runbooks not carried in this sample copy are kept in the private repository;
-they are named descriptively below.)
+플랫폼 전체를 아무것도 없는 상태에서 세우는 관통 절차다. Proxmox를 올릴 수 있는 빈
+기계에서 출발해 VM을 프로비저닝하고 콘솔을 서비스하고 SSH에 응답하며 재부팅을 견디는
+배포까지 간다. 이 문서가 담는 것은 순서와 의존, 그리고 환경마다 바뀌는 값이다. 이미
+존재하는 절차는 **다시 적지 않는다.** 각 단계는 그것을 소유한 런북이나 스크립트를
+가리킨다. 이 표본 사본에 담기지 않은 런북은 비공개 레포지토리에 있고, 아래에서는
+이름 대신 설명으로 가리킨다.
 
-This runbook targets a Proxmox node that becomes a whole new platform. A
-Proxmox node added to a platform that already exists follows
-[proxmox-node-intake.md](proxmox-node-intake.md) instead (its step 12 scripts
-must not be run against such a node), and a host that is not a Proxmox node
-joins via [node-intake.md](node-intake.md).
+이 런북의 대상은 새 플랫폼 전체가 되는 Proxmox 노드다. 이미 있는 플랫폼에 더하는
+Proxmox 노드는 [proxmox-node-intake.md](proxmox-node-intake.md)를 따르고(그 노드에는 이
+문서의 12단계 스크립트를 돌리면 안 된다), Proxmox 노드가 아닌 호스트는
+[node-intake.md](node-intake.md)로 편입한다.
 
-Three markers are used throughout, and they are the point of the document:
+세 가지 표시를 문서 전체에서 쓰고, 그것이 이 문서의 핵심이다.
 
-- **HUMAN** — only the operator can do this step: purchases, account creation,
-  requests to the university, physical work. No script or session can do it, so
-  it must be scheduled, not discovered mid-build.
-- **BLOCKED** — no committed procedure exists for this step. The gap is stated,
-  with what would close it. **Do not improvise these steps from memory or
-  guesswork**; a wrong host or proxy skeleton fails in ways that look like
-  faults in the layers above it.
+- **HUMAN**. 운영자만 할 수 있는 단계다. 구매, 계정 생성, 학교에 넣는 요청, 물리 작업.
+  스크립트도 세션도 대신할 수 없으므로 작업 중에 발견할 것이 아니라 미리 일정에
+  잡아야 한다.
+- **BLOCKED**. 커밋된 절차가 없는 단계다. 무엇이 비었는지와 무엇이 있으면 닫히는지를
+  적어 둔다. **이 단계들을 기억이나 짐작으로 즉석에서 만들어 내지 마라.** 호스트나 프록시
+  골격이 틀리면 그 위 계층의 결함처럼 보이는 방식으로 실패한다.
+- **UNVERIFIED**. 절차는 적혀 있으나 그것이 없는 기계에서 아무도 따라가 본 적이 없는
+  단계다. 12에서 14단계는 데이터베이스 재구축에서 끝까지 걸어 봤고, 그 앞은 동작 중인
+  호스트를 읽어서 복원한 것이라 도착지는 증명하지만 경로는 증명하지 않는다. **다음 실제
+  구축이 곧 검증이다.** 걷는 사람은 이 파일을 열어 두고, 각 단계가 끝날 때마다 그대로
+  두거나 그 자리에서 고친 다음 해당 단계의 표시를 뗀다. 실패를 눈앞에 두고 한 수정이
+  나중에 짐작으로 하는 같은 수정보다 낫다.
 
-- **UNVERIFIED** — the step is written but nobody has followed it on a machine
-  that did not already have the thing. Steps 12 to 14 were walked end to end on
-  2026-08-07 during a database rebuild; everything before them was reconstructed
-  by reading the running host, which proves the destination and not the route.
-  **The next real build is the verification.** Whoever walks it: keep this file
-  open, and as each step completes either leave it alone or correct it on the
-  spot, then drop the marker for that step. A correction made while the failure
-  is in front of you is worth more than the same correction guessed at later —
-  the two runbook errors this document already carries were both found that way,
-  by running the procedure rather than reading it.
+## 검증 상태
 
-## Verification status
-
-| Steps | State |
+| 단계 | 상태 |
 |---|---|
-| 0, 1 | HUMAN, and partly undocumented — see their notes |
-| 2 to 11 | **UNVERIFIED** — written from the running host, never walked on a blank one |
-| 12 to 14 | Walked 2026-08-07: the database was dropped, replayed, bootstrapped by the five scripts, and proven with the smoke suite |
+| 0, 1 | HUMAN이고 일부는 미기록. 각 주석 참조 |
+| 2에서 11 | **UNVERIFIED**. 동작 중인 호스트를 읽어서 쓴 것이고 빈 호스트에서 걸어 본 적 없다 |
+| 12에서 14 | 걸어서 확인됨. 데이터베이스를 지우고 다시 재생해 다섯 스크립트로 부트스트랩하고 스모크 스위트로 증명했다 |
 
-## The order
+## 순서
 
-Steps must run top to bottom; each "needs" column names the hard dependency
-that makes the order real. Details and gaps: the numbered notes below the table.
+위에서 아래로 실행한다. "선행" 열이 순서를 실제로 만드는 강한 의존을 가리킨다. 상세와
+공백은 표 아래 번호 주석에 있다.
 
-| # | Step | Procedure | Needs |
+| # | 단계 | 절차 | 선행 |
 |---|---|---|---|
-| 0 | **HUMAN** Acquire names, accounts, and access | note 0 — partially **BLOCKED** | — |
-| 1 | **HUMAN** Physical host: disks, OS + Proxmox VE install, admin SSH port, campus network | note 1 — end state recorded, installer choices are not | 0 (campus IP, firewall request filed) |
-| 2 | Host bridges, NAT, firewall | install [`hosts/pve-node/interfaces`](../hosts/pve-node/interfaces) adapted per the values table; hardening + post-reboot checklist: the network runbook (private repo) | 1 |
-| 3 | Clone the workspace and unlock the secrets vault | note 3 | 1 |
-| 4 | Proxmox API account, role, ACLs for the api | note 4 | 1 |
-| 5 | App container (PostgreSQL + api + console nginx) | `scripts/create-app-lxc.sh`, then fill `/etc/pickle/api.env` from the vault (or issue fresh secrets) | 2, 3 |
-| 6 | SSH gateway container (sshpiperd + WireGuard endpoint) | `scripts/create-sshgw-lxc.sh` — prints the WG public key the relay needs; fill `/etc/pickle/sshgw.env` | 2, 3 |
-| 7 | **HUMAN** creates the relay instance; then bring it up | the relay bring-up runbook (private repo) end to end (WG pairing with step 6, HAProxy, firewall), agent via `scripts/deploy-relay.sh` | 0, 6 |
-| 8 | Reverse-proxy container (public web entry) | note 8 — create the container, then its config arrives with the agent deploy (step 10) and the apply scripts (step 11); install the Origin CA wildcard pair per platform root | 2, 3, and 0 (certificates) |
-| 9 | User VM templates | image-builder repo (public; on this host a workspace checkout), per-OS profiles → the template VMIDs in the values table; rebuild flow: the template rebuild runbook (private repo) | 2 |
-| 10 | Deploy the services | `scripts/deploy-api.sh` (first api start = Flyway V1→latest), `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-sshgw.sh` | 5, 6, 8; api.env filled |
-| 11 | Ingress and host policy | `scripts/apply-terminal-ingress.sh` → `scripts/apply-main-domain-vhost.sh` (note 11) → `scripts/apply-tls-ciphers.sh`; then `scripts/apply-log-retention.sh` and `scripts/apply-ops-timers.sh` (note 11a) | 8, 10; 0 (DNS + firewall live, for the LE issuance) |
-| 12 | Database bootstrap — inventory, settings, terms, OS catalog, relay token | [db-restore.md](db-restore.md) §Clean-slate bootstrap, the whole numbered order there; note 12 for the dev-profile clearing and the measured sequence | 5–10 done; 8 for the certificate row |
-| 13 | First operating data | note 13 — enable an OS, switch the kill switches on, create ≥1 organisation and the spec presets, verify the admin account | 12 |
-| 14 | Smoke tests, health snapshot, first backup | note 14 | 13 |
+| 0 | **HUMAN** 이름, 계정, 접근 권한 확보 | 주석 0, 일부 **BLOCKED** | 없음 |
+| 1 | **HUMAN** 물리 호스트: 디스크, OS와 Proxmox VE 설치, sshd 포트, 캠퍼스 네트워크 | 주석 1. 결과 상태는 기록되어 있고 설치 프로그램 선택은 아니다 | 0 (캠퍼스 IP, 방화벽 요청 접수) |
+| 2 | 호스트 브리지, NAT, 방화벽 | [`hosts/pve-node/interfaces`](../hosts/pve-node/interfaces)를 값 표에 맞게 바꿔 설치. 하드닝과 재부팅 후 점검은 네트워크 런북(비공개 레포) | 1 |
+| 3 | 배포용 체크아웃 생성과 볼트 해제 | 주석 3 | 1 |
+| 4 | api용 Proxmox API 계정, 역할, ACL | 주석 4 | 1 |
+| 5 | 앱 컨테이너 (PostgreSQL + api + 콘솔 nginx) | `scripts/create-app-lxc.sh` 실행 후 볼트에서 `/etc/pickle/api.env`를 채운다(또는 비밀을 새로 발급) | 2, 3 |
+| 6 | SSH 게이트웨이 컨테이너 (sshpiperd + WireGuard 종단) | `scripts/create-sshgw-lxc.sh`. 릴레이가 필요로 하는 WG 공개키를 출력한다. `/etc/pickle/sshgw.env`를 채운다 | 2, 3 |
+| 7 | **HUMAN** 릴레이 인스턴스 생성 후 기동 | 릴레이 기동 런북(비공개 레포) 전 구간(6단계와 WG 페어링, HAProxy, 방화벽), 에이전트는 `scripts/deploy-relay.sh` | 0, 6 |
+| 8 | 리버스 프록시 컨테이너 (공개 웹 진입점) | 주석 8. 컨테이너를 만들면 설정은 에이전트 배포(10단계)와 apply 스크립트(11단계)로 도착한다. 플랫폼 루트마다 Origin CA 와일드카드 쌍을 설치한다 | 2, 3, 그리고 0 (인증서) |
+| 9 | 사용자 VM 템플릿 | image-builder 레포지토리(공개. 이 호스트에서는 `/srv/pickle` 아래 체크아웃), OS별 프로파일에서 값 표의 템플릿 VMID로. 재빌드 흐름은 템플릿 재빌드 런북(비공개 레포) | 2 |
+| 10 | 서비스 배포 | `scripts/deploy-api.sh`(api 첫 기동이 Flyway V1에서 최신까지 실행), `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-sshgw.sh` | 5, 6, 8. api.env 채워져 있을 것 |
+| 11 | 인그레스와 호스트 정책 | `scripts/apply-terminal-ingress.sh` → `scripts/apply-main-domain-vhost.sh`(주석 11) → `scripts/apply-tls-ciphers.sh`. 그다음 `scripts/apply-log-retention.sh`와 `scripts/apply-ops-timers.sh`(주석 11a) | 8, 10. 0 (LE 발급을 위해 DNS와 방화벽이 살아 있을 것) |
+| 12 | 데이터베이스 부트스트랩: 인벤토리, 설정, 약관, OS 카탈로그, 릴레이 토큰 | [db-restore.md](db-restore.md)의 백지 부트스트랩 절, 거기 적힌 번호 순서 전부. dev 프로파일 정리와 실측 순서는 주석 12 | 5에서 10 완료. 인증서 행 때문에 8 |
+| 13 | 최초 운영 데이터 | 주석 13. OS 하나 활성화, 킬 스위치 켜기, 기관 1개 이상과 사양 프리셋 생성, 관리자 계정 확인 | 12 |
+| 14 | 스모크 테스트, 헬스 스냅샷, 첫 백업 | 주석 14 | 13 |
 
-## Values that change per environment
+## 환경마다 바뀌는 값
 
-Every literal this environment is built on, and every file or variable it
-appears in. A new environment decides each value ONCE, in this table, before
-step 1 — chasing them one failing script at a time is how a build stalls.
+이 환경이 딛고 선 모든 리터럴과 그것이 나타나는 파일이다. 새 환경은 1단계 전에 이 표에서
+각 값을 **한 번에** 정한다. 실패하는 스크립트를 하나씩 쫓아다니는 것이 구축이 멈추는
+방식이다.
 
-| Value | This environment | Where it appears |
+| 값 | 이 환경 | 나타나는 곳 |
 |---|---|---|
-| Guest thin pool and its volume group | `pve/data`, VG `pve` | `THINPOOL_LV` in `scripts/health-check.sh` (must be `vg/lv`; the VG is derived from it unless `THINPOOL_VG` is set too). A host whose guest storage is named differently reports a permanently red thin-pool row until this is set, and the script refuses a value that is only a volume group |
-| LVM query bound | 10s (`LVM_TIMEOUT`) | `scripts/health-check.sh` — the ceiling on each `lvs`/`vgs` read, so a pool that has exhausted and suspended its volumes cannot hold the snapshot open. Raise it only if a healthy host genuinely needs longer |
-| Campus/public IP the DNS records point at | held by the operator (DNS provider dashboard + university DNS) | public A records; the university firewall request (step 0); `MAIN_DOMAIN_PUBLIC_IP` in `scripts/health-check.sh` (**hardcoded default** — left alone, the health check expects another site's address every run); the relay's edge firewall in the relay bring-up runbook, which admits admin SSH from this `/32` only — a wrong value there locks the operator out of the relay |
-| Host LAN address, gateway, NIC name | `192.0.2.10/24`, gw `192.0.2.1`, `nic0` | [`hosts/pve-node/interfaces`](../hosts/pve-node/interfaces) vmbr0 stanza |
-| Infra bridge net (vmbr1) | `198.18.0.0/16`, host `.0.1`; proxy `.1.10`, app `.1.20`, sshgw `.1.30` | `hosts/pve-node/interfaces` (NAT/DNAT/FORWARD rules pin `.1.10`), `create-app-lxc.sh`, `create-sshgw-lxc.sh`, the reverse-proxy rebuild runbook (private repo) §1, `apply-terminal-ingress.sh`, `apply-main-domain-vhost.sh` (`PICKLE_PROXY_IP`, `PICKLE_HOST_PROBE_IP`); **and on the relay** — `lightsail/wireguard/wg0.conf.template` admits the api's `.1.20/32` through the tunnel, which is the same address `PICKLE_RELAY_SYNC_URL` names |
-| Guest bridge net (vmbr2) | `198.19.0.0/16`, host `.0.1` | `hosts/pve-node/interfaces`; `PICKLE_POOL_CIDR` / `PICKLE_POOL_GATEWAY` / `PICKLE_POOL_RESERVED` (`apply-platform-inventory.sh`) |
-| WireGuard transport net | `100.64.0.0/30` — relay `.1`, sshgw `.2` | `create-sshgw-lxc.sh`; `lightsail/wireguard/wg0.conf.template` (its `AllowedIPs` also carries the guest network and **the api's address**, so a wrong entry breaks relay sync rather than the tunnel); `lightsail/haproxy/haproxy.cfg.template` (`server sshgw 100.64.0.2:22`); `lightsail/nftables/nftables.conf`; `hosts/pve-node/interfaces` (the `/30` route and the `.1` FORWARD accept); `PICKLE_RELAY_SOURCE_IP` |
-| Main entry domain | `pickle.pusan.ac.kr` | `apply-main-domain-vhost.sh` via `PICKLE_MAIN_DOMAIN`; `create-sshgw-lxc.sh` as `PICKLE_TERMINAL_CONSOLE_ORIGIN` — **the terminal bridge accepts this origin and no other, and that container is built at step 6, long before step 11**, so a stale value here kills the web terminal silently; `create-app-lxc.sh` console vhost `server_name`; `health-check.sh` (`PICKLE_DEV_DOMAIN` default, and the Let's Encrypt certificate path); `apply-tls-ciphers.sh`, whose before/after assertions demand a 200 from this name; smoke-test defaults (`BASE`); the host `/etc/hosts` hairpin entry |
-| Platform root domain(s) | `pusan.dev` | `PICKLE_ROOT_DOMAIN` (`apply-platform-inventory.sh` **and** `apply-settings.sh` — same value, on purpose); `PICKLE_PROXY_AGENT_WILDCARD_CERTS` in the proxy agent's environment, whose format is `<root>=<crt>:<key>` and which the agent needs before it can render anything for that root (the proxy agent deploy runbook (private repo)); `ROOT` (`smoke-http-publish.sh`); cert path `/etc/nginx/pickle-certs/<root, dots as dashes>.{crt,key}`; the DNS zone |
-| User SSH host | `ssh.example.dev` (DNS-only A record → relay static IP) | the relay bring-up runbook; api `PICKLE_SSH_HOST` (the override point) — **and the api falls back to a compiled-in default when it is blank**, in the meta endpoint and in notification text, so an unset variable does not fail, it advertises the wrong host; the console carries its own constant for the unauthenticated landing page, which its own comment admits is duplicated state |
-| Relay public host (port forwarding) | `ssh.example.dev` — the same name as the user SSH host above, because both resolve to the relay | `PICKLE_RELAY_PUBLIC_HOST` (`apply-platform-inventory.sh`, required — no default, and no API writes the column) |
-| Relay static IP + admin SSH | `198.51.100.10`, admin sshd ``:22``, key `$VAULT/lightsail-ssh.pem` | `RELAY_HOST` / `RELAY_SSH_PORT` / `RELAY_SSH_KEY` (`deploy-relay.sh`); **a second, differently named set** `PICKLE_RELAY_SSH_KEY` / `_USER` / `_PORT` (`apply-relay-token.sh`); `RELAY` (`smoke-ssh-gateway.sh`, in the step 14 set); sshgw `wg0.conf` `Endpoint`; the relay bring-up runbook (private repo) |
-| Container IDs | proxy `100`, app `101`, sshgw `102` | `CTID` in the create, deploy and backup scripts, each defaulting to its own container; `PICKLE_PROXY_CTID` / `PICKLE_APP_CTID` in every apply script, including the two ingress ones that carried the numbers as literals until 2026-08-07; `PICKLE_TUNNEL_CTID` in `apply-relay-token.sh`, which is the sshgw container under a third name because it is used for its tunnel rather than its gateway role; literal in most runbooks |
-| Template VMIDs | `1001`–`1005` (Ubuntu 24.04/26.04/22.04, Debian 13/12; `1000` is the retired predecessor) | `CATALOG` in `apply-os-catalog.sh` (name **and** VMID), image-builder per-OS profiles, the template rebuild runbook |
-| Proxmox node name | `pve-node` | `PICKLE_NODE`; must be a SAN of the node API certificate **and** resolve inside LXC 101 (its `/etc/hosts` entry, written by `create-app-lxc.sh`) |
-| Storage | `local-lvm` | `PICKLE_NODE_STORAGE`, the create scripts, template builds |
-| Host admin SSH port | `22` | host sshd config (**no committed procedure sets it** — note 1); the firewall rules in `hosts/pve-node/interfaces` assume it |
+| 게스트 씬풀과 그 볼륨 그룹 | `pve/data`, VG `pve` | `scripts/health-check.sh`의 `THINPOOL_LV`(`vg/lv` 형태여야 한다. `THINPOOL_VG`를 함께 주지 않으면 VG를 여기서 유도한다). 게스트 스토리지 이름이 다른 호스트는 이것을 설정할 때까지 씬풀 행이 영구히 빨갛게 나오고, 스크립트는 볼륨 그룹만 적은 값을 거부한다 |
+| LVM 질의 상한 | 10초 (`LVM_TIMEOUT`) | `scripts/health-check.sh`. 각 `lvs`와 `vgs` 읽기의 상한이라, 용량이 소진되어 볼륨이 정지된 풀이 스냅샷을 붙잡고 있을 수 없게 한다. 정상 호스트가 실제로 더 필요할 때만 올린다 |
+| DNS 레코드가 가리키는 캠퍼스 공인 IP | 운영자가 보유 (DNS 제공자 대시보드와 학교 DNS) | 공개 A 레코드, 학교 방화벽 요청(0단계), `scripts/health-check.sh`의 `MAIN_DOMAIN_PUBLIC_IP`(**하드코딩된 기본값**이라 그냥 두면 헬스 체크가 매번 다른 사이트의 주소를 기대한다), 그리고 릴레이 기동 런북(비공개 레포)의 릴레이 엣지 방화벽. 그 방화벽은 이 `/32`에서만 관리 SSH를 허용하므로 값이 틀리면 운영자가 릴레이에서 잠긴다 |
+| 호스트 LAN 주소, 게이트웨이, NIC 이름 | `192.0.2.10/24`, gw `192.0.2.1`, `nic0` | [`hosts/pve-node/interfaces`](../hosts/pve-node/interfaces)의 vmbr0 스탠자 |
+| 인프라 브리지 망 (vmbr1) | `198.18.0.0/16`, 호스트 `.0.1`. 프록시 `.1.10`, 앱 `.1.20`, sshgw `.1.30` | `hosts/pve-node/interfaces`(NAT, DNAT, FORWARD 규칙이 `.1.10`을 고정한다), `create-app-lxc.sh`, `create-sshgw-lxc.sh`, 리버스 프록시 재구축 런북(비공개 레포) §1, `apply-terminal-ingress.sh`, `apply-main-domain-vhost.sh`(`PICKLE_PROXY_IP`, `PICKLE_HOST_PROBE_IP`). **릴레이 쪽에도 있다.** `lightsail/wireguard/wg0.conf.template`이 api의 `.1.20/32`를 터널로 들여보내는데 그것이 `PICKLE_RELAY_SYNC_URL`이 가리키는 바로 그 주소다 |
+| 게스트 브리지 망 (vmbr2) | `198.19.0.0/16`, 호스트 `.0.1` | `hosts/pve-node/interfaces`. `PICKLE_POOL_CIDR`, `PICKLE_POOL_GATEWAY`, `PICKLE_POOL_RESERVED`(`apply-platform-inventory.sh`) |
+| WireGuard 전송 망 | `100.64.0.0/30`. 릴레이 `.1`, sshgw `.2` | `create-sshgw-lxc.sh`, `lightsail/wireguard/wg0.conf.template`(그 `AllowedIPs`는 게스트 망과 **api 주소**도 담으므로 항목이 틀리면 터널이 아니라 릴레이 sync가 깨진다), `lightsail/haproxy/haproxy.cfg.template`(`server sshgw 100.64.0.2:22`), `lightsail/nftables/nftables.conf`, `hosts/pve-node/interfaces`(`/30` 라우트와 `.1` FORWARD accept), `PICKLE_RELAY_SOURCE_IP` |
+| 주 진입 도메인 | `pickle.pusan.ac.kr` | `apply-main-domain-vhost.sh`의 `PICKLE_MAIN_DOMAIN`. `create-sshgw-lxc.sh`의 `PICKLE_TERMINAL_CONSOLE_ORIGIN`. **터미널 브리지는 이 origin만 받아들이고 그 컨테이너는 11단계보다 훨씬 앞인 6단계에서 만들어지므로** 여기 값이 낡으면 웹 터미널이 조용히 죽는다. `create-app-lxc.sh` 콘솔 vhost의 `server_name`, `health-check.sh`(`PICKLE_DEV_DOMAIN` 기본값과 Let's Encrypt 인증서 경로), 그리고 이 이름에서 200을 요구하는 `apply-tls-ciphers.sh`의 전후 단정. 스모크 테스트 기본값(`BASE`), pve-node의 `/etc/hosts` 헤어핀 항목 |
+| 플랫폼 루트 도메인 | `pusan.dev` | `PICKLE_ROOT_DOMAIN`(`apply-platform-inventory.sh`와 `apply-settings.sh`. 같은 값을 쓰는 것이 의도다), 프록시 에이전트 환경의 `PICKLE_PROXY_AGENT_WILDCARD_CERTS`(형식은 `<root>=<crt>:<key>`이고 에이전트는 그 루트에 대해 아무것도 렌더링하기 전에 이것이 필요하다. 프록시 에이전트 배포 런북(비공개 레포)), `ROOT`(`smoke-http-publish.sh`), 인증서 경로 `/etc/nginx/pickle-certs/<루트, 점을 하이픈으로>.{crt,key}`, DNS 존 |
+| 사용자 SSH 호스트 | `ssh.example.dev` (DNS 전용 A 레코드에서 릴레이 고정 IP로) | 릴레이 기동 런북(비공개 레포) §5, api의 `PICKLE_SSH_HOST`(재정의 지점). **비어 있으면 api가 컴파일된 기본값으로 폴백한다.** meta 엔드포인트와 알림 문구 양쪽에서 그렇게 되므로, 설정하지 않은 변수는 실패하지 않고 틀린 호스트를 광고한다. 콘솔은 비인증 랜딩 페이지용 상수를 따로 갖고 있다 |
+| 릴레이 공개 호스트 (포트 포워딩) | `ssh.example.dev`. 위 사용자 SSH 호스트와 같은 이름이다. 둘 다 릴레이로 해석되기 때문이다 | `PICKLE_RELAY_PUBLIC_HOST`(`apply-platform-inventory.sh`, 필수. 기본값이 없고 이 열을 쓰는 API도 없다) |
+| 릴레이 고정 IP와 관리 SSH | `198.51.100.10`, 관리 sshd `:22`, 키 `$VAULT/lightsail-ssh.pem` | `RELAY_HOST`, `RELAY_SSH_PORT`, `RELAY_SSH_KEY`(`deploy-relay.sh`). **이름이 다른 두 번째 묶음** `PICKLE_RELAY_SSH_KEY`, `_USER`, `_PORT`(`apply-relay-token.sh`). `RELAY`(`smoke-ssh-gateway.sh`, 14단계 묶음). sshgw `wg0.conf`의 `Endpoint`. 릴레이 기동 런북(비공개 레포) |
+| 컨테이너 ID | 프록시 `100`, 앱 `101`, sshgw `102` | 생성, 배포, 백업 스크립트의 `CTID`. 각각 자기 컨테이너를 기본값으로 갖는다. 모든 apply 스크립트의 `PICKLE_PROXY_CTID`와 `PICKLE_APP_CTID`. `apply-relay-token.sh`의 `PICKLE_TUNNEL_CTID`는 sshgw 컨테이너를 세 번째 이름으로 부르는 것인데, 게이트웨이 역할이 아니라 터널 용도로 쓰기 때문이다. 대부분의 런북에는 리터럴로 들어 있다 |
+| 템플릿 VMID | `1001`에서 `1005` (Ubuntu 24.04/26.04/22.04, Debian 13/12. `1000`은 폐기된 이전 판) | `apply-os-catalog.sh`의 `CATALOG`(이름과 VMID 둘 다), image-builder의 OS별 프로파일, 템플릿 재빌드 런북(비공개 레포) |
+| Proxmox 노드 이름 | `pve-node` | `PICKLE_NODE`. 노드 API 인증서의 SAN이어야 하고 LXC 101 안에서도 해석되어야 한다(`create-app-lxc.sh`가 쓰는 `/etc/hosts` 항목) |
+| 스토리지 | `local-lvm` | `PICKLE_NODE_STORAGE`, 생성 스크립트, 템플릿 빌드 |
+| 호스트 관리 SSH 포트 | `22` | 호스트 sshd 설정(**이것을 설정하는 커밋된 절차가 없다.** 주석 1). `hosts/pve-node/interfaces`의 방화벽 규칙이 이 값을 전제한다 |
 
-## Notes per step
+## 단계별 주석
 
-### 0. Acquire names, accounts, and access — HUMAN, partially BLOCKED
+### 0. 이름, 계정, 접근 권한 확보 (HUMAN, 일부 BLOCKED)
 
-What a build needs to already hold before step 1: the university-side public IP
-and inbound 80/443 opened to it; the main entry domain delegated; the platform
-root domain, the SSH host domain and the relay host domain registered with
-their zones on Cloudflare; a Cloudflare dashboard login able to create the
-wildcard record and issue Origin CA certificates for each platform root; an AWS
-account able to create the Lightsail relay; an SMTP sender (app password).
+1단계 전에 이미 갖고 있어야 하는 것. 학교 쪽 공인 IP와 그 IP로 열린 인바운드 80/443,
+위임된 주 진입 도메인, 각 존에 등록된 플랫폼 루트 도메인과 SSH 호스트
+도메인과 릴레이 호스트 도메인, 와일드카드 레코드를 만들고 플랫폼 루트마다 Origin CA
+인증서를 발급할 수 있는 DNS 제공자 대시보드 로그인, Lightsail 릴레이를 만들 수 있는 AWS
+계정, 그리고 SMTP 발신 계정(앱 비밀번호).
 
-**BLOCKED — the acquisition paths are not recorded anywhere.** The values are
-known; where each came from is not: no request channel or lead time for the
-university IP/domain/firewall work, no registrar/renewal records for the
-purchased domains, and no inventory of which external accounts exist or who
-holds them. Until that is written down (it belongs with the credentials
-records, as locations — never values), this step runs on the operator's memory.
-Lead-time warning regardless: the university requests are measured in days to
-weeks, so file them first.
+**BLOCKED: 취득 경로가 어디에도 기록되어 있지 않다.** 값은 알려져 있으나 각각이 어디서
+왔는지는 아니다. 학교 IP와 도메인, 방화벽 작업의 요청 창구나 소요 기간이 없고, 구매한
+도메인의 등록기관과 갱신 기록이 없으며, 어떤 외부 계정이 존재하고 누가 그것을 갖고
+있는지에 대한 목록이 없다. 그것이 적히기 전까지 이 단계는 운영자의 기억으로 돌아간다.
+기록할 때 값이 아니라 위치를 적는다. 어느 쪽이든 소요 기간 경고는 유효하다. 학교 요청은
+며칠에서 몇 주 단위이므로 가장 먼저 넣는다.
 
-### 1. Physical host — HUMAN, partially recovered
+### 1. 물리 호스트 (HUMAN, 일부 복원됨)
 
-No procedure was ever committed for taking a bare machine to "step 2 can run".
-The end state was read off the running host on 2026-08-07, so what this
-deployment settled on is recorded below; the choices that produced it are not,
-and the physical parts stay HUMAN in any case.
+빈 기계를 "2단계를 돌릴 수 있는" 상태로 만드는 절차는 커밋된 적이 없다. 결과 상태는
+동작 중인 호스트에서 읽어 아래에 적었다. 그것을 만들어 낸 선택은 기록되어 있지 않고,
+물리 작업은 어차피 HUMAN이다.
 
-**Read off the live host — reproduce these:**
+**라이브 호스트에서 읽은 것. 이대로 재현한다.**
 
-| | This host |
+| | 이 호스트 |
 |---|---|
-| Proxmox VE | 9.2 on Debian trixie |
-| Repositories | `pve-no-subscription` enabled; the enterprise and Ceph sources disabled |
-| Disks | two: a 977 GB device carrying the install, a 1.8 TB device **currently unused** |
-| Storage | `local` (directory, on the 96 GB root LV) and `local-lvm` (LVM-thin, ~839 GB) — the names the platform's variables default to |
-| Root/swap | 96 GB root LV, 8 GB swap LV, the rest given to the thin pool |
-| Admin sshd | port 22, moved off the default in the private deployment |
+| Proxmox VE | Debian trixie 위 9.2 |
+| 리포지토리 | `pve-no-subscription` 활성화. enterprise와 Ceph 소스는 비활성화 |
+| 디스크 | 두 개. 설치가 올라간 977 GB 장치와 **현재 미사용인** 1.8 TB 장치 |
+| 스토리지 | `local`(디렉터리, 96 GB 루트 LV 위)과 `local-lvm`(LVM-thin, 약 839 GB). 플랫폼 변수들이 기본값으로 쓰는 이름이다 |
+| 루트와 스왑 | 96 GB 루트 LV, 8 GB 스왑 LV, 나머지는 씬풀 |
+| 관리 sshd | 포트 22. 비공개 배포에서는 기본 포트에서 옮겨 두었다 |
 
-**Still not recorded, and each needs a decision rather than a transcription:**
+**아직 기록되지 않았고, 각각 옮겨 적기가 아니라 결정이 필요한 것.**
 
-- The installer choices that produce that layout: filesystem, how much of the
-  device the volume group takes, and how root and swap are sized against the thin
-  pool. Sizing differs with the disk in the new machine, so this is a decision.
-- What the second device is for. It has been attached and unused here long enough
-  that the question is open rather than settled.
-- Moving the admin sshd off its default port. The port itself is in the values
-  table; **the change is the dangerous step in the whole build** — done wrong it
-  ends the session that is doing it. Follow the pattern the relay bring-up runbook (private repo)
-  uses for exactly this: add the new port alongside the old, prove the new one
-  from a second session, and only then remove the old.
-- The campus-side attach: the address, the firewall opening, and who grants it.
-  That is note 0.
+- 저 구성을 만들어 내는 설치 프로그램 선택. 파일시스템, 장치의 얼마를 볼륨 그룹이
+  가져가는지, 루트와 스왑을 씬풀 대비 어떻게 잡는지. 새 기계의 디스크에 따라 크기 산정이
+  달라지므로 이것은 결정이다.
+- 두 번째 장치의 용도. 여기서는 붙어 있고 쓰이지 않은 채로 충분히 오래되어서, 정해진
+  것이 아니라 열려 있는 질문이다.
+- 관리 sshd를 기본 포트에서 옮기는 것. 포트 자체는 값 표에 있고, **이 변경이 구축 전체에서
+  가장 위험한 단계다.** 잘못하면 그 작업을 하고 있는 세션이 끊긴다. 릴레이 기동 런북이
+  바로 이 상황에 쓰는 방식을 따른다. 새 포트를 기존 포트와 나란히 열고, 두 번째 세션에서
+  새 포트를 증명하고, 그다음에야 기존 포트를 없앤다.
+- 캠퍼스 쪽 연결. 주소, 방화벽 개방, 그리고 그것을 승인하는 주체. 그것이 주석 0이다.
 
-An early setup log exists but predates the 2026-07-08 network renumbering, so
-following it produces a host with the user and infra networks swapped. Treat it
-as procedure-shape only, never as values.
+초기 셋업 로그가 하나 있으나 네트워크 재번호보다 앞선 것이라, 그대로 따라가면 사용자
+망과 인프라 망이 뒤바뀐 호스트가 나온다. 값이 아니라 절차의 형태로만 취급한다.
 
-### 3. Workspace and vault
+### 3. 체크아웃과 볼트
 
-Every script in this repo assumes the workspace layout on the host:
-`/srv/pickle/<repo>` checkouts of this repo and the service repos it deploys
-(api, console, sshgw, proxy-agent, relay-agent, image-builder), plus the
-git-crypt secrets vault at `$VAULT`. Clone them, then **HUMAN**:
-the git-crypt key is held by the operator and must be transferred out of band —
-without the unlocked vault, step 5 has no secrets to install and
-`deploy-relay.sh` refuses (no SSH key). A brand-new environment that starts an
-empty vault instead must issue every secret fresh and commit the new
-locations; the secret-rotation runbook (private repo) lists what must exist.
+이 레포의 모든 스크립트는 호스트의 `/srv/pickle` 레이아웃을 전제한다. `/srv/pickle/<repo>` 아래에
+이 레포와 이 레포가 배포하는 서비스 레포들(api, console, sshgw, proxy-agent, relay-agent,
+image-builder)의 체크아웃이 있고, git-crypt 비밀 볼트가 `$VAULT`에 있다. 이것들을
+clone한 다음 **HUMAN**: git-crypt 키는 운영자가 갖고 있고 대역 밖으로 전달되어야 한다.
+볼트가 잠긴 채로는 5단계에 설치할 비밀이 없고 `deploy-relay.sh`가 거부한다(SSH 키 없음).
+빈 볼트로 시작하는 완전히 새 환경은 모든 비밀을 새로 발급해야 한다. 무엇이 있어야 하는지의
+목록은 비밀 교체 런북(비공개 레포) §0이다.
 
-### 4. Proxmox API account for the api
+### 4. api용 Proxmox API 계정
 
-The api authenticates to Proxmox with a dedicated user and API token, authorized
-by a custom role and four ACL grants. No committed procedure created these — only
-the token *rotation* was written down (the secret rotation runbook (private repo)
-§2b). The sequence below was **reconstructed on 2026-08-07 by reading the live
-account back out of `pveum`**, so it reproduces exactly what this host runs
-rather than what somebody remembers. Without it the api boots and every
-provisioning call answers 403.
+api는 전용 사용자와 API 토큰으로 Proxmox에 인증하고, 커스텀 역할 하나와 ACL 네 건이 그것을
+인가한다. 이것들을 만드는 커밋된 절차는 없었고 토큰 *교체*만 적혀 있다
+(비밀 교체 런북(비공개 레포) §2b). 아래 순서는 라이브 계정을 `pveum`으로 다시
+읽어서 복원한 것이라, 누군가의 기억이 아니라 이 호스트가 실제로 돌리는 것을 재현한다.
+이것이 없으면 api는 기동하고 모든 프로비저닝 호출이 403으로 답한다.
 
 ```sh
-# 4a. the role. Every privilege the platform actually holds, and no more —
-#     measured, not copied: the live role carried three more that were removed
-#     and every path still passed, so they are not here. Datastore.Audit came
-#     back on 2026-08-10: the console's storage-capacity surface reads
-#     GET /nodes/{n}/storage, which that privilege alone answers.
+# 4a. 역할. 플랫폼이 실제로 쓰는 권한만 담는다.
 pveum role add PickleProvisioner --privs \
   "Datastore.AllocateSpace,Datastore.Audit,SDN.Use,Sys.Audit,\
 VM.Allocate,VM.Audit,VM.Clone,VM.Config.CPU,VM.Config.Cloudinit,\
 VM.Config.Disk,VM.Config.Memory,VM.Config.Network,VM.Config.Options,\
 VM.GuestAgent.Unrestricted,VM.PowerMgmt"
 
-# 4b. the user. API-only: no password is set, so the account cannot log in to
-#     the web UI at all and the token is its only credential.
+# 4b. 사용자. API 전용이다. 비밀번호를 설정하지 않으므로 이 계정은 웹 UI에 아예
+#     로그인할 수 없고 토큰이 유일한 자격증명이다.
 pveum user add pickle@pve --comment "Pickle platform service account"
 
-# 4c. the grants. Four paths, each propagating to children. Narrower than
-#     granting on `/`: the platform never touches another storage or zone.
+# 4c. 권한 부여. 네 경로에 각각 하위로 전파되게 준다. `/`에 주는 것보다 좁다.
+#     플랫폼은 다른 스토리지나 존을 건드리지 않는다.
 for path in /vms /nodes /storage/local-lvm /sdn/zones/localnetwork; do
   pveum acl modify "$path" --users pickle@pve --roles PickleProvisioner
 done
 
-# 4d. the token. `--privsep 0` makes it carry the user's permissions; with
-#     privsep on it would have none of them and the first clone would 403.
-#     The secret is printed once — capture it to a mode-600 file, never to
-#     the terminal, and copy it into the api environment from there.
+# 4d. 토큰. `--privsep 0`이 사용자의 권한을 그대로 갖게 한다. privsep을 켜면 권한이
+#     하나도 없어서 첫 클론이 403이 된다. 비밀은 한 번만 출력되므로 터미널이 아니라
+#     mode-600 파일로 받고, api 환경에는 그 파일에서 옮긴다.
 umask 077
 pveum user token add pickle@pve pickle-api --privsep 0 --output-format json \
   > /root/pickle-api-token.json
 ```
 
-This list is 15. The 2026-08-07 measurement started from a live role of 17 and
-removed three — `VM.Console`, `VM.GuestAgent.Audit`, `Datastore.Audit` — after
-provisioning (39/39), the web terminal, the SSH gateway and the node capacity
-measurement all passed without them. Two stay removed; `Datastore.Audit`
-returned on 2026-08-10 because the storage-capacity surface added a call
-(`GET /nodes/{n}/storage`) that genuinely needs it — the re-grant follows the
-same doctrine, matching the calls the platform makes rather than accumulating.
-The console privilege is the clearest removal: nothing in the platform opens a
-Proxmox console any more, because the web terminal reaches guests over SSH.
+열다섯 중 둘은 이름을 짚어 둘 만하다. 줄이기는 쉽고 빠뜨리면 비싸다.
+**`VM.GuestAgent.Unrestricted`**가 프로비저닝이 에이전트를 통해 게스트의 호스트 키를 읽게
+해 주는 권한이다. 이것이 없으면 파이프라인이 모든 VM을 호스트 키 단계에 세운다.
+**`SDN.Use`**는 게스트 NIC이 붙는 브리지를 덮는다.
 
-Two of the fifteen are worth naming because they are easy to trim and expensive
-to miss. **`VM.GuestAgent.Unrestricted`** is what lets provisioning read the guest's
-host keys through the agent; without it the pipeline parks every VM at the
-host-key step. **`SDN.Use`** covers the bridge the guest NIC attaches to.
-
-Verify before moving on — the token is the thing that actually has to work:
+넘어가기 전에 확인한다. 실제로 동작해야 하는 것은 토큰이다.
 
 ```sh
-pveum acl list          # four rows, type=user, ugid pickle@pve
+pveum acl list          # 네 행, type=user, ugid pickle@pve
 pveum user token list pickle@pve   # privsep 0
 ```
 
-The ACLs live on the **user**, not the token, so a later token rotation does not
-disturb them (the secret rotation runbook (private repo) §2b relies on that).
+ACL은 토큰이 아니라 **사용자**에 붙으므로 나중의 토큰 교체가 ACL을 건드리지 않는다
+(비밀 교체 런북(비공개 레포) §2b가 그것에 의존한다).
 
-### 8. Reverse proxy from blank
+### 8. 빈 상태에서 리버스 프록시
 
-the reverse-proxy rebuild runbook (private repo) *restores* nginx from the newest
-backup archive, and it is honest that the archive is its source. That reads as a
-dead end for a first environment, and this runbook said so until the live
-container was inventoried on 2026-08-07. It is not: **every platform config file
-on that container has a source in the repositories.** The archive is a
-convenience for a rebuild, not the only way to the state.
+리버스 프록시 재구축 런북(비공개 레포)는 가장 최근 백업 아카이브에서 nginx를
+*복원*하고, 아카이브가 자기 출처라는 것을 숨기지 않는다. 첫 환경에는 그것이 막다른 길처럼
+읽히지만 아니다. **그 컨테이너의 모든 플랫폼 설정 파일은 레포지토리에 출처가 있다.**
+아카이브는 재구축의 편의이지 그 상태에 이르는 유일한 길이 아니다.
 
-| File | Written by |
+| 파일 | 쓰는 주체 |
 |---|---|
-| `conf.d/pickle-base.conf` | the proxy-agent's own deploy script (the websocket upgrade map and the `pickle.d` include glob the rendered vhosts need) |
-| `conf.d/pickle-terminal.conf`, `stream-conf.d/*-sni.conf` | `apply-terminal-ingress.sh` — this is also what defines `$pickle_client_ip` and the stream SNI router that owns :443 and prepends the PROXY header |
+| `conf.d/pickle-base.conf` | proxy-agent 자신의 배포 스크립트(렌더된 vhost가 필요로 하는 websocket upgrade map과 `pickle.d` include glob) |
+| `conf.d/pickle-terminal.conf`, `stream-conf.d/*-sni.conf` | `apply-terminal-ingress.sh`. `$pickle_client_ip`와, :443을 소유하고 PROXY 헤더를 앞에 붙이는 stream SNI 라우터를 정의하는 것도 여기다 |
 | `conf.d/pickle-tls.conf` | `apply-tls-ciphers.sh` |
 | `conf.d/pickle-ratelimit.conf`, `sites-available/pickle-main*.conf`, `pickle-reject*.conf`, `stream-conf.d/pickle-stream-limits.conf`, `snippets/proxy-common.conf` | `apply-main-domain-vhost.sh` |
-| `pickle.d/<fqdn>.conf` | the proxy-agent at run time, one per published domain |
+| `pickle.d/<fqdn>.conf` | proxy-agent가 런타임에. 발행된 도메인마다 하나 |
 
-So the order for a blank container is: create it (Debian, nginx, the
-infrastructure-bridge address from the values table), deploy the proxy agent
-(step 10) so its base config lands, then run the three apply scripts (step 11).
-Install the Origin CA wildcard pair per platform root at
-`/etc/nginx/pickle-certs/<root, dots as dashes>.{crt,key}` — step 12's inventory
-refuses without it, and the proxy agent needs it named in its own environment.
+그래서 빈 컨테이너의 순서는 이렇다. 컨테이너를 만들고(Debian, nginx, 값 표의 인프라
+브리지 주소), proxy 에이전트를 배포해서(10단계) base 설정이 내려앉게 한 다음, apply
+스크립트 셋을 돌린다(11단계). Origin CA 와일드카드 쌍은 플랫폼 루트마다
+`/etc/nginx/pickle-certs/<루트, 점을 하이픈으로>.{crt,key}`에 설치한다. 12단계의 인벤토리가
+그것 없이는 거부하고, proxy 에이전트도 자기 환경에 그 이름이 있어야 한다.
 
-Two things are genuinely not in any repository, and both are specific to the
-host this platform grew on rather than to the platform:
+두 가지는 어떤 레포지토리에도 없고, 둘 다 플랫폼이 아니라 이 플랫폼이 자란 호스트에
+고유하다.
 
-- the **legacy tenant vhost** that shares this proxy. A new environment has no
-  such tenant and needs none of it — but see note 11, because one apply script
-  asserts that tenant answers before it will run.
-- `nginx.conf` itself, beyond the stock Debian file: the `stream {}` block that
-  includes `stream-conf.d/`, and `worker_shutdown_timeout` set high enough that a
-  reload does not sever web-terminal websockets. Both are one line each and named
-  in `pickle-base.conf`'s own comments.
+- 이 프록시를 함께 쓰는 **레거시 테넌트 vhost**. 새 환경에는 그런 테넌트가 없고 이것이
+  하나도 필요하지 않다. 다만 주석 11을 본다. apply 스크립트 하나가 그 테넌트의 응답을
+  실행 전에 확인한다.
+- 순정 Debian 파일을 넘어선 `nginx.conf` 자체. `stream-conf.d/`를 include하는 `stream {}`
+  블록과, reload가 웹 터미널 websocket을 끊지 않을 만큼 높게 잡은
+  `worker_shutdown_timeout`이다. 둘 다 한 줄씩이고 `pickle-base.conf`의 주석에 이름이 있다.
 
-### 11. Ingress and host policy
+### 11. 인그레스와 호스트 정책
 
-Order inside the step matters and is stated in each script header: the
-terminal-ingress plumbing writes no app vhost, so the platform answers nothing
-until `apply-main-domain-vhost.sh` runs — it owns the final ingress state and
-runs LAST among the vhost writers.
+단계 안의 순서가 중요하고 각 스크립트 헤더에 적혀 있다. 터미널 인그레스 배관은 앱 vhost를
+쓰지 않으므로 `apply-main-domain-vhost.sh`가 돌기 전까지 플랫폼은 아무것도 응답하지 않는다.
+그 스크립트가 최종 인그레스 상태를 소유하고 vhost를 쓰는 것들 중 **마지막**에 돈다.
 
-`apply-main-domain-vhost.sh` used to refuse on a new host: its main domain was a
-literal and its pre-flight asserted that a tenant which predates the platform on
-this proxy answers 200. Both are parameterised as of 2026-08-07 — the defaults
-reproduce this deployment, and a new environment passes its own
-`PICKLE_MAIN_DOMAIN` and `PICKLE_LEGACY_TENANT_HOST=none`. The other two scripts
-in this step take the container id and addresses from the same variables.
+새 환경은 `apply-main-domain-vhost.sh`에 자기 `PICKLE_MAIN_DOMAIN`과
+`PICKLE_LEGACY_TENANT_HOST=none`을 넘긴다. 기본값은 이 배포를 재현한다. 이 단계의 나머지
+두 스크립트는 같은 변수에서 컨테이너 id와 주소를 읽는다.
 
-Also required by the LE issuance inside it: the DNS record and the university
-firewall opening from step 0 must already be live, and the pve-node `/etc/hosts`
-hairpin entry (`198.18.1.10 pickle.pusan.ac.kr`) must exist for anything
-on-host to reach the public name (campus NAT does not hairpin).
+그 안의 LE 발급이 함께 요구하는 것: 0단계의 DNS 레코드와 학교 방화벽 개방이 이미 살아
+있어야 하고, 호스트에서 공개 이름으로 닿으려면 pve-node의 `/etc/hosts` 헤어핀 항목
+(`198.18.1.10 pickle.pusan.ac.kr`)이 있어야 한다. 캠퍼스 NAT는 헤어핀하지 않는다.
 
-#### 11a. Timers and retention — easy to forget, invisible when forgotten
+#### 11a. 타이머와 보존 기간
 
-`apply-ops-timers.sh` and `apply-log-retention.sh` are named by **no other
-procedure** — this step is their only home in any build order. Skip the first
-and the new environment has no nightly DB backup, no health-check timer, no
-failure markers, no login notice — and nothing will ever say so; skip the
-second and journald/log growth is unbounded. Run both after the containers
-exist; re-run the retention script after any container rebuild.
+`apply-ops-timers.sh`와 `apply-log-retention.sh`는 **다른 어떤 절차도 이름을 부르지
+않는다.** 어떤 구축 순서에서도 이 단계가 그 둘의 유일한 자리다. 첫 번째를 건너뛰면 새
+환경에 야간 DB 백업도, 헬스 체크 타이머도, 실패 표시도, 로그인 알림도 없고 **아무것도
+그 사실을 말해 주지 않는다.** 두 번째를 건너뛰면 journald와 로그 증가에 상한이 없다. 둘 다
+컨테이너가 생긴 뒤에 돌리고, 보존 스크립트는 컨테이너를 재구축할 때마다 다시 돌린다.
 
-### 12. Database bootstrap
+### 12. 데이터베이스 부트스트랩
 
-Follow [db-restore.md](db-restore.md) §Clean-slate bootstrap **in its numbered
-order** — it carries the per-script environment tables and the
-what-breaks-if-skipped column; none of that is repeated here. Two additions
-from the bring-up actually performed on 2026-08-07:
+[db-restore.md](db-restore.md)의 백지 부트스트랩 절을 **거기 적힌 번호 순서대로** 따른다.
+스크립트별 환경 변수 표와 건너뛰면 무엇이 깨지는지의 열이 거기 있고 여기서 반복하지
+않는다. 실제로 수행한 구축에서 나온 두 가지만 덧붙인다.
 
-- The as-measured sequence, end to end: stop the api → drop/create the
-  database → `deploy-api.sh` (clean build, first start runs Flyway) → **on a
-  dev-profile api only**: clear what the development seeder filled
-  (`delete from user_consents; delete from terms_versions; delete from
-  settings; delete from os_images;` — the seeder fills empty tables at first
-  start, and the bootstrap scripts by design do not take rows over) →
-  `apply-platform-inventory.sh` (`PICKLE_RELAY_PUBLIC_HOST` required) →
-  `apply-settings.sh` → `apply-terms.sh` → `apply-os-catalog.sh` → enable an
-  OS → switch the kill switches on → `scripts/apply-relay-token.sh` → create
-  an organisation (console) → smoke.
-- Whether a new environment runs the `dev` or `prod` profile is itself an
-  **undecided criterion** — nothing states which profile a second host should
-  run, and the clearing step above exists only because of `dev`. Decide the
-  profile before this step and record the decision; on `prod` the development
-  seeder does not run and the clearing step must be skipped.
+- 실측한 순서 전체: api 정지 → 데이터베이스 drop 후 create → `deploy-api.sh`(클린 빌드,
+  첫 기동이 Flyway 실행) → **dev 프로파일 api에서만**: 개발용 시더가 채운 것을 지운다
+  (`delete from user_consents; delete from terms_versions; delete from settings;
+  delete from os_images;`. 시더가 첫 기동에 빈 테이블을 채우고, 부트스트랩 스크립트는
+  설계상 남의 행을 넘겨받지 않는다) → `apply-platform-inventory.sh`
+  (`PICKLE_RELAY_PUBLIC_HOST` 필수) → `apply-settings.sh` → `apply-terms.sh` →
+  `apply-os-catalog.sh` → OS 하나 활성화 → 킬 스위치 켜기 → `scripts/apply-relay-token.sh`
+  → 기관 생성(콘솔) → 스모크.
+- 새 환경이 `dev`와 `prod` 중 어느 프로파일로 도는지가 그 자체로 **정해지지 않은 기준**이다.
+  두 번째 호스트가 어느 프로파일이어야 하는지를 아무것도 말하지 않고, 위의 정리 단계는
+  오직 `dev` 때문에 존재한다. 이 단계 전에 프로파일을 정하고 그 결정을 기록한다. `prod`
+  에서는 개발용 시더가 돌지 않으므로 정리 단계를 건너뛴다.
 
-### 13. First operating data
+### 13. 최초 운영 데이터
 
-The clean-slate order ends with rows the scripts wrote; the platform is still
-not usable until an operator adds what only the console/API can:
+백지 순서는 스크립트가 쓴 행들로 끝난다. 콘솔과 API만 할 수 있는 것을 운영자가 더하기
+전까지 플랫폼은 아직 쓸 수 없다.
 
-- **An organisation.** `vm_requests.org_id` is not null and nothing seeds an
-  organisation in prod — with zero orgs, **nobody can request a VM** even
-  though everything is green. Create at least one in the admin console.
-- **Spec presets (flavors).** Also unseeded in prod; create them in the admin
-  console (the request form is empty without them).
-- **The initial SYS_ADMIN.** On `prod` the api seeds exactly one from
-  `PICKLE_BOOTSTRAP_ADMIN_EMAIL` / `PICKLE_BOOTSTRAP_ADMIN_PASSWORD` in
-  `/etc/pickle/api.env` and refuses to start on a missing/guessable value —
-  so this is really a step-5 input; verify the login here. On `dev` the
-  development seeder's accounts (`PICKLE_SEED_SYSADMIN_*`) exist instead.
-- **Kill switches.** `ssh_gateway_enabled`, `web_terminal_enabled`,
-  `port_forwarding_enabled` are written **off** by the settings script on
-  purpose; switch each on only after its path is proven (the smoke tests in
-  step 14 are the proof).
+- **기관.** `vm_requests.org_id`는 not null이고 prod에서는 아무것도 기관을 시드하지 않는다.
+  기관이 0개면 전부 초록불이어도 **아무도 VM을 요청할 수 없다.** 관리자 콘솔에서 최소
+  하나를 만든다.
+- **사양 프리셋(flavor).** 이것도 prod에서는 시드되지 않는다. 관리자 콘솔에서 만든다.
+  없으면 요청 폼이 빈 채로 뜬다.
+- **최초 SYS_ADMIN.** `prod`에서는 api가 `/etc/pickle/api.env`의
+  `PICKLE_BOOTSTRAP_ADMIN_EMAIL`과 `PICKLE_BOOTSTRAP_ADMIN_PASSWORD`로 정확히 하나를
+  시드하고, 값이 없거나 추측 가능하면 기동을 거부한다. 그러니 실제로는 5단계의 입력이고
+  여기서는 로그인을 확인한다. `dev`에서는 개발용 시더의 계정
+  (`PICKLE_SEED_SYSADMIN_*`)이 대신 존재한다.
+- **킬 스위치.** `ssh_gateway_enabled`, `web_terminal_enabled`, `port_forwarding_enabled`는
+  설정 스크립트가 의도적으로 **꺼진** 채로 쓴다. 각 경로가 증명된 뒤에만 하나씩 켠다
+  (14단계의 스모크 테스트가 그 증명이다).
 
-### 14. Prove it
+### 14. 증명
 
-Smoke tests run on the host as root (they need the guest bridge); defaults
-target the main domain through the hairpin entry — see the smoke section of
-[README.md](../README.md) for the prerequisites and the variables to override.
-Minimum set for a new environment, in order: `smoke-provisioning.sh` (the
-end-to-end proof), `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`,
-`smoke-web-terminal.sh`. Then `health-check.sh` for the snapshot, confirm the
-backup timer's first run left a marker and a dump, and re-run the network
-runbook's post-reboot checklist once after a deliberate host reboot — a
-platform that only survives until the first reboot is not built yet.
+스모크 테스트는 호스트에서 root로 돌린다(게스트 브리지가 필요하다). 기본값은 헤어핀
+항목을 통해 주 도메인을 향한다. 선행 조건과 재정의할 변수는 [README.md](../README.md)의
+스모크 절을 본다. 새 환경의 최소 묶음을 순서대로 적으면 `smoke-provisioning.sh`
+(관통 증명), `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`,
+`smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`다. 그다음 `health-check.sh`로 스냅샷을
+찍고, 백업 타이머의 첫 실행이 표시와 덤프를 남겼는지 확인하고, 의도적으로 호스트를 한 번
+재부팅한 뒤 네트워크 런북(비공개 레포)의 재부팅 후 점검을 다시 돌린다. 첫 재부팅까지만
+견디는 플랫폼은 아직 구축된 것이 아니다.
