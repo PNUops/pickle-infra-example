@@ -2,9 +2,8 @@
 # Provisioning smoke test against the deployed dev environment (real provisioning).
 #
 # Run on the pve-node HOST as root — only the host holds a vmbr2 address
-# (198.19.0.1) and can reach guest VMs on :22; LXC 101 cannot. Do NOT run
-# before the provisioning cutover: the API must already expose the real-provisioning
-# endpoints, with the Proxmox token and the VM template both in place.
+# (198.19.0.1) and can reach guest VMs on :22; LXC 101 cannot. The API must
+# already run the real provisioning pipeline rather than a mock job.
 #
 # Journey: signup -> verify (token from mock-mail log via pct) -> login ->
 # team workspace -> vm request with display name dev-smoke-<ts> (the VM name is
