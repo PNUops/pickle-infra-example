@@ -45,9 +45,9 @@ Proxmox 노드는 [proxmox-node-intake.md](proxmox-node-intake.md)를 따르고(
 | 0 | **HUMAN** 이름, 계정, 접근 권한 확보 | 주석 0, 일부 **BLOCKED** | 없음 |
 | 1 | **HUMAN** 물리 호스트: 디스크, OS와 Proxmox VE 설치, sshd 포트, 캠퍼스 네트워크 | 주석 1. 결과 상태는 기록되어 있고 설치 프로그램 선택은 아니다 | 0 (캠퍼스 IP, 방화벽 요청 접수) |
 | 2 | 호스트 브리지, NAT, 방화벽 | [`hosts/pve-node/interfaces`](../hosts/pve-node/interfaces)를 값 표에 맞게 바꿔 설치. 하드닝과 재부팅 후 점검은 네트워크 런북(비공개 레포) | 1 |
-| 3 | 배포용 체크아웃 생성과 볼트 해제 | 주석 3 | 1 |
+| 3 | 배포용 체크아웃 생성과 vault 해제 | 주석 3 | 1 |
 | 4 | api용 Proxmox API 계정, 역할, ACL | 주석 4 | 1 |
-| 5 | 앱 컨테이너 (PostgreSQL + api + 콘솔 nginx) | `scripts/create-app-lxc.sh` 실행 후 볼트에서 `/etc/pickle/api.env`를 채운다(또는 비밀을 새로 발급) | 2, 3 |
+| 5 | 앱 컨테이너 (PostgreSQL + api + 콘솔 nginx) | `scripts/create-app-lxc.sh` 실행 후 vault 에서 `/etc/pickle/api.env`를 채운다(또는 비밀을 새로 발급) | 2, 3 |
 | 6 | SSH 게이트웨이 컨테이너 (sshpiperd + WireGuard 종단) | `scripts/create-sshgw-lxc.sh`. 릴레이가 필요로 하는 WG 공개키를 출력한다. `/etc/pickle/sshgw.env`를 채운다 | 2, 3 |
 | 7 | **HUMAN** 릴레이 인스턴스 생성 후 기동 | 릴레이 기동 런북(비공개 레포) 전 구간(6단계와 WG 페어링, HAProxy, 방화벽), 에이전트는 `scripts/deploy-relay.sh` | 0, 6 |
 | 8 | 리버스 프록시 컨테이너 (공개 웹 진입점) | 주석 8. 컨테이너를 만들면 설정은 에이전트 배포(10단계)와 apply 스크립트(11단계)로 도착한다. 플랫폼 루트마다 Origin CA 와일드카드 쌍을 설치한다 | 2, 3, 그리고 0 (인증서) |
@@ -134,14 +134,14 @@ Proxmox 노드는 [proxmox-node-intake.md](proxmox-node-intake.md)를 따르고(
 초기 셋업 로그가 하나 있으나 네트워크 재번호보다 앞선 것이라, 그대로 따라가면 사용자
 망과 인프라 망이 뒤바뀐 호스트가 나온다. 값이 아니라 절차의 형태로만 취급한다.
 
-### 3. 체크아웃과 볼트
+### 3. 체크아웃과 vault
 
 이 레포의 모든 스크립트는 호스트의 `/srv/pickle` 레이아웃을 전제한다. `/srv/pickle/<repo>` 아래에
 이 레포와 이 레포가 배포하는 서비스 레포들(api, console, sshgw, proxy-agent, relay-agent,
-image-builder)의 체크아웃이 있고, git-crypt 비밀 볼트가 `$VAULT`에 있다. 이것들을
+image-builder)의 체크아웃이 있고, git-crypt 비밀 vault 가 `$VAULT`에 있다. 이것들을
 clone한 다음 **HUMAN**: git-crypt 키는 운영자가 갖고 있고 대역 밖으로 전달되어야 한다.
-볼트가 잠긴 채로는 5단계에 설치할 비밀이 없고 `deploy-relay.sh`가 거부한다(SSH 키 없음).
-빈 볼트로 시작하는 완전히 새 환경은 모든 비밀을 새로 발급해야 한다. 무엇이 있어야 하는지의
+vault 가 잠긴 채로는 5단계에 설치할 비밀이 없고 `deploy-relay.sh`가 거부한다(SSH 키 없음).
+빈 vault 로 시작하는 완전히 새 환경은 모든 비밀을 새로 발급해야 한다. 무엇이 있어야 하는지의
 목록은 비밀 교체 런북(비공개 레포) §0이다.
 
 ### 4. api용 Proxmox API 계정

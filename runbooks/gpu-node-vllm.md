@@ -9,7 +9,7 @@ aarch64 GPU 노드다(전용 VRAM이 없어 모델 크기 예산과 OS가 한 �
 | 구성 요소 | 원본 | 적용 수단 |
 |---|---|---|
 | systemd 유닛 `pickle-vllm.service`(이미지 핀, 모델, 플래그) | `hosts/gpu-node/systemd/` | `scripts/apply-gpu-node-vllm.sh` |
-| env `/etc/pickle/vllm.env`(서빙 API 키) | 운영자 볼트의 서빙 env | 같은 스크립트 |
+| env `/etc/pickle/vllm.env`(서빙 API 키) | 운영자 vault 의 서빙 env | 같은 스크립트 |
 | 모델 가중치와 컨테이너 이미지 | Hugging Face, Docker Hub. `/var/lib/pickle-vllm/hf-cache`와 docker 이미지 저장소에 캐시된다 | 최초 서비스 기동(또는 아래의 수동 사전 내려받기) |
 
 서빙 엔드포인트는 `http://192.0.2.20:8000/v1`이다(캠퍼스 대역 전용, 공인 인바운드
@@ -140,7 +140,7 @@ systemd가 아니라 펌웨어 동작이고, BMC가 없는 노드라 네트워�
 
 - 게이트웨이는 기존 인프라 브리지 egress로 GPU 노드에 닿는다. 이 경로에 호스트 방화벽
   규칙은 관여하지 않으며 새로 추가해서도 안 된다.
-- 서빙 API 키는 의도적으로 한 값이 두 곳에 있다. 여기의 볼트 원본과 게이트웨이 env의
-  업스트림 블록이다. 회전은 볼트에 새 값을 만들고, 여기에 다시 적용한 뒤, 게이트웨이 env를
+- 서빙 API 키는 의도적으로 한 값이 두 곳에 있다. 여기의 vault 원본과 게이트웨이 env의
+  업스트림 블록이다. 회전은 vault 에 새 값을 만들고, 여기에 다시 적용한 뒤, 게이트웨이 env를
   갱신하는 순서로 한다. 이 순서에서 생기는 공백은 게이트웨이가 업스트림 오류로 흡수하는
   짧은 인증 실패다.
