@@ -136,7 +136,7 @@ REQUEST_BODY=$(jq -nc --arg workspace "$WORKSPACE_ID" --arg org "$ORG_ID" \
   --arg name "LLM smoke $TS" \
   '{type:"LLM_API_KEY",displayName:$name,workspaceId:$workspace,orgId:$org,
     purpose:"배포 후 LLM API lifecycle smoke",courseOrProject:null,extraNote:null,
-    reqStartDate:null,reqEndDate:null,
+    reqStartDate:null,reqEndDate:null,reqIndefinite:true,
     llmKey:{usagePlan:"1-token 실제 호출과 상태 전이 검증",reqRpm:20,reqTpm:1000,
       reqDailyTokens:10000}}')
 request 'create LLM key request' 201 -X POST "$BASE/requests" \

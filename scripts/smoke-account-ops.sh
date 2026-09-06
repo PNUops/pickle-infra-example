@@ -190,7 +190,7 @@ TPL=$(pgq "select id from os_images where status='ACTIVE' order by id limit 1")
 ORG=$(pgq "select id from orgs limit 1")
 [ -n "$ORG" ] || { ko "no org to request against"; exit 1; }
 req_payload(){ # $1=workspaceId $2=purpose
-  printf '{"type":"VM","workspaceId":%s,"orgId":%s,"purpose":"%s","courseOrProject":null,"extraNote":null,"reqStartDate":null,"reqEndDate":null,"vm":{"imageId":%s,"flavorId":%s,"reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"specReason":null}}' "$1" "$ORG" "$2" "$TPL" "$FLAVOR" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
+  printf '{"type":"VM","workspaceId":%s,"orgId":%s,"purpose":"%s","courseOrProject":null,"extraNote":null,"reqStartDate":null,"reqEndDate":null,"reqIndefinite":true,"vm":{"imageId":%s,"flavorId":%s,"reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"specReason":null}}' "$1" "$ORG" "$2" "$TPL" "$FLAVOR" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
 }
 approve_payload(){
   printf '{"grantedStartDate":null,"grantedEndDate":null,"comment":"스모크 승인","vm":{"grantedVcpu":%s,"grantedMemoryMb":%s,"grantedDiskGb":%s,"grantedImageId":%s,"nodeId":null}}' "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK" "$TPL"

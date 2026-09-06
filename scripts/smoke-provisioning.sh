@@ -269,7 +269,7 @@ phase_request_approve() {
     -H 'Content-Type: application/json' -d "{
       \"type\":\"VM\",\"workspaceId\":$WORKSPACE_ID,\"orgId\":$ORG_ID,
       \"purpose\":\"프로비저닝 스모크 테스트 (실제 프로비저닝 검증)\",\"courseOrProject\":null,
-      \"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,
+      \"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,
       \"displayName\":\"dev-smoke-$TS\",
       \"vm\":{\"imageId\":$TEMPLATE_ID,\"flavorId\":$FLAVOR_ID,\"reqVcpu\":$TPL_VCPU,
       \"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"specReason\":null}}" || return 1
