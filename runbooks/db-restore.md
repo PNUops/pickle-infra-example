@@ -111,7 +111,7 @@ OS 카탈로그 행도, 법적 문서도 없다. 그 행들은 다섯 개의 스
 | 2 | 앱 컨테이너 구축(`create-app-lxc.sh`). PostgreSQL 과 데이터베이스, 그리고 Proxmox 노드 이름을 인프라 브리지 주소로 매핑하는 컨테이너의 hosts 항목 | 인벤토리 스크립트가 거부한다. api 는 Proxmox API 인증서를 핀하고 호스트명 검증을 건너뛸 수 없으므로, `api_host`는 그 인증서의 SAN 이면서 컨테이너 안에서 resolve 되는 이름이어야 한다. 브리지 주소는 SAN 이 아니다 |
 | 3 | api 를 한 번 기동해 Flyway 가 V1 부터 최신까지 적용하게 한다 | 인벤토리 스크립트가 이름을 대며 거부한다. "database … has no nodes table" |
 | 3b | **`dev` 프로필로 도는 환경에서는 그 첫 기동 직후, 7번과 8번 전에 `settings`와 `terms_versions`를 비운다** | 3번은 스키마만 만드는 것이 아니다. 같은 기동에서 api 의 개발용 시더가 돌면서 두 테이블을 채운다. 큐레이션된 목록 대신 예약어 7개, 빈 연락처 주소, 자리표시자 법률 문안이 들어가고, 시더는 **비어 있기 때문에** 채운다. 그러면 7번과 8번은 이미 행이 있는 것을 보고 설계대로 넘겨받지 않는다. `apply-settings.sh`는 그냥 둔 키가 몇 개인지 보고하고, `apply-terms.sh`는 게시된 문안이 파일과 다르므로 아예 거부한다. 피해는 표면적이지 않다. 짧은 예약어 목록은 수백 개 이름을 claim 가능한 상태로 남기고, slug 는 재활용되지 않으므로 누가 하나를 가져가면 영구히 가져간 것이다. 자리표시자 약관은 아무도 쓰지 않은 문서를 가리키는 실제 동의를 모은다. 실행할 때 걸리는 것 둘: 시드 계정이 자리표시자 약관에 **이미 동의해 두었으므로** `user_consents`부터 지우지 않으면 외래 키가 문장 전체를 거부한다(두 delete 를 한 트랜잭션에 넣으면 settings 도 함께 살아남아 실패가 약관만의 문제로 보인다). 그리고 시더는 **OS 카탈로그 행**도 쓰는데 카탈로그 스크립트가 쓰지 않는 버전이라 중복으로 남고 요청 폼이 같은 OS 를 두 번 제시한다. 그래서 비우는 문장은 `delete from user_consents; delete from terms_versions; delete from settings; delete from os_images;` 전체다. 나머지 인벤토리 행은 비울 필요가 없다. `apply-platform-inventory.sh`가 노드와 풀, 릴레이, 인증서를 제자리에서 갱신한다 |
-| 4 | 리버스 프록시 컨테이너를 세우고, **플랫폼 루트 도메인마다** 와일드카드 Origin CA 쌍을 `/etc/nginx/pickle-certs/<루트, 점을 대시로>.{crt,key}`에 설치한다 | 인벤토리 스크립트가 거부한다. 설치된 인증서에서 `not_after`를 읽으므로 아무도 확인하지 않은 만료일을 단언하지 않는다. 쌍을 건너뛰고 행을 손으로 넣는 것은 더 나쁘다. 데이터베이스는 ACTIVE 인증서가 있다고 보고하는데 프록시는 그 루트에 대한 모든 apply 를 이름을 대며 거부한다 |
+| 4 | 리버스 프록시 컨테이너를 세우고, **플랫폼 루트 도메인마다** Let's Encrypt 와일드카드 계열을 DNS-01 로 `/etc/letsencrypt/live/<루트>/` 에 발급한다(리버스 프록시 재구축 런북, 비공개 레포, 4절) | 인벤토리 스크립트가 거부한다. 설치된 인증서에서 `not_after`를 읽으므로 아무도 확인하지 않은 만료일을 단언하지 않는다. 발급을 건너뛰고 행을 손으로 넣는 것은 더 나쁘다. 데이터베이스는 ACTIVE 인증서가 있다고 보고하는데 프록시는 그 루트에 대한 모든 apply 를 이름을 대며 거부한다. 이후로는 호스트의 `pickle-wildcard-cert-row.timer` 가 갱신된 만료일을 매일 행에 다시 쓴다 |
 | 5 | 릴레이 호스트를 프로비저닝하고 공인 주소를 정한다 | `PICKLE_RELAY_PUBLIC_HOST`를 정직하게 채울 수 없는데 이 값은 필수다. `public_host`가 비면 사용자는 접속할 주소 없는 전달 포트를 받는다. 이 컬럼을 쓰는 API 는 없다 |
 | 6 | **`bash scripts/apply-platform-inventory.sh`**. 실측 용량을 가진 노드, IP 풀, 릴레이, 와일드카드 인증서 행 | |
 | 7 | **`bash scripts/apply-settings.sh`**. 런타임 설정 행 | 스칼라 값은 api 에 컴파일된 기본값으로 떨어지지만 LIST 키는 그렇지 않다. 없는 목록은 빈 목록으로 읽힌다. `allowed_root_domains` 행이 없으면 플랫폼 루트를 지정한 모든 VM 요청이 "허용되지 않은 루트 도메인" 으로 거부되고 AUTO 서브도메인은 루트를 하나도 찾지 못한다. `reserved_subdomains`와 `profanity_subdomains` 행이 없으면 그 검사들이 전부 통과되고, claim 된 이름은 영구히 claim 된다(slug 는 재활용되지 않는다). 커스텀 도메인이 플랫폼 존을 스쿼팅하는 것을 막는 검사도 아무것도 매치하지 않는다. 즉 게시 기능이 조용히 나빠지는 것이 아니라 아예 망가진다. 설정 화면은 존재하는 행만 보여 주고, 행이 없는 키를 편집하면 404 가 온다. 6번과 같은 `PICKLE_ROOT_DOMAIN`을 넘긴다. 아니면 요청 폼이 어떤 인증서도 덮지 않는 루트 도메인을 제시한다. 두 번째 플랫폼 루트는 이 스크립트로 넣을 수 없고 나중에 관리 콘솔에서 추가한다 |
@@ -158,7 +158,7 @@ OS 카탈로그 행도, 법적 문서도 없다. 그 행들은 다섯 개의 스
 | `PICKLE_RELAY_SOURCE_IP` | `100.64.0.1` | 릴레이의 터널 쪽 주소. 동기화 호출을 받아 주는 유일한 피어다 |
 | `PICKLE_RELAY_PORT_BAND` | `10000-19999` | 1024-65535 안 |
 | `PICKLE_ROOT_DOMAIN` | `pusan.dev` | 인증서 범위가 `*.<root>`가 된다 |
-| `PICKLE_WILDCARD_CERT` | `/etc/nginx/pickle-certs/pusan-dev.crt` | 루트 도메인에서 기본값이 정해진다. `*.<root>`를 덮어야 한다 |
+| `PICKLE_WILDCARD_CERT` | `/etc/letsencrypt/live/pusan.dev/fullchain.pem` | 루트 도메인에서 기본값이 정해진다. `*.<root>`를 덮어야 한다. `refresh-wildcard-cert-row.sh` 가 같은 변수를 같은 기본값으로 읽는다 |
 
 ```bash
 PICKLE_RELAY_PUBLIC_HOST=ssh.example.dev \

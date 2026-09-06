@@ -57,7 +57,7 @@
 #   PICKLE_RELAY_SOURCE_IP     100.64.0.1     relay's tunnel-side address
 #   PICKLE_RELAY_PORT_BAND     10000-19999
 #   PICKLE_ROOT_DOMAIN         pusan.dev
-#   PICKLE_WILDCARD_CERT       /etc/nginx/pickle-certs/<root, dots as dashes>.crt
+#   PICKLE_WILDCARD_CERT       /etc/letsencrypt/live/<root>/fullchain.pem
 set -euo pipefail
 
 CTID="${PICKLE_APP_CTID:-101}"
@@ -98,9 +98,13 @@ RELAY_PORT_BAND="${PICKLE_RELAY_PORT_BAND:-10000-19999}"
 
 ROOT_DOMAIN="${PICKLE_ROOT_DOMAIN:-pusan.dev}"
 CERT_SCOPE="*.$ROOT_DOMAIN"
-# One wildcard pair per root domain, the file named after the root with dots as
-# dashes — the same convention the proxy tier and the host health snapshot read.
-WILDCARD_CERT="${PICKLE_WILDCARD_CERT:-/etc/nginx/pickle-certs/${ROOT_DOMAIN//./-}.crt}"
+# One certbot lineage per root domain, named after the root: the Let's Encrypt
+# wildcard issued by DNS-01 on the reverse proxy, the same lineage the proxy
+# agent serves and the host health snapshot watches. fullchain.pem is read
+# rather than cert.pem because it is the file the agent's env names; openssl
+# x509 reads only the first certificate in it, which is the leaf, so the SAN
+# and end-date checks below see the wildcard and not the intermediate.
+WILDCARD_CERT="${PICKLE_WILDCARD_CERT:-/etc/letsencrypt/live/${ROOT_DOMAIN}/fullchain.pem}"
 
 # ── database access ──────────────────────────────────────────────────────────
 # Statements are fed on STDIN, never as `psql -c "…"`. A -c argument travels
@@ -310,9 +314,16 @@ echo "  measured on $NODE: $CPU_THREADS threads, ${MEASURED_MEMORY_MB}MB memory,
 # warn before it lapses. A literal date is an assertion nobody checked, and one
 # later than the truth silences the warning exactly when it is needed. So: no
 # material, no row.
+#
+# The lineage renews itself (certbot.timer on the proxy container, roughly
+# every sixty days), and certbot cannot reach the database, so the date written
+# here goes stale on its own. refresh-wildcard-cert-row.sh re-reads it daily
+# from the pickle-wildcard-cert-row.timer; this script is still what creates
+# the row, and the only thing that does.
 pct exec "$PROXY_CTID" -- test -f "$WILDCARD_CERT" \
-  || die "no wildcard certificate at $WILDCARD_CERT in container $PROXY_CTID — install the
-                pair for $ROOT_DOMAIN first; this script describes material, it does not
+  || die "no wildcard certificate at $WILDCARD_CERT in container $PROXY_CTID — issue the
+                lineage for $ROOT_DOMAIN first (certbot certonly --dns-google, see the
+                proxy rebuild runbook); this script describes material, it does not
                 invent it"
 cert_text=$(pct exec "$PROXY_CTID" -- openssl x509 -noout -text -in "$WILDCARD_CERT") \
   || die "openssl could not read $WILDCARD_CERT"
@@ -556,9 +567,9 @@ if [ "${cert_revoked:-0}" -gt 0 ]; then
   echo "       This script will not bring a revoked certificate back: the row is revoked because" >&2
   echo "       its key was considered compromised, and every publish under $ROOT_DOMAIN staying" >&2
   echo "       refused is the intended consequence, not a fault to repair. To restore publishing:" >&2
-  echo "       issue a NEW wildcard pair for $ROOT_DOMAIN, install it at $WILDCARD_CERT in" >&2
-  echo "       container $PROXY_CTID, delete the REVOKED row (or re-scope it so it no longer" >&2
-  echo "       claims $CERT_SCOPE), then re-run this script." >&2
+  echo "       issue a NEW wildcard lineage for $ROOT_DOMAIN with a new key (certbot certonly" >&2
+  echo "       in container $PROXY_CTID, landing at $WILDCARD_CERT), delete the REVOKED row" >&2
+  echo "       (or re-scope it so it no longer claims $CERT_SCOPE), then re-run this script." >&2
 fi
 
 # ── verification: print what is now true ─────────────────────────────────────

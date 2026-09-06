@@ -250,8 +250,9 @@ geo \$pickle_rl_exempt {
     127.0.0.1          1;
 }
 
-# Direct-path clients are their own address. The CDN-fronted vhosts have their
-# own validated client variable and are not covered here.
+# Every client is its own address: the stream tier hands the true :443 peer
+# to this tier over PROXY protocol and nothing sits in front of it. The user
+# vhosts the proxy agent renders key on the same variable.
 map \$pickle_rl_exempt \$pickle_rl_key {
     1 "";
     0 \$binary_remote_addr;
@@ -269,6 +270,21 @@ limit_req_zone \$pickle_rl_key        zone=pickle_auth:10m     rate=10r/s;
 limit_req_zone \$pickle_rl_key        zone=pickle_api:10m      rate=50r/s;
 limit_req_zone \$pickle_rl_auth_total zone=pickle_auth_all:1m  rate=20r/s;
 limit_conn_zone \$pickle_rl_key       zone=pickle_perip:10m;
+
+# Default per-address limits for the user vhosts (platform subdomains and
+# custom domains). The proxy agent emits the limit_req / limit_conn lines in
+# each rendered vhost; the zones have to be declared somewhere in the http
+# context, or nginx -t fails with "zero size shared memory zone <name>", an
+# emerg printed AFTER "syntax is ok" (judge nginx -t by its exit code, never
+# by that line). Declaration order does not matter: a reference parsed before
+# its zone is accepted, so this file sorting after pickle-base.conf and the
+# vhosts it includes is fine. Two layers, not one: the stream-tier cap written
+# below bounds sockets per address before TLS termination, and this zone bounds
+# requests after a vhost is chosen. A published site used to sit behind the
+# CDN's own protections; on the direct path these two are the only throttle in
+# front of a user's VM.
+limit_req_zone \$pickle_rl_key        zone=pickle_site:10m     rate=30r/s;
+limit_conn_zone \$pickle_rl_key       zone=pickle_site_perip:10m;
 
 limit_req_status 429;
 limit_conn_status 429;
@@ -383,15 +399,9 @@ server {
 
     # The stream tier (the only peer of this loopback socket) prepends a
     # PROXY header carrying the true public :443 peer; restore it into
-    # \$remote_addr, which for this domain IS the client: it resolves straight
-    # to us with no CDN in between.
-    #
-    # Deliberately NOT \$pickle_client_ip here. That map believes a CDN's
-    # client-IP header whenever the peer falls in the CDN's ranges, which was
-    # sound while the CDN was the only way in. On this direct path anyone able
-    # to originate from those ranges could forge the audited client address and
-    # the value downstream rate limiting keys on, so the peer address stands on
-    # its own. The CDN-fronted vhosts keep using the map.
+    # \$remote_addr, which IS the client: every name resolves straight to us
+    # with no CDN in between, so no request header is trusted for the client
+    # address. The user vhosts the proxy agent renders do the same.
     set_real_ip_from 127.0.0.1;
     real_ip_header proxy_protocol;
 

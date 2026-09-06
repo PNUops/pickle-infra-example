@@ -50,7 +50,7 @@ Proxmox 노드는 [proxmox-node-intake.md](proxmox-node-intake.md)를 따르고(
 | 5 | 앱 컨테이너 (PostgreSQL + api + 콘솔 nginx) | `scripts/create-app-lxc.sh` 실행 후 vault 에서 `/etc/pickle/api.env`를 채운다(또는 비밀을 새로 발급) | 2, 3 |
 | 6 | SSH 게이트웨이 컨테이너 (sshpiperd + WireGuard 종단) | `scripts/create-sshgw-lxc.sh`. 릴레이가 필요로 하는 WG 공개키를 출력한다. `/etc/pickle/sshgw.env`를 채운다 | 2, 3 |
 | 7 | **HUMAN** 릴레이 인스턴스 생성 후 기동 | 릴레이 기동 런북(비공개 레포) 전 구간(6단계와 WG 페어링, HAProxy, 방화벽), 에이전트는 `scripts/deploy-relay.sh` | 0, 6 |
-| 8 | 리버스 프록시 컨테이너 (공개 웹 진입점) | 주석 8. 컨테이너를 만들면 설정은 에이전트 배포(10단계)와 apply 스크립트(11단계)로 도착한다. 플랫폼 루트마다 Origin CA 와일드카드 쌍을 설치한다 | 2, 3, 그리고 0 (인증서) |
+| 8 | 리버스 프록시 컨테이너 (공개 웹 진입점) | 주석 8. 컨테이너를 만들면 설정은 에이전트 배포(10단계)와 apply 스크립트(11단계)로 도착한다. 플랫폼 루트마다 Let's Encrypt 와일드카드를 DNS-01 로 발급한다 | 2, 3, 그리고 0 (Cloud DNS 서비스 계정 키) |
 | 9 | 사용자 VM 템플릿 | image-builder 레포지토리(공개. 이 호스트에서는 `/srv/pickle` 아래 체크아웃), OS별 프로파일에서 값 표의 템플릿 VMID로. 재빌드 흐름은 템플릿 재빌드 런북(비공개 레포) | 2 |
 | 10 | 서비스 배포 | `scripts/deploy-api.sh`(api 첫 기동이 Flyway V1에서 최신까지 실행), `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-sshgw.sh` | 5, 6, 8. api.env 채워져 있을 것 |
 | 11 | 인그레스와 호스트 정책 | `scripts/apply-terminal-ingress.sh` → `scripts/apply-main-domain-vhost.sh`(주석 11) → `scripts/apply-tls-ciphers.sh`. 그다음 `scripts/apply-log-retention.sh`와 `scripts/apply-ops-timers.sh`(주석 11a) | 8, 10. 0 (LE 발급을 위해 DNS와 방화벽이 살아 있을 것) |
@@ -68,13 +68,13 @@ Proxmox 노드는 [proxmox-node-intake.md](proxmox-node-intake.md)를 따르고(
 |---|---|---|
 | 게스트 씬풀과 그 볼륨 그룹 | `pve/data`, VG `pve` | `scripts/health-check.sh`의 `THINPOOL_LV`(`vg/lv` 형태여야 한다. `THINPOOL_VG`를 함께 주지 않으면 VG를 여기서 유도한다). 게스트 스토리지 이름이 다른 호스트는 이것을 설정할 때까지 씬풀 행이 영구히 빨갛게 나오고, 스크립트는 볼륨 그룹만 적은 값을 거부한다 |
 | LVM 질의 상한 | 10초 (`LVM_TIMEOUT`) | `scripts/health-check.sh`. 각 `lvs`와 `vgs` 읽기의 상한이라, 용량이 소진되어 볼륨이 정지된 풀이 스냅샷을 붙잡고 있을 수 없게 한다. 정상 호스트가 실제로 더 필요할 때만 올린다 |
-| DNS 레코드가 가리키는 캠퍼스 공인 IP | 운영자가 보유 (DNS 제공자 대시보드와 학교 DNS) | 공개 A 레코드, 학교 방화벽 요청(0단계), `scripts/health-check.sh`의 `MAIN_DOMAIN_PUBLIC_IP`(**하드코딩된 기본값**이라 그냥 두면 헬스 체크가 매번 다른 사이트의 주소를 기대한다), 그리고 릴레이 기동 런북(비공개 레포)의 릴레이 엣지 방화벽. 그 방화벽은 이 `/32`에서만 관리 SSH를 허용하므로 값이 틀리면 운영자가 릴레이에서 잠긴다 |
+| DNS 레코드가 가리키는 캠퍼스 공인 IP | 운영자가 보유 (Cloud DNS 콘솔과 학교 DNS) | 플랫폼 루트 관리 존의 아펙스 A 레코드와 와일드카드 `*` A 레코드(둘 다 이 주소이고 앞에 프록시가 없다), 학교 방화벽 요청(0단계), `scripts/health-check.sh`의 `MAIN_DOMAIN_PUBLIC_IP`(**하드코딩된 기본값**이라 그냥 두면 헬스 체크가 매번 다른 사이트의 주소를 기대한다. `dns:main` 과 `dns:wildcard` 가 이 값을 읽는다), 그리고 릴레이 기동 런북(비공개 레포)의 릴레이 엣지 방화벽. 그 방화벽은 이 `/32`에서만 관리 SSH를 허용하므로 값이 틀리면 운영자가 릴레이에서 잠긴다 |
 | 호스트 LAN 주소, 게이트웨이, NIC 이름 | `192.0.2.10/24`, gw `192.0.2.1`, `nic0` | [`hosts/pve-node/interfaces`](../hosts/pve-node/interfaces)의 vmbr0 스탠자 |
 | 인프라 브리지 망 (vmbr1) | `198.18.0.0/16`, 호스트 `.0.1`. 프록시 `.1.10`, 앱 `.1.20`, sshgw `.1.30` | `hosts/pve-node/interfaces`(NAT, DNAT, FORWARD 규칙이 `.1.10`을 고정한다), `create-app-lxc.sh`, `create-sshgw-lxc.sh`, 리버스 프록시 재구축 런북(비공개 레포) §1, `apply-terminal-ingress.sh`, `apply-main-domain-vhost.sh`(`PICKLE_PROXY_IP`, `PICKLE_HOST_PROBE_IP`). **릴레이 쪽에도 있다.** `lightsail/wireguard/wg0.conf.template`이 api의 `.1.20/32`를 터널로 들여보내는데 그것이 `PICKLE_RELAY_SYNC_URL`이 가리키는 바로 그 주소다 |
 | 게스트 브리지 망 (vmbr2) | `198.19.0.0/16`, 호스트 `.0.1` | `hosts/pve-node/interfaces`. `PICKLE_POOL_CIDR`, `PICKLE_POOL_GATEWAY`, `PICKLE_POOL_RESERVED`(`apply-platform-inventory.sh`) |
 | WireGuard 전송 망 | `100.64.0.0/30`. 릴레이 `.1`, sshgw `.2` | `create-sshgw-lxc.sh`, `lightsail/wireguard/wg0.conf.template`(그 `AllowedIPs`는 게스트 망과 **api 주소**도 담으므로 항목이 틀리면 터널이 아니라 릴레이 sync가 깨진다), `lightsail/haproxy/haproxy.cfg.template`(`server sshgw 100.64.0.2:22`), `lightsail/nftables/nftables.conf`, `hosts/pve-node/interfaces`(`/30` 라우트와 `.1` FORWARD accept), `PICKLE_RELAY_SOURCE_IP` |
 | 주 진입 도메인 | `pickle.pusan.ac.kr` | `apply-main-domain-vhost.sh`의 `PICKLE_MAIN_DOMAIN`. `create-sshgw-lxc.sh`의 `PICKLE_TERMINAL_CONSOLE_ORIGIN`. **터미널 브리지는 이 origin만 받아들이고 그 컨테이너는 11단계보다 훨씬 앞인 6단계에서 만들어지므로** 여기 값이 낡으면 웹 터미널이 조용히 죽는다. `create-app-lxc.sh` 콘솔 vhost의 `server_name`, `health-check.sh`(`PICKLE_DEV_DOMAIN` 기본값과 Let's Encrypt 인증서 경로), 그리고 이 이름에서 200을 요구하는 `apply-tls-ciphers.sh`의 전후 단정. 스모크 테스트 기본값(`BASE`), pve-node의 `/etc/hosts` 헤어핀 항목 |
-| 플랫폼 루트 도메인 | `pusan.dev` | `PICKLE_ROOT_DOMAIN`(`apply-platform-inventory.sh`와 `apply-settings.sh`. 같은 값을 쓰는 것이 의도다), 프록시 에이전트 환경의 `PICKLE_PROXY_AGENT_WILDCARD_CERTS`(형식은 `<root>=<crt>:<key>`이고 에이전트는 그 루트에 대해 아무것도 렌더링하기 전에 이것이 필요하다. 프록시 에이전트 배포 런북(비공개 레포)), `ROOT`(`smoke-http-publish.sh`), 인증서 경로 `/etc/nginx/pickle-certs/<루트, 점을 하이픈으로>.{crt,key}`, DNS 존 |
+| 플랫폼 루트 도메인 | `pusan.dev` | `PICKLE_ROOT_DOMAIN`(`apply-platform-inventory.sh`와 `apply-settings.sh`. 같은 값을 쓰는 것이 의도다), 프록시 에이전트 환경의 `PICKLE_PROXY_AGENT_WILDCARD_CERTS`(형식은 `<root>=<crt>:<key>`이고 에이전트는 그 루트에 대해 아무것도 렌더링하기 전에 이것이 필요하다. 프록시 에이전트 배포 런북(비공개 레포)), `ROOT`(`smoke-http-publish.sh`), `PLATFORM_ROOT_DOMAIN`(`health-check.sh`), 계열 경로 `/etc/letsencrypt/live/<루트>/{fullchain,privkey}.pem`(`certbot --cert-name <루트>` 가 정한다), Cloud DNS 관리 존과 certbot 서비스 계정의 범위 |
 | 사용자 SSH 호스트 | `ssh.example.dev` (DNS 전용 A 레코드에서 릴레이 고정 IP로) | 릴레이 기동 런북(비공개 레포) §5, api의 `PICKLE_SSH_HOST`(재정의 지점). **비어 있으면 api가 컴파일된 기본값으로 폴백한다.** meta 엔드포인트와 알림 문구 양쪽에서 그렇게 되므로, 설정하지 않은 변수는 실패하지 않고 틀린 호스트를 광고한다. 콘솔은 비인증 랜딩 페이지용 상수를 따로 갖고 있다 |
 | 릴레이 공개 호스트 (포트 포워딩) | `ssh.example.dev`. 위 사용자 SSH 호스트와 같은 이름이다. 둘 다 릴레이로 해석되기 때문이다 | `PICKLE_RELAY_PUBLIC_HOST`(`apply-platform-inventory.sh`, 필수. 기본값이 없고 이 열을 쓰는 API도 없다) |
 | 릴레이 고정 IP와 관리 SSH | `198.51.100.10`, 관리 sshd `:22`, 키 `$VAULT/lightsail-ssh.pem` | `RELAY_HOST`, `RELAY_SSH_PORT`, `RELAY_SSH_KEY`(`deploy-relay.sh`). **이름이 다른 두 번째 묶음** `PICKLE_RELAY_SSH_KEY`, `_USER`, `_PORT`(`apply-relay-token.sh`). `RELAY`(`smoke-ssh-gateway.sh`, 14단계 묶음). sshgw `wg0.conf`의 `Endpoint`. 릴레이 기동 런북(비공개 레포) |
@@ -89,10 +89,11 @@ Proxmox 노드는 [proxmox-node-intake.md](proxmox-node-intake.md)를 따르고(
 ### 0. 이름, 계정, 접근 권한 확보 (HUMAN, 일부 BLOCKED)
 
 1단계 전에 이미 갖고 있어야 하는 것. 학교 쪽 공인 IP와 그 IP로 열린 인바운드 80/443,
-위임된 주 진입 도메인, 각 존에 등록된 플랫폼 루트 도메인과 SSH 호스트
-도메인과 릴레이 호스트 도메인, 와일드카드 레코드를 만들고 플랫폼 루트마다 Origin CA
-인증서를 발급할 수 있는 DNS 제공자 대시보드 로그인, Lightsail 릴레이를 만들 수 있는 AWS
-계정, 그리고 SMTP 발신 계정(앱 비밀번호).
+위임된 주 진입 도메인, 플랫폼 루트 도메인을 산 등록기관 로그인과 그 도메인의 NS 를 위임할
+수 있는 권한, 플랫폼 루트의 관리 존을 가진 GCP 프로젝트와 그 존에 쓰기 권한이 있는 certbot
+용 서비스 계정(키 JSON 은 vault `gcp/pickle-certbot-dns01.json`), SSH 호스트 도메인과 릴레이
+호스트 도메인이 등록된 존, Lightsail 릴레이를 만들 수 있는 AWS 계정, 그리고 SMTP 발신
+계정(앱 비밀번호).
 
 **BLOCKED: 취득 경로가 어디에도 기록되어 있지 않다.** 값은 알려져 있으나 각각이 어디서
 왔는지는 아니다. 학교 IP와 도메인, 방화벽 작업의 요청 창구나 소요 기간이 없고, 구매한
@@ -203,16 +204,17 @@ ACL은 토큰이 아니라 **사용자**에 붙으므로 나중의 토큰 교체
 | 파일 | 쓰는 주체 |
 |---|---|
 | `conf.d/pickle-base.conf` | proxy-agent 자신의 배포 스크립트(렌더된 vhost가 필요로 하는 websocket upgrade map과 `pickle.d` include glob) |
-| `conf.d/pickle-terminal.conf`, `stream-conf.d/*-sni.conf` | `apply-terminal-ingress.sh`. `$pickle_client_ip`와, :443을 소유하고 PROXY 헤더를 앞에 붙이는 stream SNI 라우터를 정의하는 것도 여기다 |
+| `stream-conf.d/*-sni.conf` | `apply-terminal-ingress.sh`. :443을 소유하고 PROXY 헤더를 앞에 붙이는 stream SNI 라우터다. 폐지된 CDN 시절의 `conf.d/pickle-terminal.conf` 와 그 대역 목록이 남아 있으면 같은 스크립트가 지운다 |
 | `conf.d/pickle-tls.conf` | `apply-tls-ciphers.sh` |
 | `conf.d/pickle-ratelimit.conf`, `sites-available/pickle-main*.conf`, `pickle-reject*.conf`, `stream-conf.d/pickle-stream-limits.conf`, `snippets/proxy-common.conf` | `apply-main-domain-vhost.sh` |
 | `pickle.d/<fqdn>.conf` | proxy-agent가 런타임에. 발행된 도메인마다 하나 |
 
 그래서 빈 컨테이너의 순서는 이렇다. 컨테이너를 만들고(Debian, nginx, 값 표의 인프라
 브리지 주소), proxy 에이전트를 배포해서(10단계) base 설정이 내려앉게 한 다음, apply
-스크립트 셋을 돌린다(11단계). Origin CA 와일드카드 쌍은 플랫폼 루트마다
-`/etc/nginx/pickle-certs/<루트, 점을 하이픈으로>.{crt,key}`에 설치한다. 12단계의 인벤토리가
-그것 없이는 거부하고, proxy 에이전트도 자기 환경에 그 이름이 있어야 한다.
+스크립트 셋을 돌린다(11단계). Let's Encrypt 와일드카드는 플랫폼 루트마다 DNS-01 로
+`/etc/letsencrypt/live/<루트>/` 에 발급한다(리버스 프록시 재구축 런북, 비공개 레포, 4절.
+Cloud DNS 서비스 계정 키만 있으면 되고 DNAT 가 살아 있을 필요는 없다). 12단계의 인벤토리가
+그것 없이는 거부하고, proxy 에이전트도 자기 환경에 그 경로가 있어야 한다.
 
 두 가지는 어떤 레포지토리에도 없고, 둘 다 플랫폼이 아니라 이 플랫폼이 자란 호스트에
 고유하다.

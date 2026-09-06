@@ -10,6 +10,10 @@
 # wrapper and its child through the interpreter, so the execute bit stops
 # mattering, and systemd records unit-level failures that cron discarded.
 #
+# Also enables the daily wildcard certificate row refresh, which never had a
+# cron entry: it arrived with the Let's Encrypt wildcard and starts life as a
+# timer.
+#
 # Idempotent: re-running syncs the unit files, re-enables the timers and
 # reinstalls the notice. Leaves the cron.d files in a backup and removes them
 # so the two schedules cannot both run.
@@ -44,14 +48,14 @@ install -m 0755 "$SRC_MOTD" "$MOTD_DIR/50-pickle-ops"
 install -d -m 0755 "$STATE_DIR"
 
 echo "== enable the timers"
-systemctl enable --now pickle-db-backup.timer pickle-health.timer
+systemctl enable --now pickle-db-backup.timer pickle-health.timer pickle-wildcard-cert-row.timer
 
 echo "== retire the cron entries (both schedules must not run)"
 rm -f /etc/cron.d/pickle-db-backup /etc/cron.d/pickle-health-check
 
 echo "== verification"
 vfail=0
-for t in pickle-db-backup.timer pickle-health.timer; do
+for t in pickle-db-backup.timer pickle-health.timer pickle-wildcard-cert-row.timer; do
   if systemctl is-enabled "$t" >/dev/null 2>&1 && systemctl is-active "$t" >/dev/null 2>&1; then
     echo "  OK   $t enabled and active"
   else
@@ -75,7 +79,7 @@ else
 fi
 
 if [ "$vfail" -ne 0 ]; then
-  echo "FAILED — $vfail check(s). Restore with: cp -a $BK/pickle-* /etc/cron.d/ && systemctl disable --now pickle-db-backup.timer pickle-health.timer"
+  echo "FAILED — $vfail check(s). Restore with: cp -a $BK/pickle-* /etc/cron.d/ && systemctl disable --now pickle-db-backup.timer pickle-health.timer pickle-wildcard-cert-row.timer"
   exit 1
 fi
-echo "OK — rollback if ever needed: cp -a $BK/pickle-* /etc/cron.d/ && systemctl disable --now pickle-db-backup.timer pickle-health.timer"
+echo "OK — rollback if ever needed: cp -a $BK/pickle-* /etc/cron.d/ && systemctl disable --now pickle-db-backup.timer pickle-health.timer pickle-wildcard-cert-row.timer"

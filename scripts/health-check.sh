@@ -3,12 +3,21 @@
 # thin pool, VG headroom, load), every LXC container the host reports (running
 # state and rootfs allocation both),
 # pickle-api + console, PostgreSQL, JobRunr recurring jobs, proxy-agent, the SSH
-# gateway + WireGuard tunnel, TLS cert, DB backups, and the dev domain end-to-end.
+# gateway + WireGuard tunnel, the Let's Encrypt certificates and their renewal
+# machinery, the wildcard certificate row against the installed material, DB
+# backups, the dev domain end-to-end, and public DNS for the main domain and
+# the platform root (wildcard record and name servers).
 #
-# Prints an aligned OK/WARN/FAIL table and a Korean summary. Exits non-zero if
-# ANY check is FAIL (WARN does not fail the run). Every probe is time-bounded so
-# a hung guest cannot wedge the snapshot. Mutates nothing — safe to run from
-# cron (explicit PATH set below); NOT registered as a cron job by this repo.
+# Prints an aligned OK/WARN/FAIL/SKIP table and a Korean summary. Exits non-zero
+# if ANY check is FAIL (WARN and SKIP do not fail the run). Every probe is
+# time-bounded so a hung guest cannot wedge the snapshot. Mutates nothing.
+# Registered as a systemd timer by scripts/apply-ops-timers.sh (explicit PATH
+# set below, so it also runs correctly from cron).
+#
+# SKIP exists so that nothing here sits red as a matter of course. A check whose
+# subject is not configured yet reports that it is not armed; a check whose
+# subject exists reports the truth about it. A snapshot that is permanently red
+# teaches everyone to ignore it, and then hides the failure that matters.
 #
 # Usage: health-check.sh            (full snapshot, exit 1 on any FAIL)
 set -uo pipefail
@@ -39,15 +48,29 @@ LVM_TIMEOUT="${LVM_TIMEOUT:-10}"                              # seconds per lvs/
 LOAD_WARN="${LOAD_WARN:-40}"                                  # 1m loadavg (40 threads)
 BACKUP_MAX_HOURS="${BACKUP_MAX_HOURS:-26}"                    # nightly 04:10 + margin
 WG_HANDSHAKE_MAX="${WG_HANDSHAKE_MAX:-180}"                   # seconds since last handshake
-CERT_WARN_DAYS="${CERT_WARN_DAYS:-30}"
 PGCONN_WARN="${PGCONN_WARN:-80}"                              # pickle_dev connections
 PCT_TIMEOUT="${PCT_TIMEOUT:-20}"
 STATE_DIR="${PICKLE_OPS_STATE_DIR:-/var/lib/pickle-ops}"
 DOMAIN="${PICKLE_DEV_DOMAIN:-https://pickle.pusan.ac.kr}"
-# Platform wildcard certificates, one per root domain. A single scalar could not
-# see a second root, and after the domain cutover it would have kept reporting a
-# retired certificate as healthy while the live one went unwatched.
-ORIGIN_CERT_GLOB="${ORIGIN_CERT_GLOB:-/etc/nginx/pickle-certs/*.crt}"
+# The platform root users publish under. Its wildcard A record and its name
+# servers are checked below; the certificate that fronts it is a certbot
+# lineage named after it, compared to the certificates row below.
+#
+# Deliberately has NO default. Those two checks assert that the root is served
+# from a zone this project administers, which is not true of a root whose
+# delegation has not moved yet, so a default would make them fail on a host
+# where nothing is wrong. Unset means the DNS checks report SKIP; setting it in
+# the host environment file is the step that arms them, and that step belongs
+# at the point the delegation actually moves.
+PLATFORM_ROOT_DOMAIN="${PLATFORM_ROOT_DOMAIN:-}"
+# Name resolved by the wildcard probe. Empty means a random label under the
+# root, which is what a wildcard record answers to; when the wildcard record is
+# later removed in favour of per-publication records, point this at a name that
+# is actually published so the check keeps asserting something real.
+PLATFORM_DNS_PROBE_FQDN="${PLATFORM_DNS_PROBE_FQDN:-}"
+# The address the public names must resolve to: this host's public ingress.
+# Shared by the main-domain and the platform-root DNS checks.
+MAIN_DOMAIN_PUBLIC_IP="${MAIN_DOMAIN_PUBLIC_IP:-203.0.113.10}"
 BACKUP_DIR="${BACKUP_DIR:-/srv/pickle/backup/db}"
 
 # Per-recurring-job max age (seconds) before "stalled". Cadences per
@@ -64,10 +87,14 @@ declare -A JOB_MAX=(
 
 # ---- result table -----------------------------------------------------------
 declare -a R_NAME R_STAT R_DET
-FAILS=0; WARNS=0
+FAILS=0; WARNS=0; SKIPS=0
 rec() {
   R_NAME+=("$1"); R_STAT+=("$2"); R_DET+=("${3:-}")
-  case "$2" in FAIL) FAILS=$((FAILS+1));; WARN) WARNS=$((WARNS+1));; esac
+  case "$2" in
+    FAIL) FAILS=$((FAILS+1));;
+    WARN) WARNS=$((WARNS+1));;
+    SKIP) SKIPS=$((SKIPS+1));;
+  esac
 }
 
 # helpers ---------------------------------------------------------------------
@@ -312,12 +339,16 @@ for id in 100 101; do
   else rec "nginx:${id}" FAIL "nginx -t failed"; fi
 done
 
-# ---- 11. origin TLS cert expiry (LXC 100) ----------------------------------
-# Every wildcard pair on the host is checked by name, so adding a root domain
-# brings its certificate under watch without touching this script.
+# ---- 11a. installed wildcard pairs, while any remain (LXC 100) -------------
+# A root served from a hand-installed wildcard pair rather than a certbot
+# lineage still needs watching. An empty directory is not a failure: it is what
+# the host looks like once every root has moved to a lineage, so this section
+# retires itself rather than needing a second change to remove it.
+ORIGIN_CERT_GLOB="${ORIGIN_CERT_GLOB:-/etc/nginx/pickle-certs/*.crt}"
+CERT_WARN_DAYS="${CERT_WARN_DAYS:-30}"
 origin_certs=$(pex 100 sh -c "ls -1 $ORIGIN_CERT_GLOB 2>/dev/null")
 if [ -z "$origin_certs" ]; then
-  rec "cert:origin" FAIL "no wildcard certificate found at $ORIGIN_CERT_GLOB"
+  rec "cert:origin" SKIP "no installed wildcard pairs at $ORIGIN_CERT_GLOB — every root is on a certbot lineage"
 else
   for cert_path in $origin_certs; do
     cert_name=$(basename "$cert_path" .crt)
@@ -334,11 +365,11 @@ else
   done
 fi
 
-# ---- 11b. main-entry Let's Encrypt cert expiry (LXC 100) -------------------
-# The origin cert above is a 15-year pair that cannot realistically lapse; the
-# cert that actually fronts the main domain is renewed by the certbot timer
-# every ~60 days out of a 90-day life, so a silent renewal failure is the real
-# expiry risk. Warn early enough that several renewal windows remain.
+# ---- 11. main-entry Let's Encrypt cert expiry (LXC 100) --------------------
+# The cert that fronts the main domain is renewed by the certbot timer every
+# ~60 days out of a 90-day life, so a silent renewal failure is the real expiry
+# risk. Warn early enough that several renewal windows remain. The platform
+# wildcard is a certbot lineage as well and is checked against its row below.
 LE_CERT="${LE_CERT:-/etc/letsencrypt/live/pickle.pusan.ac.kr/fullchain.pem}"
 LE_WARN_DAYS="${LE_WARN_DAYS:-21}"
 end=$(pex 100 sh -c "openssl x509 -enddate -noout -in $LE_CERT 2>/dev/null | cut -d= -f2")
@@ -365,6 +396,58 @@ elif pex 100 systemctl is-failed certbot.service >/dev/null 2>&1; then
 elif ! pex 100 test -x /etc/letsencrypt/renewal-hooks/deploy/pickle-nginx-reload.sh; then
   rec "cert:renewal" WARN "certbot.timer active but reload hook missing"
 else rec "cert:renewal" OK "certbot.timer active, last run clean, reload hook present"; fi
+
+# ---- 11b. wildcard certificate rows against the installed lineage -----------
+# Publishing under a root is refused unless the certificates table holds an
+# ACTIVE wildcard row for it, and the row's not_after is what the admin list
+# and this snapshot warn off. The row is written from the host (the inventory
+# script creates it, the daily refresh updates it) because certbot renews the
+# lineage in a container with no route to the database. So two things can
+# drift: the row can disappear or lose ACTIVE, and its date can fall behind
+# the file after a renewal the refresh has not seen. Each ACTIVE row is
+# compared to the lineage its scope names; a day of slack covers the refresh
+# cadence, anything more means the refresh stopped.
+cert_rows=$(psqv "select scope||'|'||coalesce(floor(extract(epoch from not_after))::bigint::text,'') from certificates where domain_id is null and status='ACTIVE' order by scope")
+if [ -z "$cert_rows" ]; then
+  rec "cert:wildcard-row" FAIL "no ACTIVE wildcard row in certificates — every platform publish is refused (run apply-platform-inventory.sh)"
+else
+  while IFS='|' read -r scope row_end; do
+    [ -n "$scope" ] || continue
+    lineage=${scope#\*.}
+    lpath="/etc/letsencrypt/live/${lineage}/fullchain.pem"
+    if ! pex 100 test -f "$lpath" 2>/dev/null; then
+      # Not a failure: a root still fronted by its previous material has an
+      # ACTIVE row and no lineage yet, and that is the normal state until the
+      # wildcard is issued.
+      rec "cert:wildcard-row:${scope}" SKIP "no lineage at $lpath yet — this root is not on a certbot wildcard"
+      continue
+    fi
+    fend=$(pex 100 sh -c "openssl x509 -enddate -noout -in $lpath 2>/dev/null | cut -d= -f2")
+    fe=$(date -d "$fend" +%s 2>/dev/null || true)
+    if [ -z "$fe" ]; then
+      rec "cert:wildcard-row:${scope}" FAIL "cannot read the end date of $lpath"
+    elif [ -z "$row_end" ]; then
+      rec "cert:wildcard-row:${scope}" FAIL "row has no not_after (file ends $(date -u -d "@$fe" +%F))"
+    else
+      diff=$(( fe - row_end )); [ "$diff" -lt 0 ] && diff=$(( -diff ))
+      if [ "$diff" -le 86400 ]; then
+        rec "cert:wildcard-row:${scope}" OK "row matches $lpath (ends $(date -u -d "@$fe" +%F))"
+      else
+        rec "cert:wildcard-row:${scope}" FAIL "row not_after $(date -u -d "@$row_end" +%F) vs file $(date -u -d "@$fe" +%F) — refresh-wildcard-cert-row.sh has not run"
+      fi
+    fi
+  done <<<"$cert_rows"
+fi
+
+# The refresh's own marker (written by cron-wrap.sh from the daily timer), the
+# same shape as the backup marker below.
+if [ -f "$STATE_DIR/wildcard-cert-row.fail" ]; then
+  rec "cert:row-marker" FAIL "wildcard-cert-row.fail present: $(head -1 "$STATE_DIR/wildcard-cert-row.fail")"
+elif [ -f "$STATE_DIR/wildcard-cert-row.ok" ]; then
+  rec "cert:row-marker" OK "last $(head -1 "$STATE_DIR/wildcard-cert-row.ok")"
+else
+  rec "cert:row-marker" WARN "no cron-wrap marker (pickle-wildcard-cert-row.timer has not run yet)"
+fi
 
 # ---- 12. DB backup freshness + integrity (both sides) ----------------------
 latest_host=$(find "$BACKUP_DIR" -maxdepth 1 -name 'pickle_dev-*.sql.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
@@ -404,7 +487,7 @@ else rec "e2e:domain" FAIL "$DOMAIN http=${dc:-none}"; fi
 # public DNS still points the main domain at this host's public address. The
 # record lives in a university zone we do not administer, so a silent change
 # there would strand every real user while the check above stays green.
-dns_expect="${MAIN_DOMAIN_PUBLIC_IP:-203.0.113.10}"
+dns_expect="$MAIN_DOMAIN_PUBLIC_IP"
 dns_host=${DOMAIN#https://}; dns_host=${dns_host#http://}; dns_host=${dns_host%%/*}
 if ! command -v dig >/dev/null 2>&1; then
   # Without a resolver tool the check cannot fail open silently.
@@ -419,6 +502,38 @@ else
   else rec "dns:main" FAIL "$dns_host → $dns_got (expected $dns_expect)"; fi
 fi
 
+# ---- 14. platform root: wildcard record and name servers --------------------
+# The platform root's zone is administered by us (Cloud DNS), and every user
+# subdomain resolves through its wildcard A record straight to this host's
+# ingress, with no proxy in between. pve-node has no hosts entry for the root,
+# so unlike the main-domain probe this one is real public DNS. A random label
+# is what a wildcard answers to; a name that is actually published is used
+# instead once PLATFORM_DNS_PROBE_FQDN is set (see the variable).
+if [ -z "$PLATFORM_ROOT_DOMAIN" ]; then
+  rec "dns:wildcard" SKIP "PLATFORM_ROOT_DOMAIN unset — the platform root is not yet served from a zone we administer"
+  rec "dns:ns" SKIP "PLATFORM_ROOT_DOMAIN unset — no delegation to assert"
+elif ! command -v dig >/dev/null 2>&1; then
+  rec "dns:wildcard" WARN "dig not installed — platform-root DNS unverified"
+  rec "dns:ns" WARN "dig not installed — platform-root name servers unverified"
+else
+  probe_fqdn="${PLATFORM_DNS_PROBE_FQDN:-probe-${RANDOM}.${PLATFORM_ROOT_DOMAIN}}"
+  wc_got=$(dig +short +time=3 +tries=1 "$probe_fqdn" A 2>/dev/null | grep -E '^[0-9.]+$' | sort | tr '\n' ' ' | sed 's/ $//')
+  if [ "$wc_got" = "$dns_expect" ]; then rec "dns:wildcard" OK "$probe_fqdn → $wc_got"
+  elif [ -z "$wc_got" ]; then rec "dns:wildcard" FAIL "$probe_fqdn has no A record (expected $dns_expect) — user subdomains are dark"
+  else rec "dns:wildcard" FAIL "$probe_fqdn → $wc_got (expected $dns_expect)"; fi
+
+  # The zone must be delegated to Cloud DNS: certbot's DNS-01 renewal writes
+  # its challenge there, so a delegation moved anywhere else (the registrar's
+  # own parking servers after a lapse, a leftover set) breaks the next renewal
+  # weeks before anything else notices. WARN, not FAIL: the wildcard probe
+  # above already says whether names resolve today.
+  ns_got=$(dig +short +time=3 +tries=1 "$PLATFORM_ROOT_DOMAIN" NS 2>/dev/null | sed 's/\.$//' | sort | tr '\n' ' ' | sed 's/ $//')
+  ns_bad=$(printf '%s\n' "$ns_got" | tr ' ' '\n' | grep -v '^$' | grep -v 'googledomains\.com$' || true)
+  if [ -z "$ns_got" ]; then rec "dns:ns" WARN "$PLATFORM_ROOT_DOMAIN has no NS answer"
+  elif [ -n "$ns_bad" ]; then rec "dns:ns" WARN "$PLATFORM_ROOT_DOMAIN delegated outside Cloud DNS: $ns_got"
+  else rec "dns:ns" OK "$PLATFORM_ROOT_DOMAIN → $ns_got"; fi
+fi
+
 # ---- output -----------------------------------------------------------------
 echo "== pickle health-check $(date '+%Y-%m-%d %H:%M:%S %z') =="
 w=0; for n in "${R_NAME[@]}"; do [ "${#n}" -gt "$w" ] && w=${#n}; done
@@ -427,8 +542,8 @@ for i in "${!R_NAME[@]}"; do
 done
 echo
 
-total=${#R_NAME[@]}; oks=$((total - FAILS - WARNS))
-echo "요약: 총 ${total}개 점검 — 정상 ${oks} / 경고 ${WARNS} / 실패 ${FAILS}"
+total=${#R_NAME[@]}; oks=$((total - FAILS - WARNS - SKIPS))
+echo "요약: 총 ${total}개 점검 — 정상 ${oks} / 경고 ${WARNS} / 실패 ${FAILS} / 미검사 ${SKIPS}"
 if [ "$FAILS" -gt 0 ]; then
   echo "실패 항목:"
   for i in "${!R_NAME[@]}"; do

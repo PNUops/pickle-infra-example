@@ -4,7 +4,9 @@
 # two web servers on it (:80 and :8080 with distinct markers), attaches
 # multiple domains via the API (contract v0.29.0: POST /vms/{id}/domains, one
 # domain per port), verifies each FQDN serves ITS port's content via the origin
-# :443 SNI path (the Cloudflare leg is unreachable from pve-node — hairpin NAT),
+# :443 SNI path (the public leg is unreachable from pve-node, hairpin NAT; with
+# SMOKE_EXTERNAL=1 it is probed once more from the relay, the only off-campus
+# vantage point this project has),
 # exercises the released-name reservation (release → reserved → revive →
 # immediate return) and the per-VM platform-subdomain cap, then force-deletes
 # and confirms teardown removed EVERY vhost before IP release. Cleans up the
@@ -31,6 +33,15 @@ SUB2="${SUB}-b"
 # Platform root to publish under. Overridable so the smoke can exercise a second
 # root the moment one exists, without editing the script.
 ROOT="${ROOT:-pusan.dev}"
+# Optional external probe over the relay (same variables as deploy-relay.sh).
+# Off by default: it needs the vault unlocked for the key, and the relay's host
+# key already in this host's known_hosts.
+SMOKE_EXTERNAL="${SMOKE_EXTERNAL:-0}"
+RELAY_HOST="${RELAY_HOST:-198.51.100.10}"
+RELAY_SSH_PORT="${RELAY_SSH_PORT:-22}"
+RELAY_USER="${RELAY_USER:-admin}"
+VAULT="${VAULT:-/path/to/secrets-vault}"
+RELAY_SSH_KEY="${RELAY_SSH_KEY:-$VAULT/lightsail-ssh.pem}"
 USER_EMAIL="http-${TS}@pusan.ac.kr"; USER_PW="http-pass-${TS}!"
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"; }
 # shellcheck source=scripts/lib/auth.sh
@@ -113,11 +124,13 @@ wait_applied(){ # wait_applied FQDN LABEL
     sleep 5
   done
 }
-# Origin :443 SNI fetch with the pinned wildcard key; body lands in $B.
+# Origin :443 SNI fetch with full chain validation AND the pinned wildcard
+# key; body lands in $B. No -k: the wildcard is a publicly trusted Let's
+# Encrypt certificate, so a chain that does not validate is itself a failure.
 origin(){ # origin FQDN → echoes the http code
   local c=""; : >"$B"
   for _ in $(seq 1 6); do
-    c=$(curl -sS -o "$B" -w '%{http_code}' -k --pinnedpubkey "sha256//$PIN" --max-time 15 \
+    c=$(curl -sS -o "$B" -w '%{http_code}' --pinnedpubkey "sha256//$PIN" --max-time 15 \
       --resolve "$1:443:198.18.1.10" "https://$1/index.html" 2>/dev/null)
     [ "$c" = "200" ] && break; sleep 5
   done
@@ -152,7 +165,7 @@ FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); M
 [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)" || { ko "no ACTIVE vm-flavor"; exit 1; }
 
 echo "== request + approve (the request form carries no domain axis anymore) =="
-req "vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"HTTP publish e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || exit 1
+req "vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"HTTP publish e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || exit 1
 RID=$(jq -r .id "$B")
 req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"http e2e\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"nodeId\":null}}" || exit 1
 req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $SAT" || exit 1
@@ -207,13 +220,14 @@ echo "== vhost rendered on LXC 100 =="
 [ "$(vhost_count "$FQDN1")" -ge 1 ] 2>/dev/null && ok "vhost file present in pickle.d ($FQDN1)" || ko "vhost file missing ($FQDN1)"
 
 echo "== origin chain: LXC100 :443 SNI → 8443 → subdomain vhost → VM:80 =="
-# The Cloudflare→pve-node:443 leg is identical infra to opus (externally verified);
-# from pve-node that leg can't be curled (hairpin NAT), so validate the NEW segment
+# The public leg (client → campus ingress → LXC100 :443) cannot be curled from
+# pve-node (hairpin NAT), so the segment this host can reach is validated
 # directly: hit LXC100 :443 with the real SNI, exercising ssl_preread → default
-# 8443 → the rendered subdomain vhost → proxy_pass to the VM. TLS: the wildcard is
-# a Cloudflare Origin CA cert, NOT in the public trust store (plain validation
-# gives 000) — so pin the DEPLOYED cert's public key instead (-k disables chain
-# checks but --pinnedpubkey still enforces the pin ⇒ a cert regression fails).
+# 8443 → the rendered subdomain vhost → proxy_pass to the VM. TLS is asserted
+# twice over: the wildcard is a Let's Encrypt lineage, so the public chain must
+# validate (no -k), and on top of that the DEPLOYED certificate's public key
+# is pinned, so a valid-but-different certificate (a stale lineage, the wrong
+# root's pair) fails as well.
 # Read the pair the agent is configured to serve for THIS root rather than
 # repeating a filename convention here: the agent's map is what actually decides
 # which certificate the vhost gets, so pinning anything else could pass while the
@@ -234,6 +248,35 @@ if [ -n "$PIN" ]; then
 else
   ko "origin HTTPS (no cert pin)"
   ko "served content (no cert pin)"
+fi
+
+# The whole public path, from the one vantage point outside the campus NAT:
+# public DNS for the new name, the ingress DNAT, the stream router, the
+# wildcard chain as a stranger sees it, and the vhost. Skipped unless asked
+# for, and skipped loudly when the key is not there, so an absent probe is
+# never mistaken for a passed one.
+if [ "$SMOKE_EXTERNAL" = 1 ]; then
+  echo "== external path from the relay ($RELAY_HOST): $FQDN1 =="
+  if [ ! -f "$RELAY_SSH_KEY" ]; then
+    ko "external probe: relay ssh key not found at $RELAY_SSH_KEY (unlock the vault first)"
+  else
+    : >"$B"
+    # The relay curls the name as any client would: public DNS, public chain.
+    # Every argument is a fixed string from this file, so client-side expansion
+    # of the remote command is intended.
+    # The body and, on its own last line, the status code land in $B; a
+    # connect failure leaves the file empty and the code blank.
+    # shellcheck disable=SC2029
+    ssh -i "$RELAY_SSH_KEY" -p "$RELAY_SSH_PORT" -o BatchMode=yes -o ConnectTimeout=10 \
+        "$RELAY_USER@$RELAY_HOST" \
+        "curl -sS -o /dev/stdout -w '\n%{http_code}' --max-time 15 https://$FQDN1/index.html" \
+        >"$B" 2>/dev/null || true
+    XC=$(tail -1 "$B"); sed -i '$d' "$B"
+    [ "$XC" = 200 ] && ok "external HTTPS 200 with public chain validation ($FQDN1)" || ko "external HTTPS ${XC:-none} ($FQDN1)"
+    grep -q "PICKLE-HTTP-E2E-OK" "$B" && ok "external path serves VM:80 content" || ko "external content mismatch ($(head -c 60 "$B"))"
+  fi
+else
+  echo "-- external probe skipped (set SMOKE_EXTERNAL=1 to curl $FQDN1 from the relay) --"
 fi
 
 echo "== second domain on the SAME VM: $SUB2.$ROOT → VM:8080 =="

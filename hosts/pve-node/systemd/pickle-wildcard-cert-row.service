@@ -1,0 +1,18 @@
+[Unit]
+Description=Pickle wildcard certificate row refresh
+Documentation=file:///srv/pickle/infra/scripts/refresh-wildcard-cert-row.sh
+# The refresh runs `pct exec` into both the proxy and the app container, so
+# the guests must be up before this fires (see pickle-db-backup.service).
+After=pve-guests.service
+OnFailure=pickle-ops-failure@%n.service
+
+[Service]
+Type=oneshot
+# Interpreter-invoked for both the wrapper and the script itself, see the
+# comment in pickle-db-backup.service.
+ExecStart=/bin/bash /srv/pickle/infra/scripts/cron-wrap.sh wildcard-cert-row -- /bin/bash /srv/pickle/infra/scripts/refresh-wildcard-cert-row.sh
+# Retract this unit's failure marker once it runs clean again.
+ExecStartPost=/bin/rm -f /var/lib/pickle-ops/unit-failure-%n.fail
+# Two pct execs and two queries; a run that takes minutes is a wedged guest,
+# and the next day's firing must not be skipped as already-running.
+TimeoutStartSec=300

@@ -208,16 +208,17 @@ server {
 
     # security headers (2026-07-17 hardening). This vhost is plain HTTP and
     # always sits behind the reverse proxy, which is where TLS terminates for
-    # the main domain (its own certificate since the 2026-07-28 cutover) and
-    # where the CDN-fronted names still arrive over HTTPS. HSTS is ignored by
+    # every name, the main domain and the user subdomains alike, since the
+    # 2026-07-28 cutover put the main domain on its own certificate and the
+    # user subdomains followed onto a Let's Encrypt wildcard. HSTS is ignored by
     # browsers on the plain-HTTP dev path, so emitting it here is harmless.
     #
     # CSP (2026-07-26): the console bundle is fully self-hosted (fonts, JS, CSS,
     # icons) and talks only to its own origin, so 'self' covers everything.
     # 'unsafe-inline' is required for style-src alone: the web terminal
     # (xterm.js) injects <style> elements at runtime and cannot be nonced from
-    # here. Scripts stay strict 'self' — the edge CDN's injected analytics
-    # beacon is blocked by design and the console does not depend on it.
+    # here. Scripts stay strict 'self'; nothing injects a script on the direct
+    # path and the console depends on none.
     # Seven days, not a year, and no includeSubDomains. The name this pin lands
     # on is an interim one — the service moves to a purchased domain before
     # launch — and its certificate chain has no operating history yet: it is
@@ -247,9 +248,9 @@ server {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
-        # trust the client IP computed and validated by the LXC 100
-        # tier (CF-Connecting-IP only from genuine CF peers), not the raw
-        # attacker-controllable CF header. LXC 100 is this vhost's only client.
+        # forward the client address the LXC 100 TLS tier sent: the true
+        # :443 peer it restored from the stream tier's PROXY header, with
+        # no request header trusted. LXC 100 is this vhost's only client.
         proxy_set_header X-Real-IP $http_x_real_ip;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;

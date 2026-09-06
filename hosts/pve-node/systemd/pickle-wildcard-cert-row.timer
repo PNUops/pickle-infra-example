@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily Pickle wildcard certificate row refresh
+
+[Timer]
+# Local time (KST), ten minutes after the database backup so the two never
+# overlap on the app container.
+OnCalendar=*-*-* 04:20:00
+# Run a missed occurrence after downtime instead of skipping the day.
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

@@ -3,8 +3,9 @@
 # ==========================================================================
 # Web-terminal e2e — run on pve-node as root after deploy.
 #
-# Exercises the full path: console-origin WS (through Cloudflare + the LXC 100
-# TLS tier's /terminal/ws branch) → sshgw-terminal-bridge (LXC 102) → VM SSH,
+# Exercises the full path: console-origin WS (through the LXC 100 stream
+# router and TLS tier's /terminal/ws branch) → sshgw-terminal-bridge (LXC 102)
+# → VM SSH,
 # with pickle-api as ticket oracle/audit sink.
 #
 # Needs: websocat on pve-node (static binary), jq, one provisioned
@@ -260,7 +261,7 @@ req "create team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U1T")" -H 'Con
   -d "{\"kind\":\"TEAM\",\"name\":\"smoke-term-$TS\"}"
 GID=$(jq -r '.id' "$B")
 req "vm request 201" 201 -X POST "$BASE/requests" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
-  -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$ORG,\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"vm\":{\"imageId\":$TPL,\"flavorId\":$FID,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"specReason\":null}}"
+  -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$ORG,\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":$TPL,\"flavorId\":$FID,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"specReason\":null}}"
 RID=$(jq -r '.id // empty' "$B"); [ -n "$RID" ] || { ko "request not created — abort"; exit 1; }
 req "approve 200" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "$(auth "$SAT")" \
   -H 'Content-Type: application/json' \

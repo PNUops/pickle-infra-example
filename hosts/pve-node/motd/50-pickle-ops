@@ -23,6 +23,7 @@ add() { problems="${problems}  - $1
 # daily and the snapshot every ten minutes, so these are generous multiples.
 stale_after_min_backup=1560   # 26h
 stale_after_min_health=90
+stale_after_min_cert_row=1560  # 26h, daily like the backup
 
 check_marker() {
   name=$1 limit=$2 label=$3
@@ -37,6 +38,7 @@ check_marker() {
 
 check_marker db-backup "$stale_after_min_backup" "database backup"
 check_marker health "$stale_after_min_health" "health snapshot"
+check_marker wildcard-cert-row "$stale_after_min_cert_row" "wildcard certificate row refresh"
 
 # A unit that failed before its wrapper could run leaves one of these instead.
 # Each is retracted by its own unit's next clean run, so what shows here is
@@ -48,10 +50,10 @@ done
 
 # The timers themselves: disabled or failed units produce no markers at all,
 # so the absence checks above would report a stale marker without saying why.
-for unit in pickle-db-backup.timer pickle-health.timer; do
+for unit in pickle-db-backup.timer pickle-health.timer pickle-wildcard-cert-row.timer; do
   systemctl is-enabled "$unit" >/dev/null 2>&1 || add "$unit is not enabled"
 done
-for unit in pickle-db-backup.service pickle-health.service; do
+for unit in pickle-db-backup.service pickle-health.service pickle-wildcard-cert-row.service; do
   if systemctl is-failed "$unit" >/dev/null 2>&1; then
     add "$unit is in a failed state (systemctl status $unit)"
   fi
