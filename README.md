@@ -35,8 +35,8 @@ pve-node (Proxmox VE) ───────────────────�
  ├─ gpu-node   aarch64 GPU 노드        캠퍼스망 192.0.2.20 — vLLM 서빙 :8000 (pickle-vllm)
  └─ dept-node  x86 서버(Ubuntu)        dept-node.example.ac.kr:22 — 학과 공유 서버
 
-Proxmox 노드 후보 (인수 실측만, OS 초기화 전, 미등록):
- ├─ pve-node-2  x86 서버               캠퍼스망 192.0.2.30 — pve-node와 같은 L2
+Proxmox 노드 (설치 완료, 미등록):
+ ├─ pve-node-2  x86 서버               캠퍼스망 192.0.2.30, pve-node와 같은 L2
  └─ pve-node-3  x86 서버, GPU 1장      캠퍼스망 192.0.2.31
 ```
 
