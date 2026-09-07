@@ -313,6 +313,11 @@ NVIDIA 패키지는 지우지 않는다. 컨테이너 경로가 쓰던 것이고
    장치를 스스로 unbind해 vfio-pci에 붙이기 때문이다. VM에서 GPU가 보였다는 것은 부팅 시
    바인딩과 무관하다.
 
+**첫 부팅 결과(2026-09-07 14:36, 콜드 부팅).** 위 설정으로 부팅해 VM 없이 확인했다. 두 기능 다
+`vfio-pci`, `/dev/vfio/13` 있음, IOMMU 그룹 125, `dmesg`에 vfio 오류 없음. nvidia 모듈은 올라왔으나
+`NVRM: GPU 0000:43:00.0 is already bound to vfio-pci`로 물러났다. `softdep`이 의도대로 동작한 것이다.
+**이것은 콜드 부팅이라 §4b의 웜 리부트 질문에는 답하지 않는다.** 그 시험은 아직 남아 있다.
+
 **첫 재부팅은 S5를 누를 사람이 있을 때 한다.** vfio-pci가 잡은 카드는 게스트가 열기 전까지
 runtime PM으로 D3hot에 들어간다(`/sys/bus/pci/devices/<bdf>/power/runtime_status`가
 `suspended`. pve-node-3에서 동적 바인딩 직후 그랬다). 그 상태의 웜 리부트는 §4b 표의 세 행 어디에도
