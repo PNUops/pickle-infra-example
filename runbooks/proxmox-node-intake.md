@@ -141,7 +141,8 @@ sudo partclone.ext4 -c -s /dev/<disk>p2 --force | zstd -T0 | ssh <target> 'cat >
    순간 BMC가 캠퍼스 대역에 나타난다. 관리 네트워크를 먼저 정하고 배선한다.
 5. **BIOS와 GPU.** GPU가 있는 호스트에서 패스스루를 언젠가 쓸 생각이면 설치 프로그램을
    띄우기 전에 BIOS 선택을 끝내야 하고(VT-d/IOMMU, Above-4G decoding, 제공되면 SR-IOV,
-   Secure Boot 끄기) 첫 부팅에 vfio가 들어간 커널 커맨드라인이 필요하다. 용도가 정해지지
+   Secure Boot 끄기) 첫 부팅부터 vfio-pci가 카드를 먼저 잡는 설정이 필요하다(§4c. 커널
+   커맨드라인이 아니라 modprobe.d로 한다). 용도가 정해지지
    않았으면 IOMMU는 켠 채로 두고 드라이버는 깔지 않는다. 카드에 바인딩된 드라이버가
    나중에 패스스루가 풀어야 할 대상이다. **설치 뒤에 카드가 여전히 열거되는지 확인한다.**
    아래 4b를 본다.
@@ -256,6 +257,83 @@ blacklist된 노드는 평소 재부팅에서 이 문제를 만나지 않는다.
 **패스스루에 주는 함의.** 호스트 층에서 본 것은 「정리되지 않은 채 남은 카드는 리셋을
 못 견딘다」이고, 게스트 재부팅에서 같은 모양이 나올 수 있다. vfio 경로에서 카드가 어떤
 상태로 리셋에 들어가는지는 패스스루 개발 라운드가 재야 한다. 그때 견줄 기준은 위 표다.
+
+## 4c. GPU 패스스루 준비 (pve-node-3, 2026-09-07)
+
+GPU가 있는 노드를 VM 패스스루용으로 두는 호스트 설정이다. §2의 5번이 「설치 전에 정할
+것」으로 적어 둔 것의 실행이고, pve-node-3에서 2026-09-07에 처음 걸었다. 설정 파일은
+`hosts/pve-node-3/`에 있고 노드에 이 레포의 체크아웃이 없으므로 사람이 복사해 적용한다.
+
+**전제.** 전부 pve-node-3에서 2026-09-07 실측한 값이고 새 노드에서는 다시 잰다.
+
+| 항목 | 확인 명령 | pve-node-3 |
+|---|---|---|
+| UEFI, Secure Boot 꺼짐 | `ls /sys/firmware/efi`, `mokutil --sb-state` | UEFI, disabled |
+| IOMMU 켜짐 | `ls /sys/kernel/iommu_groups \| wc -l` | 125 (커널 파라미터 없이. 이 커널은 기본 켜짐이다) |
+| 카드가 자기 기능만으로 한 그룹 | `ls /sys/kernel/iommu_groups/<n>/devices/` | 그룹 13에 `43:00.0`과 `43:00.1`뿐 |
+| 인터럽트 리매핑 | `dmesg \| grep DMAR-IR` | 있음. 없으면 VM이 그룹을 붙일 때 EPERM이고 `allow_unsafe_interrupts`를 따로 판단한다 |
+| 카드가 부팅 VGA가 아님 | `cat /sys/bus/pci/devices/<bdf>/boot_vga` | 0 (ASPEED `02:00.0`이 1). BIOS 설정 하나로 바뀌는 값이다 |
+| Above 4G decoding | `lspci -vvs <bdf> \| grep Region` | BAR1이 `0x202fe0000000`, 4 GiB 위에 있다 |
+| 리셋 방법 | `cat /sys/bus/pci/devices/<bdf>/reset_method` | `flr bus` |
+
+그룹에 다른 장치가 섞여 있으면 그 장치도 함께 넘어가야 하므로 여기서 멈추고 슬롯을 바꾼다.
+
+**호스트가 카드를 잡지 않게 한다.** 방침은 「vfio-pci가 부팅 때 먼저 잡는다」이고, 호스트의
+NVIDIA 패키지는 지우지 않는다. 컨테이너 경로가 쓰던 것이고 바인딩되지 않으면 아무 일도
+하지 않으며, 지우는 것보다 한 파일을 빼는 것이 되돌리기 쉽다. 커널 커맨드라인에
+`vfio-pci.ids=`를 적는 방법도 있지만 여기서는 쓰지 않는다. `cat /proc/cmdline`에 vfio가 없는
+것이 정상이다.
+
+1. `hosts/pve-node-3/modprobe.d/vfio.conf`를 `/etc/modprobe.d/vfio.conf`로,
+   `hosts/pve-node-3/modules-load.d/vfio.conf`를 `/etc/modules-load.d/vfio.conf`로 복사한다. 앞엣것이
+   장치 id로 vfio-pci를 지정하고 `softdep`으로 nvidia, nouveau, snd_hda_intel보다 먼저 올라오게
+   한다. 어느 경로로 그 드라이버가 올라오든 libkmod가 `softdep pre`를 처리하고, 한 번 붙은
+   장치는 다른 드라이버가 빼앗지 못하므로 순서 경쟁이 없다. 카드가 다르면 `lspci -nn`의
+   `[vendor:device]` 둘(VGA와 오디오)로 id를 바꾼다.
+2. `/etc/default/grub`의 `GRUB_CMDLINE_LINUX_DEFAULT`에 `intel_iommu=on iommu=pt`를 더한다.
+   IOMMU는 이 커널에서 기본으로 켜져 있어(위 표) 앞엣것은 의도를 적는 것이고, `iommu=pt`는 호스트
+   장치의 DMA 변환을 건너뛰는 성능 선택이다. 바꾸기 전 사본을 `/root/prep-backup/`에 둔다.
+3. `update-initramfs -u -k all`과 `update-grub`. **initrd 단계는 이 호스트에서 바인딩에 관여하지
+   않는다.** initrd에는 카드를 잡을 드라이버가 하나도 없고(`lsinitramfs /boot/initrd.img-$(uname
+   -r) | grep -E 'nouveau|nvidia|vfio'`가 설정 파일 셋만 보여 준다. nouveau는 initrd에 없고
+   DKMS 모듈은 initramfs-tools가 복사하지 않는다) 바인딩은 루트 전환 뒤 `systemd-modules-load`가
+   vfio_pci를 `ids` 옵션으로 올리는 순간 일어난다. `update-initramfs`는 initrd 안의 modprobe.d
+   사본을 같은 내용으로 두기 위한 것이다. 조기 바인딩이 정말 필요해지면(initrd에 카드를 잡는
+   드라이버가 들어가는 구성) `/etc/initramfs-tools/modules`에 `vfio_pci`를 넣어야 한다.
+4. `systemctl disable --now nvidia-persistenced`. 카드가 없으면 쓸모없고 nvidia 모듈을 올려 두게
+   하므로 끈다.
+5. 재부팅 전에 동적으로 확인할 수 있다. `nvidia-persistenced`를 멈추고 두 기능을
+   `unbind`한 뒤 `driver_override`에 `vfio-pci`를 쓰고 `drivers_probe`로 다시 붙이면
+   `lspci -nnk`의 `driver in use`가 `vfio-pci`가 되고 `/dev/vfio/<그룹>`이 생긴다. pve-node-3에서
+   그렇게 됐다. **이것은 부팅 시 바인딩의 증거가 아니다.** 재부팅하면 `driver_override`는
+   사라지고 그때부터는 1번의 설정이 잡는다.
+6. 재부팅하고, **어떤 VM도 띄우기 전에** 같은 것을 본다. `lspci -nnk -s <bdf>`가 두 기능 다
+   `vfio-pci`, `/dev/vfio/<그룹>` 있음, `dmesg | grep -i vfio`에 오류 없음, 그리고 **카드가
+   열거돼 있는지**(§4b). VM을 먼저 띄우면 안 되는 이유는 Proxmox가 VM 기동 때 `hostpci`
+   장치를 스스로 unbind해 vfio-pci에 붙이기 때문이다. VM에서 GPU가 보였다는 것은 부팅 시
+   바인딩과 무관하다.
+
+**첫 재부팅은 S5를 누를 사람이 있을 때 한다.** vfio-pci가 잡은 카드는 게스트가 열기 전까지
+runtime PM으로 D3hot에 들어간다(`/sys/bus/pci/devices/<bdf>/power/runtime_status`가
+`suspended`. pve-node-3에서 동적 바인딩 직후 그랬다). 그 상태의 웜 리부트는 §4b 표의 세 행 어디에도
+없는 네 번째 조합이라, 이 설정을 넣고 하는 첫 재부팅이 그것을 잰다. 카드를 잃으면 S5로
+되살리고 결과를 §4b 표에 더한다. 그때 원인을 nouveau 쪽에서 찾지 말 것. 먼저 돌릴 손잡이는
+`options vfio-pci disable_idle_d3=1`이다. 게스트를 붙였다 뗄 때의 리셋(FLR)도 마찬가지로
+안 잰 것이고, 패스스루 개발이 첫 게스트 재부팅에서 잰다.
+
+**`disable_vga=1`의 뜻.** vfio-pci가 VGA 리전(legacy I/O와 `0xa0000`)을 노출하지 않고 카드의
+legacy VGA decoding을 끈다. ASPEED가 부팅 VGA인 이 호스트에서 호스트 쪽으로는 맞는 선택이고
+헤드리스 패스스루에는 그대로 쓴다. **다만 Proxmox `hostpci`의 `x-vga=1`과 양립하지
+않는다.** 그 옵션은 VGA 리전을 요구하므로 VM 기동이 그 기능을 지원하지 않는다는 오류로 죽는다.
+게스트에 주 디스플레이로 넘기려면 이 파일에서 `disable_vga=1`을 빼고 initrd를 다시 만든다.
+
+**되돌리기.** 재부팅 없이 되돌리려면 두 기능의 `driver_override`를 비우고
+(`echo > /sys/bus/pci/devices/<bdf>/driver_override`) unbind한 뒤 `drivers_probe`로 다시 붙이면
+nvidia가 잡는다. 영속 설정을 걷으려면 `/etc/modprobe.d/vfio.conf`와
+`/etc/modules-load.d/vfio.conf`를 지우고, `/etc/default/grub`을 `/root/prep-backup/`의 사본으로
+되돌리고(두 파라미터가 빠져도 IOMMU는 커널 기본으로 켜진 채다), `update-initramfs -u -k all`,
+`update-grub`, `systemctl enable --now nvidia-persistenced`, 재부팅. NVIDIA 패키지가 그대로
+있으므로 그러면 nvidia가 다시 잡는다.
 
 ## 5. 이 레포지토리가 남기는 것
 
