@@ -97,9 +97,21 @@ echo "== LXC $RP: retire the CDN client-IP map and range lists"
 pct exec "$RP" -- bash -c '
 set -euo pipefail
 refs=$(grep -rl "pickle_client_ip" /etc/nginx --exclude=pickle-terminal.conf 2>/dev/null || true)
-if [ -n "$refs" ]; then
-  echo "  the following nginx files still reference \$pickle_client_ip:" >&2
-  printf "    %s\n" $refs >&2
+# The two files below are also reachable by path, not only through the
+# variable: anything that `include`s them keeps working until they are gone and
+# then fails `nginx -t` for the whole configuration. A hand-written vhost or a
+# fragment restored from an archive can carry such an include even when no
+# rendered vhost does, so both shapes are checked before anything is deleted.
+# The three files this script removes are excluded, since one of them includes
+# another and a file on its way out cannot be a reason to keep the set.
+incs=$(grep -rlE "include[[:space:]]+[^;]*(pickle-realip|pickle-cf-geo)" /etc/nginx \
+         --exclude=pickle-terminal.conf --exclude=pickle-cf-geo.conf \
+         --exclude=pickle-realip.conf 2>/dev/null || true)
+if [ -n "$refs" ] || [ -n "$incs" ]; then
+  [ -n "$refs" ] && { echo "  the following nginx files still reference \$pickle_client_ip:" >&2
+                      printf "    %s\n" $refs >&2; }
+  [ -n "$incs" ] && { echo "  the following nginx files still include a file this removes:" >&2
+                      printf "    %s\n" $incs >&2; }
   echo "  redeploy proxy-agent and run an admin resync first, then re-run this script" >&2
   exit 1
 fi

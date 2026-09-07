@@ -502,6 +502,14 @@ check() { # check <label> <expected-code> <curl args...>
   if [ "$got" = "$want" ]; then echo "  OK   $label -> $got"
   else echo "  FAIL $label -> $got (expected $want)"; vfail=$((vfail + 1)); fi
 }
+check_any() { # check_any <label> <space-separated acceptable codes> <curl args...>
+  local label="$1" want="$2"; shift 2
+  local got; got=$(curl -s -o /dev/null -w '%{http_code}' "$@" || true)
+  case " $want " in
+    *" $got "*) echo "  OK   $label -> $got" ;;
+    *) echo "  FAIL $label -> $got (expected one of: $want)"; vfail=$((vfail + 1)) ;;
+  esac
+}
 # No -k on the new domain: the publicly trusted chain is part of what we verify.
 check "new  :443 (trusted chain)" 200 --resolve "$DOMAIN:443:$PROXY_IP" "https://$DOMAIN/"
 check "new  /api" 200 --resolve "$DOMAIN:443:$PROXY_IP" "https://$DOMAIN/api/v1/meta/status"
@@ -511,8 +519,13 @@ check "new  /terminal/ws (bridge reachable)" 403 --resolve "$DOMAIN:443:$PROXY_I
 check "new  :80 (redirect to https)" 301 --resolve "$DOMAIN:80:$PROXY_IP" "http://$DOMAIN/"
 if [ -n "$LEGACY_TENANT" ]; then
 check "$LEGACY_TENANT :443 (pre-existing tenant)" 200 -k --resolve "$LEGACY_TENANT:443:$PROXY_IP" "https://$LEGACY_TENANT/"
-# The tenant proxies :80 to its own backend, which answers with its own redirect.
-check "$LEGACY_TENANT :80  (pre-existing tenant)" 301 --resolve "$LEGACY_TENANT:80:$PROXY_IP" "http://$LEGACY_TENANT/"
+# Two answers are both correct here and which one appears is not ours to decide.
+# The tenant's :80 vhost proxies to its backend, so what comes back is whatever
+# that backend says: a redirect while it redirects to https, a 200 while it
+# serves plain HTTP. Asserting only the redirect made this check fail on a
+# healthy host and print rollback instructions for a configuration that was fine.
+check_any "$LEGACY_TENANT :80  (pre-existing tenant)" "200 301 302" \
+  --resolve "$LEGACY_TENANT:80:$PROXY_IP" "http://$LEGACY_TENANT/"
 fi
 # An unknown Host on :80 must get nothing back. 000 is curl's code for a closed
 # connection, which is what `return 444` produces.
