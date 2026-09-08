@@ -35,6 +35,13 @@
 # deletion is one-way; the script reports the lineage if it is still present so
 # an operator can remove it deliberately (`certbot delete --cert-name <name>`).
 #
+# ONCE THAT LINEAGE IS GONE, the rollback this script prints no longer works on
+# its own: the archive it restores contains the 8443 termination vhost, whose
+# `ssl_certificate` now points at files that do not exist, so `nginx -t` fails
+# for the whole container. Rolling back after the deletion means reissuing the
+# certificate first, or restoring the archive and deleting `opus-tls.conf` from
+# it before the test. The rollback line below says so too.
+#
 # Run order on a rebuild: apply-terminal-ingress.sh first (it writes the stream
 # router that carries :443 for this name), then this, then
 # apply-main-domain-vhost.sh last.
@@ -76,11 +83,25 @@ expect_http() {
   fi
 }
 
+# expect_http_any LABEL "CODE CODE …" CURL-ARGS… — for a hop that legitimately
+# has more than one healthy answer. The :80 vhost is one: it proxies, so it
+# returns whatever the origin returns, and both a page and an https redirect are
+# healthy there.
+expect_http_any() {
+  local label="$1" want="$2" got
+  shift 2
+  got=$(curl -sk -o /dev/null -w '%{http_code}' "$@") || got=000
+  case " $want " in
+    *" $got "*) echo "  OK   $label -> $got" ;;
+    *) echo "  FAIL $label -> ${got:-none} (expected one of: $want)" >&2; fails=$((fails + 1)) ;;
+  esac
+}
+
 echo "== backup current nginx state of LXC $RP -> $BK"
 pct exec "$RP" -- tar czf /tmp/nginx-etc.tgz -C / etc/nginx
 pct pull "$RP" /tmp/nginx-etc.tgz "$BK/lxc100-nginx-etc.tgz"
 pct exec "$RP" -- rm /tmp/nginx-etc.tgz
-ROLLBACK="untar $BK/lxc100-nginx-etc.tgz over /etc/nginx on LXC $RP, then nginx -t and reload."
+ROLLBACK="untar $BK/lxc100-nginx-etc.tgz over /etc/nginx on LXC $RP, then nginx -t and reload. If the $HOST certificate has since been deleted, drop opus-tls.conf from the restored tree or reissue first — that vhost names a certificate that would no longer be there."
 
 echo "== pre-flight: the origin must terminate its own TLS for $HOST"
 # This is the whole premise of the passthrough. The chain is checked WITHOUT
@@ -95,15 +116,35 @@ else
   exit 1
 fi
 
-echo "== pre-flight: the origin must serve plain HTTP on :80"
-# The :80 vhost below proxies rather than redirects, matching what this tier
-# has always done for the name. An origin that answered :80 with a redirect to
-# https would still work, but a redirect to a name that resolves back here is
-# what a loop looks like, so the code is asserted rather than assumed.
-origin_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "Host: $HOST" "http://$ORIGIN/") || origin_code=000
+echo "== pre-flight: the origin must answer :80"
+# The :80 vhost below proxies rather than redirects, so whatever the origin
+# answers is what a reader gets. Two answers are healthy and one is not.
+#
+# A page (200) is fine. A redirect to **https** is fine too, and is what this
+# origin does today (measured 2026-09-08: 301 to GET, 308 to HEAD, both to
+# https://<host>/): that target is handled by the stream passthrough, which
+# hands it to the origin's own TLS, so it never re-enters this http tier.
+# What loops is a redirect to **plain http** on a name that resolves back
+# here — the reader would arrive at this vhost again and be sent to the origin
+# again. That is the case this refuses.
+#
+# During the 2026-08-19 termination window the rule was stricter: this tier
+# proxied HTTP for a name it terminated, so an https redirect *did* come back
+# through it. The passthrough is what makes an https redirect safe again, which
+# is why relaxing this check belongs to the same change that restored it.
+origin_head=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 15 -H "Host: $HOST" "http://$ORIGIN/") || origin_head="000 "
+origin_code=${origin_head%% *}
+origin_loc=${origin_head#* }
 case "$origin_code" in
-  200) echo "  OK   origin :80 -> 200" ;;
-  *)   echo "  FAIL origin :80 -> ${origin_code:-none} (expected 200)" >&2; exit 1 ;;
+  200)
+    echo "  OK   origin :80 -> 200" ;;
+  30*)
+    case "$origin_loc" in
+      https://*) echo "  OK   origin :80 -> $origin_code to $origin_loc" ;;
+      *)         echo "  FAIL origin :80 -> $origin_code to '${origin_loc:-nowhere}' — a redirect to plain http would loop through this proxy" >&2; exit 1 ;;
+    esac ;;
+  *)
+    echo "  FAIL origin :80 -> ${origin_code:-none} (expected 200 or a redirect to https)" >&2; exit 1 ;;
 esac
 
 echo "== LXC $RP: :80 vhost (proxied to the origin)"
@@ -164,7 +205,9 @@ echo "== post-change verification"
 # Through the real :443 path, and without -k: what must reach a reader is the
 # ORIGIN's certificate. A -k probe would pass just as happily on a tier that
 # had quietly gone back to terminating.
-expect_http "opus :80  (proxied to the origin)" 200 --resolve "$HOST:80:$PROXY_IP" "http://$HOST/"
+# Whatever the origin answers, this vhost passes it through, and the pre-flight
+# above has already established that the answer is a healthy one.
+expect_http_any "opus :80  (proxied to the origin)" "200 301 302 307 308" --resolve "$HOST:80:$PROXY_IP" "http://$HOST/"
 if pct exec "$RP" -- bash -c "curl -s -o /dev/null --max-time 15 --resolve '$HOST:443:$PROXY_IP' 'https://$HOST/'"; then
   echo "  OK   opus :443 verifies through the passthrough"
 else
