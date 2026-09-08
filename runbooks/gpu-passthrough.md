@@ -121,12 +121,18 @@ cat /var/run/qemu-server/pci-id-reservations            # 어느 VMID 가 쥐고
 dmesg -T | grep -iE 'vfio|43:00|Xid|reset' | tail
 ```
 
-잃었으면 rescan에 시간을 쓰지 않는다(§4b). S5(`poweroff` 뒤 전원 버튼)로 되살린다. vfio 상태의
-웜 리부트는 2026-09-08 실측 3회가 무사했고, 그 모양에서 잃는 날이 오면 그때 볼 손잡이가
-`options vfio-pci disable_idle_d3=1`이다(§4c). **FLR이
-`giving up`으로 끝난 뒤에는 그 카드를 여는 어떤 `qm start`도 하지 않는다**(2026-09-08에 그
-기동이 호스트를 멈춰 원격 `poweroff`조차 들어가지 않았다). `vendor_id`가 `10de`가 아니면(`0001`,
-`ffff`) 바로 사람을 부른다.
+잃었으면 rescan에도 리셋에도 시간을 쓰지 않는다(§4b). **복구는 전원 사이클이다**(S5. 전원 버튼
+또는 BMC의 Power Off와 Power On). vfio 상태의 웜 리부트는 2026-09-08 실측 3회가 무사했고, 그
+모양에서 잃는 날이 오면 그때 볼 손잡이가 `options vfio-pci disable_idle_d3=1`이다(§4c). **FLR이
+`giving up`으로 끝난 뒤에는 그 카드를 건드리는 어떤 것도 하지 않는다.** 2026-09-08에는 그 카드를
+여는 `qm start`가, 2026-09-09에는 sysfs `reset` 쓰기(커널 기본 순서라 실패한 FLR부터 다시 한다.
+`reset_method`에 `bus`만 쓰는 것은 `Invalid argument`로 거부됐다)가 각각 호스트를 멈춰 여러 CPU가
+soft lockup에 들고 ssh가 배너 교환에서 끊기고 원격 `poweroff`조차 들어가지 않았다. 카드가 `lspci`에
+남아 있고 vendor id `0001`, device id `ffff`로 읽히며 루트 포트 링크가 2.5GT/s x16(정상 32GT/s)으로
+남은 모양에서도 그랬다. D3cold, remove와 rescan, 루트 포트 버스 리셋 직접 쓰기는 시도하지 않았고
+시도하지 않는다. 한 번 시도가 전원 사이클 한 번이기 때문이다. 슬롯 전원 제어는 이 보드에 없다
+(`SltCap: PwrCtrl- HotPlug-`). `vendor_id`가 `10de`가 아니면(`0001`, `ffff`) 바로 사람을 부르고 BMC로
+전원을 돌린다.
 
 ## 6. 게스트 안의 GPU 사용률 읽기
 
@@ -161,7 +167,11 @@ VMID는 플랫폼 대역(100–999 LXC, 1000–9999 템플릿, 100000– 사용�
 `pveum role delete`), 매핑(`pvesh delete /cluster/mapping/pci/<name>`)까지 지운다. 게스트
 접속은 노드 안에서만 하고 개발 머신의 `~/.ssh`에 아무것도 남기지 않는다.
 
-**게스트 이미지는 카드를 붙이기 전에 `nouveau`를 blacklist하고 드라이버를 깐다.** 카드를 잃은
+**게스트 이미지는 카드를 붙이기 전에 `nouveau`를 blacklist하고 드라이버를 깐다.** 2026-09-09 실측:
+Ubuntu 26.04 cloud image(커널 7.0.0-30)는 nouveau를 자동 적재하고 GB202를 인식하지만 GSP 펌웨어가
+이미지에 없어 초기화에 실패한다(`gsp: Failed to load required firmware`). `linux-firmware`를 깔면 그
+자리에서 잡는다. 「이미지에 nouveau가 없다」와 「펌웨어가 없다」는 둘 다 우연한 안전이고 사용자의
+패키지 설치 한 번에 사라진다. 카드를 잃은
 유일한 상태가 「nouveau가 잡은 채 리셋」이고 기동마다 리셋이 있기 때문이다. **2026-09-08에 게스트
 안에서 재현됐다**: HWE 커널 7.0.0-31의 nouveau(GSP 570.144)가 카드를 잡은 게스트를 `qm shutdown`
 하자 호스트 FLR이 실패하고(`not ready 65535ms after FLR; giving up`, vendor id `0001`), 다음
