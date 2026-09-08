@@ -215,12 +215,22 @@ sudo partclone.ext4 -c -s /dev/<disk>p2 --force | zstd -T0 | ssh <target> 'cat >
 | 없음(NVIDIA 드라이버가 잡았다 놓은 뒤 언로드, 오디오 기능 unbind) | 있음 | 1 |
 | NVIDIA 610 open kernel module | 있음 | 4 |
 | `nouveau`(GSP 펌웨어까지 초기화) | **없음** | 2 |
+| vfio-pci(부팅 시 바인딩, D3hot, 게스트 미기동, 2026-09-08) | 있음 | 2 |
+| vfio-pci, NVIDIA 게스트가 쓰고 정상 종료한 뒤(FLR 완료, D3hot, 2026-09-08) | 있음 | 1 |
+
+같은 날 **게스트 안**에서도 재현했다(호스트는 vfio-pci로 카드를 잡은 채였다). 게스트 커널 7.0.0-31의
+`nouveau`가 GSP로 카드를 초기화한 뒤 그 VM을 `qm shutdown` 하자 호스트의 FLR이
+`not ready 65535ms after FLR; giving up`으로 끝나고 vendor id가 `0001`로 읽혔다. 이어진 `qm start`가
+걸려 호스트가 응답 불능이 됐고 복구는 S5였다. 반면 NVIDIA 610 드라이버 게스트는 리셋 12회(게스트 재부팅, 종료와 기동, `qm reboot`, 강제 종료 각 3),
+인계 10회, 부하 중 강제 종료 1회 전부 무사했다. 그러니 이 표의 조건은 「호스트가 잡고 있는가」가 아니라
+**「리셋 시점에 카드를 초기화해 둔 것이 nouveau인가」**다. 게스트 쪽 절차와 결과는
+[gpu-passthrough.md](gpu-passthrough.md).
 
 NVIDIA 드라이버를 깔기 전의 리눅스 커널은 NVIDIA 카드를 보면 `nouveau`를 자동으로 붙이고, 이
 세대의 카드에서 `nouveau`는 GSP 펌웨어까지 올려 카드를 완전히 기동시킨다(`dmesg`의
 `gsp: RM version` 줄). 그 상태로 웜 리셋에 들어가면 카드가 다음 POST의 열거에 응답하지 않는다.
 NVIDIA 드라이버가 한 번 잡았다 놓은 카드는 견딘다. 그 부팅에서 앞서 `nouveau`가 초기화했더라도
-그렇다(첫 행이 그 경우다). **어떤 드라이버도 닿지 않은 부팅에서의 재부팅은 안 쟀다.**
+그렇다(첫 행이 그 경우다). **어떤 드라이버도 닿지 않은 부팅에서의 재부팅은 안 쟀다.** 2026-09-08에 가장 가까운 것을 쟀다: vfio-pci가 부팅 때 잡고 게스트는 한 번도 열지 않은 상태(D3hot)의 웜 리부트 2회, 표의 아래 두 행이다.
 
 **복구는 S5로 된다.** `systemctl poweroff` 뒤 전원 버튼이고, 꺼져 있던 시간이 24초여도
 됐다(2회, 65초와 24초). AC 차단은 필요 없다. BMC가 결선된 노드라면 `chassis power cycle`이
@@ -259,6 +269,9 @@ blacklist된 노드는 평소 재부팅에서 이 문제를 만나지 않는다.
 상태로 리셋에 들어가는지는 패스스루 개발 라운드가 재야 한다. 그때 견줄 기준은 위 표다.
 
 ## 4c. GPU 패스스루 준비 (pve-node-3, 2026-09-07)
+
+> 이 절은 호스트가 카드를 잡지 않게 하는 준비까지다. 매핑을 만들고 VM에 붙이고 떼는 절차, 토큰 권한,
+> 게스트 요건은 [gpu-passthrough.md](gpu-passthrough.md)에 있다(2026-09-08 신설).
 
 GPU가 있는 노드를 VM 패스스루용으로 두는 호스트 설정이다. §2의 5번이 「설치 전에 정할
 것」으로 적어 둔 것의 실행이고, pve-node-3에서 2026-09-07에 처음 걸었다. 설정 파일은
@@ -318,13 +331,13 @@ NVIDIA 패키지는 지우지 않는다. 컨테이너 경로가 쓰던 것이고
 `NVRM: GPU 0000:43:00.0 is already bound to vfio-pci`로 물러났다. `softdep`이 의도대로 동작한 것이다.
 **이것은 콜드 부팅이라 §4b의 웜 리부트 질문에는 답하지 않는다.** 그 시험은 아직 남아 있다.
 
-**첫 재부팅은 S5를 누를 사람이 있을 때 한다.** vfio-pci가 잡은 카드는 게스트가 열기 전까지
+**첫 재부팅은 S5를 누를 사람이 있을 때 한다.** (2026-09-08에 했다: 무접촉 2회, NVIDIA 게스트 사용 뒤 1회 모두 카드 유지, §4b 표. `disable_idle_d3=1`은 필요 없었다. 아래 문단은 그 시험 전의 판단이다.) vfio-pci가 잡은 카드는 게스트가 열기 전까지
 runtime PM으로 D3hot에 들어간다(`/sys/bus/pci/devices/<bdf>/power/runtime_status`가
 `suspended`. pve-node-3에서 동적 바인딩 직후 그랬다). 그 상태의 웜 리부트는 §4b 표의 세 행 어디에도
 없는 네 번째 조합이라, 이 설정을 넣고 하는 첫 재부팅이 그것을 잰다. 카드를 잃으면 S5로
 되살리고 결과를 §4b 표에 더한다. 그때 원인을 nouveau 쪽에서 찾지 말 것. 먼저 돌릴 손잡이는
 `options vfio-pci disable_idle_d3=1`이다. 게스트를 붙였다 뗄 때의 리셋(FLR)도 마찬가지로
-안 잰 것이고, 패스스루 개발이 첫 게스트 재부팅에서 잰다.
+안 잰 것이었고, 패스스루 개발 라운드가 2026-09-08에 쟀다([gpu-passthrough.md](gpu-passthrough.md)): NVIDIA 드라이버 게스트는 어떤 리셋 모양에서도 무사했고, nouveau(GSP) 게스트의 종료가 FLR을 실패시켜 카드를 잃었다.
 
 **`disable_vga=1`의 뜻.** vfio-pci가 VGA 리전(legacy I/O와 `0xa0000`)을 노출하지 않고 카드의
 legacy VGA decoding을 끈다. ASPEED가 부팅 VGA인 이 호스트에서 호스트 쪽으로는 맞는 선택이고
