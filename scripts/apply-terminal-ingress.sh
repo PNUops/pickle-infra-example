@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # web-terminal ingress on the reverse-proxy tier, and the app tier's client-IP
 # source. Idempotent: writes the target nginx state on LXC 100 + LXC 101,
-# tests, reloads, and verifies both pickle and the opus.pusan.ac.kr tenant
-# afterwards.
+# tests, reloads, and verifies the opus.pusan.ac.kr tenant afterwards.
 #
 # SCOPE: the ingress plumbing only, the stream router and the app tier's
 # X-Real-IP source. It writes no app vhost: on a rebuild those come from
@@ -25,9 +24,13 @@
 # What it changes:
 #   LXC 100
 #     - stream :443 SNI router sends PROXY protocol to its LOCAL backends so
-#       the TLS tier learns the true :443 TCP peer. The opus passthrough
-#       gets a PP-stripping hop (127.0.0.1:8441) so the external opus origin
-#       keeps receiving a plain TLS stream — behaviour unchanged for opus.
+#       the TLS tier learns the true :443 TCP peer. The opus.pusan.ac.kr
+#       passthrough gets a PP-stripping hop (127.0.0.1:8441) so that origin
+#       keeps receiving a plain TLS stream and holds the certificate for its
+#       own name. Between 2026-08-19 and 2026-09-08 the passthrough was retired
+#       and the name terminated here, because the path to that origin's :443
+#       had stopped answering; it answers again and the tenant's plaintext no
+#       longer crosses this tier.
 #     - removes conf.d/pickle-terminal.conf (the geo+map), pickle-cf-geo.conf
 #       and pickle-realip.conf (the CDN range lists), once no vhost references
 #       $pickle_client_ip any more. Rendered vhosts stop referencing it when
@@ -51,7 +54,12 @@ require_ct "$RP" reverse-proxy
 require_ct "$APP" pickle-app
 
 ts=$(date +%Y%m%d-%H%M%S)
-BK="/srv/pickle/backup/terminal-ingress-$ts"
+# The workspace root: this host's value if configured, otherwise derived from
+# where this script sits. The fallback is what keeps a fresh clone working with
+# no host configuration at all.
+PICKLE_ROOT="${PICKLE_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+
+BK="${PICKLE_ROOT}/backup/terminal-ingress-$ts"
 mkdir -p "$BK"
 
 echo "== backup current nginx state of LXC $RP and LXC $APP -> $BK"
@@ -79,10 +87,22 @@ expect_http() {
 }
 
 echo "== pre-change reachability (must be healthy before we touch anything)"
-# Only the passthrough tenant is asserted: on a rebuild this script runs before
-# any app vhost exists, so requiring the platform to answer here would make the
-# ingress plumbing unappliable exactly when it is needed.
-expect_http "pre opus   :443" 200 --resolve opus.pusan.ac.kr:443:198.18.1.10 https://opus.pusan.ac.kr/
+# Only the tenant is asserted: on a rebuild this script runs before any app
+# vhost exists, so requiring the platform to answer here would make the ingress
+# plumbing unappliable exactly when it is needed.
+#
+# The tenant is asserted only when it is already being served. The router this
+# script writes is what carries the name, so on a rebuild it is legitimately
+# dark going in — demanding 200 would make the router unappliable exactly when
+# nothing can answer yet. Where it does answer, this run must not be what
+# breaks it.
+pre_tenant=$(curl -sk -o /dev/null -w '%{http_code}' \
+  --resolve opus.pusan.ac.kr:443:198.18.1.10 https://opus.pusan.ac.kr/) || pre_tenant=000
+if [ "$pre_tenant" = 200 ]; then
+  echo "  OK   pre opus   :443 -> 200"
+else
+  echo "  SKIP pre opus   :443 -> $pre_tenant (not served yet; this run installs the router that carries it)"
+fi
 [ "$fails" -eq 0 ] || { echo "aborting before any change: the tiers are not healthy" >&2; exit 1; }
 
 echo "== LXC $RP: retire the CDN client-IP map and range lists"
@@ -91,19 +111,22 @@ echo "== LXC $RP: retire the CDN client-IP map and range lists"
 # makes `nginx -t` fail and the reload below would never happen. The
 # references leave when the proxy agent is redeployed and an admin resync
 # rewrites every vhost; that has to come first, and this script checks rather
-# than assumes it. Its own definition file is excluded from the search, since
-# that is the file about to be removed.
+# than assumes it. Two searches run, and each excludes the files it would
+# otherwise trip over on its own account: the variable search skips the file
+# that defines the variable, and the include search skips all three files being
+# removed. Both are about to go, so neither can be a reason to keep the set.
 # shellcheck disable=SC2016  # nginx-side $ must not expand here
 pct exec "$RP" -- bash -c '
 set -euo pipefail
 refs=$(grep -rl "pickle_client_ip" /etc/nginx --exclude=pickle-terminal.conf 2>/dev/null || true)
-# The two files below are also reachable by path, not only through the
-# variable: anything that `include`s them keeps working until they are gone and
-# then fails `nginx -t` for the whole configuration. A hand-written vhost or a
+# Two of the three are also reachable by path rather than through the variable:
+# anything that `include`s them keeps working until they are gone and then
+# fails `nginx -t` for the whole configuration. A hand-written vhost or a
 # fragment restored from an archive can carry such an include even when no
 # rendered vhost does, so both shapes are checked before anything is deleted.
-# The three files this script removes are excluded, since one of them includes
-# another and a file on its way out cannot be a reason to keep the set.
+# The third file is reached through the conf.d glob rather than a named
+# include, which is why the pattern names only two. What this check is for is a
+# fourth file, one this script does not own, that would lose its include.
 incs=$(grep -rlE "include[[:space:]]+[^;]*(pickle-realip|pickle-cf-geo)" /etc/nginx \
          --exclude=pickle-terminal.conf --exclude=pickle-cf-geo.conf \
          --exclude=pickle-realip.conf 2>/dev/null || true)
@@ -123,6 +146,9 @@ done
 
 echo "== LXC $RP: stream SNI router with PROXY protocol + opus strip hop"
 pct exec "$RP" -- bash -c 'cat > /etc/nginx/stream-conf.d/opus-sni.conf' <<'EOF'
+# :443 SNI router. Every platform name terminates on the local TLS tier; the
+# opus.pusan.ac.kr tenant is handed to its own origin untouched, so that origin
+# holds the certificate for its name and this tier never sees the plaintext.
 map $ssl_preread_server_name $tls_backend {
     opus.pusan.ac.kr 127.0.0.1:8441;
     default 127.0.0.1:8443;
@@ -142,9 +168,9 @@ server {
     proxy_timeout 1h;
 }
 
-# opus.pusan.ac.rk passthrough: strip the PROXY header again — the external
-# opus origin must keep receiving a plain TLS stream (behaviour identical to
-# the earlier direct passthrough; opus never saw the client IP either way).
+# opus.pusan.ac.kr passthrough: strip the PROXY header again — the external
+# opus origin must keep receiving a plain TLS stream (opus never saw the client
+# IP either way, so nothing is lost by stripping it).
 server {
     listen 127.0.0.1:8441 proxy_protocol;
     proxy_pass 203.0.113.20:443;
@@ -153,6 +179,10 @@ server {
     proxy_timeout 1h;
 }
 EOF
+# The file is written whole on every run: an archive restored from the
+# 2026-08-19 to 2026-09-08 window carries a router with no opus entry, and
+# leaving that beside this one would send the tenant to a TLS tier that no
+# longer serves its name.
 
 echo "== LXC $RP: nginx -t + reload"
 pct exec "$RP" -- nginx -t
@@ -184,10 +214,15 @@ pct exec "$APP" -- nginx -t
 pct exec "$APP" -- systemctl reload nginx
 
 echo "== post-change verification"
-# The tenant passthrough is the invariant this script must never break. The
-# platform's own paths are verified by apply-main-domain-vhost.sh, which owns the
-# vhosts they live on and runs after this.
-expect_http "post opus   :443" 200 --resolve opus.pusan.ac.kr:443:198.18.1.10 https://opus.pusan.ac.kr/
+# The tenant is the invariant this script must never break, so it is asserted
+# exactly when it was healthy going in. The platform's own paths are verified by
+# apply-main-domain-vhost.sh, which owns the vhosts they live on and runs after
+# this.
+if [ "$pre_tenant" = 200 ]; then
+  expect_http "post opus   :443" 200 --resolve opus.pusan.ac.kr:443:198.18.1.10 https://opus.pusan.ac.kr/
+else
+  echo "  SKIP post opus   :443 (was not served before this run either)"
+fi
 
 if [ "$fails" -ne 0 ]; then
   echo "FAILED — $fails check(s) did not hold; the new nginx state is live but unverified." >&2
