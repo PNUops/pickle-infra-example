@@ -35,7 +35,7 @@ Proxmox 노드가 **아닌** 호스트를 다루는 [node-intake.md](node-intake
 | 디스크 | `lsblk -o NAME,SIZE,TYPE,ROTA,MODEL`, `nvme smart-log` 또는 `smartctl` (root) | 컨슈머 NVMe 한 장이면 OS와 씬풀이 전원 손실 보호 없는 장치를 공유한다는 뜻이다. 두 번째 장치나 엔터프라이즈 장치를 **설치 전에** 결정한다 |
 | NIC | `ip -br link`, `/sys/class/net/*/speed` | 미배선 10G 포트를 적어 둔다. 게스트 VLAN 트렁크와 마이그레이션 트래픽이 그것을 원한다 |
 | 대역과 L2 | `ip -br addr`, `ip route`, pve-node에서 `ip neigh show <addr>`와 `ping -c 1000 -i 0.01 -q <addr>` | pve-node와 같은 L2면 게스트 VLAN을 늘리는 것이 스위치 문제가 된다. 평균이 아니라 max와 mdev를 적는다 |
-| BMC | `ls -l /dev/ipmi0`, `ipmitool mc info`, `ipmitool lan print 1`, `ipmitool user list 1` (root) | 답이 셋이다. 전용 포트가 네트워크에 물려 있는가(DHCP인데 주소가 0.0.0.0이면 아니다), 어떤 사용자가 있는가, 이 호스트의 누가 `/dev/ipmi0`에 닿는가. 기본 자격증명을 로그인으로 확인하지 않는다 |
+| BMC | `ls -l /dev/ipmi0`, `ipmitool mc info`, `ipmitool lan print 1`, `ipmitool user list 1` (root) | 답이 셋이다. BMC가 쓰는 포트가 네트워크에 물려 있는가(**NIC selection을 먼저 읽고, `IP Address Source`가 DHCP일 때만 답이 나온다.** 0.0.0.0이면 임대를 못 받은 것이고, 주소가 있으면 적어도 임대 시점에는 배선이었다. DHCP가 아니면 이 명령으로는 알 수 없어 물리 확인으로 간다), 어떤 사용자가 있는가, 이 호스트의 누가 `/dev/ipmi0`에 닿는가. 기본 자격증명을 로그인으로 확인하지 않는다 |
 | sshd, 리스너, 시각 | `ss -tlnup`, `/etc/ssh/sshd_config*`, `timedatectl` | 스냅샷 용도다. 초기화가 전부 갈아엎는다 |
 | 호스트 키 | `ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub` | 설치 후 키가 새것임을 확인할 수 있도록 기록한다 |
 | 주소 소유 | 네트워크 담당자에게 확인 | 벤더 이미지가 들고 있는 캠퍼스 주소가 이 호스트에 고정 할당된 것인지 DHCP 임대인지. 설치가 그것을 static으로 만들므로 이 호스트의 것이어야 한다 |
