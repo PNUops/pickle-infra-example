@@ -57,6 +57,15 @@
 #   PICKLE_RELAY_SOURCE_IP     100.64.0.1     relay's tunnel-side address
 #   PICKLE_RELAY_PORT_BAND     10000-19999
 #   PICKLE_ROOT_DOMAIN         pusan.dev
+#   PICKLE_ROOT_ORG            기관 이름 (orgs.name) that owns PICKLE_ROOT_DOMAIN.
+#                              Names issued under that root take their
+#                              organisation from this row, and the
+#                              administrator's domain listing is scoped on it,
+#                              so a root with no row here issues nothing. The
+#                              name is looked up rather than an id being typed:
+#                              ids differ between databases and a wrong one
+#                              would attach every name to somebody else's
+#                              institution.
 #   PICKLE_WILDCARD_CERT       /etc/letsencrypt/live/<root>/fullchain.pem
 set -euo pipefail
 
@@ -97,6 +106,7 @@ RELAY_SOURCE_IP="${PICKLE_RELAY_SOURCE_IP:-100.64.0.1}"
 RELAY_PORT_BAND="${PICKLE_RELAY_PORT_BAND:-10000-19999}"
 
 ROOT_DOMAIN="${PICKLE_ROOT_DOMAIN:-pusan.dev}"
+ROOT_ORG="${PICKLE_ROOT_ORG:-부산대학교}"
 CERT_SCOPE="*.$ROOT_DOMAIN"
 # One certbot lineage per root domain, named after the root: the Let's Encrypt
 # wildcard issued by DNS-01 on the reverse proxy, the same lineage the proxy
@@ -127,7 +137,7 @@ pgshow() {
   pct exec "$CTID" -- su - postgres -c \
     "psql -q -X -v ON_ERROR_STOP=1 -d $DB -f -" <<<"$1"
 }
-# pgtx → the same, wrapped in ONE transaction (-1). The four inventory rows
+# pgtx → the same, wrapped in ONE transaction (-1). The inventory rows
 # describe one machine and are useless in halves: a run that wrote the node and
 # the pool and then failed on the relay used to leave the node pointing at a new
 # pool with no relay to reach it, and nothing said which half had landed. With -1
@@ -472,7 +482,17 @@ echo "  $(wc -l < "$BK/inventory-before.sql") lines dumped"
 # REVOKED rows and the insert asks whether the scope has any row at all — a
 # revoked row therefore blocks both paths, nothing is written, and the operator
 # is told below.
-echo "== register the inventory (node, pool, relay, certificate — one transaction)"
+# The organisation is looked up by name inside the transaction below, and an
+# unset psql variable there fails in a way that names the wrong thing. Asked
+# here first so a typo in PICKLE_ROOT_ORG says so, rather than arriving as a
+# transaction that returned the wrong number of ids.
+root_org_check=$(pgq "select count(*) from orgs where name = '$(sql_escape "$ROOT_ORG")'")
+[ "${root_org_check:-0}" = "1" ] || fail \
+  "PICKLE_ROOT_ORG='$ROOT_ORG' matches $root_org_check organisation row(s); it must match exactly one.
+   Names issued under $ROOT_DOMAIN take their organisation from that row, and the
+   administrator's domain listing is scoped on it. Check: psql -d $DB -c 'select name from orgs'"
+
+echo "== register the inventory (node, pool, relay, certificate, domain root — one transaction)"
 if ! result=$(pgtx "
   insert into ip_pools (name, cidr, gateway, dns, reserved_ranges)
   values ('$(sql_escape "$POOL_NAME")', '$gw_cidr', '$gw_ip',
@@ -532,16 +552,31 @@ if ! result=$(pgtx "
              and status = 'REVOKED') as cert_revoked
   \gset
 
+  -- The root names are issued under, and the organisation they belong to.
+  -- Keyed by the root name so a re-run corrects the organisation in place
+  -- rather than forking the row. A root with no row issues nothing, which is
+  -- the fail-closed direction: the alternative is a name with no organisation,
+  -- invisible to every organisation administrator.
+  select id as root_org_id from orgs
+   where name = '$(sql_escape "$ROOT_ORG")' \gset
+
+  insert into domain_roots (root_domain, org_id)
+  values ('$(sql_escape "$ROOT_DOMAIN")', :root_org_id)
+  on conflict (root_domain) do update
+     set org_id = excluded.org_id, updated_at = now()
+  returning id as root_id, (xmax = 0)::text as root_new
+  \gset
+
   select :pool_id, :'pool_new', :node_id, :'node_new', :'node_state',
          :relay_id, :'relay_new', :'relay_tokened', :'relay_enabled',
-         :cert_ins, :cert_upd, :cert_revoked;"); then
+         :cert_ins, :cert_upd, :cert_revoked, :root_id, :'root_new';"); then
   fail "no inventory row was written — the transaction rolled back, so nothing was applied"
 fi
 IFS='|' read -r POOL_ID pool_new NODE_ID node_new node_state \
                 RELAY_ID relay_new tokened enabled \
-                cert_ins cert_upd cert_revoked <<<"$result"
-{ [ -n "$POOL_ID" ] && [ -n "$NODE_ID" ] && [ -n "$RELAY_ID" ]; } \
-  || fail "the write transaction returned '$result' instead of the four row ids"
+                cert_ins cert_upd cert_revoked ROOT_ID root_new <<<"$result"
+{ [ -n "$POOL_ID" ] && [ -n "$NODE_ID" ] && [ -n "$RELAY_ID" ] && [ -n "$ROOT_ID" ]; } \
+  || fail "the write transaction returned '$result' instead of the five row ids"
 
 [ "$pool_new" = "true" ] && echo "  added   pool $POOL_NAME ($POOL_CIDR) id $POOL_ID" \
                       || echo "  updated pool $POOL_NAME ($POOL_CIDR) id $POOL_ID"
@@ -550,6 +585,8 @@ IFS='|' read -r POOL_ID pool_new NODE_ID node_new node_state \
 [ "$relay_new" = "true" ] && echo "  added   relay $RELAY_NAME id $RELAY_ID -> $RELAY_PUBLIC_HOST" \
                        || echo "  updated relay $RELAY_NAME id $RELAY_ID -> $RELAY_PUBLIC_HOST"
 echo "  sync token issued: $tokened, enabled: $enabled"
+[ "$root_new" = "true" ] && echo "  added   domain root $ROOT_DOMAIN -> $ROOT_ORG id $ROOT_ID" \
+                      || echo "  updated domain root $ROOT_DOMAIN -> $ROOT_ORG id $ROOT_ID"
 if [ "${cert_ins:-0}" -gt 0 ]; then
   echo "  added   certificate $CERT_SCOPE until $CERT_NOT_AFTER"
 elif [ "${cert_upd:-0}" -gt 0 ]; then
