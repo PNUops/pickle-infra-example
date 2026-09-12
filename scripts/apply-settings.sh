@@ -113,6 +113,11 @@ sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
 # the web terminal or the relay works, and a switch that defaults on would offer
 # users a path that dead-ends.
 DEFAULTS=(
+  "gpu_unattached_review_hours	12	GPU를 VM에 연결하지 않은 상태가 이 시간 이상 지속되면 관리자 검토를 생성합니다(시간). 자동으로 회수하지 않습니다."
+  "gpu_low_util_window_hours	12	GPU 저사용 검토에 사용할 최근 이용률 기간입니다(시간). 유효 표본이 부족하면 저사용으로 판단하지 않습니다."
+  "gpu_low_util_threshold_percent	5	판단 기간의 평균 GPU 이용률이 이 값 미만이면 관리자 검토를 생성합니다(%). 실제 회수는 관리자가 결정합니다."
+  "gpu_low_util_snooze_hours	12	관리자가 GPU 유지로 결정한 뒤 다시 미사용 검토를 생성하기까지 기다리는 시간입니다(시간)."
+  "gpu_lease_notice_hours	[24,1]	GPU 임대 만료를 미리 알릴 시점입니다(시간 전). 실제 임대 기간보다 짧은 단계만 적용하며 승인된 만료 시각은 바꾸지 않습니다."
   "banner_message	\"\"	전역 공지 배너 문구(점검 모드와 독립 — 콘솔 상단 배너). 비우면 배너를 표시하지 않습니다."
   "custom_domain_limit_per_hour	20	사용자별 커스텀 도메인 연결 허용 횟수(시간당). 커스텀 도메인은 이름마다 인증서를 따로 발급받고 그 발급이 플랫폼 공용 계정 한도를 쓰므로, 한 사용자가 그 한도를 소진해 다른 사용자의 발급까지 막는 것을 방지합니다. 플랫폼 서브도메인은 와일드카드 인증서 한 장으로 덮여 발급이 없으므로 이 제한과 무관합니다."
   "ip_quarantine_hours	24	회수된 IP를 재할당하지 않고 격리하는 시간(시간). 릴레이 에이전트가 보관된 스냅샷을 재적용할 수 있는 기간(24시간)보다 짧게 설정할 수 없습니다."

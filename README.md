@@ -100,6 +100,11 @@ runbooks/         운영 절차                                    // 이 예시
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
 
+`apply-settings.sh`는 누락된 런타임 설정 키를 추가하고 기존 값은 유지합니다. GPU 미연결
+검토 시간과 저사용 판단 기간, 유지 결정 후 재검토 유예의 초기값은 12시간입니다.
+관리자 콘솔의 플랫폼 설정에서 변경하면 이후 판정이 변경값을 읽습니다. GPU 임대 기간은
+신청과 승인에서 직접 입력합니다.
+
 스모크는 목이 아니라 살아 있는 시스템에 실제 요청을 보냅니다. `smoke-provisioning.sh`는
 회원가입부터 인증, 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기, SSH 도달 확인,
 전원 왕복, 삭제, DB 정합 검증까지 한 번에 통과시킵니다.
@@ -129,11 +134,15 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 ## 검증
 
 ```bash
-scripts/verify.sh        # 모든 셸 스크립트 shellcheck 전수 + 정제·스케줄 유닛 검사
+scripts/verify.sh        # shellcheck, 설정 초기화 재실행 테스트, 정제와 스케줄 유닛 검사
 ```
 
 `verify.sh`는 커밋 전 필수입니다. shellcheck 위반이 하나라도 있으면 실패하고, 이어서 도는
 정제 검사는 이 샘플에 실제 주소나 실제 값이 섞이지 않았는지 확인합니다.
+
+설정 초기화 테스트는 Python 3와 jq를 사용합니다. 호스트에 연결하지 않고 로컬 SQL
+픽스처로 스크립트를 두 번 실행해 기존 설정값과 수정 시각이 유지되는지 검사합니다.
+PostgreSQL의 타입 검사와 실제 컨테이너 연결은 이 테스트의 범위에 포함하지 않습니다.
 
 ## 무엇을 바꿨나
 
