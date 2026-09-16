@@ -26,6 +26,15 @@ set -euo pipefail
 SANITIZE_FAIL=0
 sfail() { echo "sanitization: $1" >&2; SANITIZE_FAIL=1; }
 
+# Only this verified Debian JRE package version is not an IPv4 candidate. Keep
+# exact package-token boundaries; bare addresses and other versions still scan.
+ipv4_candidates() {
+  sed -E -e ':again' \
+    -e 's/(^|[^[:alnum:]_.+~:-])25\.0\.4\.1\+1-1~deb13u1([^[:alnum:]_.+~:-]|$)/\1DEBIAN_JRE_VERSION\2/g' \
+    -e 't again' \
+    | grep -EoI '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' || [ "$?" -eq 1 ]
+}
+
 # is_ipv6 CANDIDATE → 0 when a colon-separated token is an address at all.
 # Colons are common punctuation: 22:30:15 is a time and 2c:54:91:ab:cd:ef is a
 # hardware address, and both begin with the hex digits that the global-unicast
@@ -125,8 +134,13 @@ sanitization_check() {
     # This file is skipped because it is made of samples the rules exist to
     # reject: its selftest needs values the address rule must refuse, so
     # scanning itself would bury a real finding among its own probes.
-  done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$' \
-    | xargs -0 grep -EoI '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 2>/dev/null | sort -u)
+  done < <(
+    while IFS= read -r -d '' file; do
+      while IFS= read -r addr; do
+        printf '%s:%s\n' "$file" "$addr"
+      done < <(ipv4_candidates < "$file")
+    done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$') | sort -u
+  )
 
   # 1b. The same question for IPv6.
   while IFS= read -r line; do
@@ -191,7 +205,30 @@ sanitization_check() {
 # sanitization_selftest — proves the address rule can still fail. A check that
 # only ever passes is indistinguishable from one that does nothing.
 sanitization_selftest() {
-  local probe
+  local probe candidates candidate
+  for probe in '25.0.4.1+1-1~deb13u1' 'JRE_VERSION="25.0.4.1+1-1~deb13u1"' \
+    '25.0.4.1+1-1~deb13u1 25.0.4.1+1-1~deb13u1'; do
+    candidates=$(printf '%s\n' "$probe" | ipv4_candidates)
+    if [ -n "$candidates" ]; then
+      echo "sanitization selftest: the exact Debian JRE version was read as IPv4" >&2
+      return 1
+    fi
+  done
+  for probe in '25.0.4.1' '25.0.4.1+1-1~deb13u2' '1:25.0.4.1+1-1~deb13u1' \
+    '25.0.4.1+1-1~deb13u1x' '11.22.33.44' '10.99.99.99' \
+    '25.0.4.1+1-1~deb13u1 25.0.4.1'; do
+    candidates=$(printf '%s\n' "$probe" | ipv4_candidates)
+    if [ -z "$candidates" ]; then
+      echo "sanitization selftest: an unrelated IPv4 candidate was hidden" >&2
+      return 1
+    fi
+    while IFS= read -r candidate; do
+      if addr_allowed "$candidate"; then
+        echo "sanitization selftest: $candidate would be accepted" >&2
+        return 1
+      fi
+    done <<< "$candidates"
+  done
   # Synthetic routable addresses. The values this check exists to catch must
   # never be written down here — a list of what a public tree may not contain
   # publishes exactly that.
