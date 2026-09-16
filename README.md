@@ -35,15 +35,18 @@ pve-node (Proxmox VE) ───────────────────�
  ├─ gpu-node   aarch64 GPU 노드        캠퍼스망 192.0.2.20 — vLLM 서빙 :8000 (pickle-vllm)
  └─ dept-node  x86 서버(Ubuntu)        dept-node.example.ac.kr:22 — 학과 공유 서버
 
-Proxmox 노드 (설치 완료, 미등록):
+Proxmox 운영 후보 (클러스터 구성, 플랫폼 미등록):
  ├─ pve-node-2  x86 서버               캠퍼스망 192.0.2.30, pve-node와 같은 L2
  └─ pve-node-3  x86 서버, GPU 1장      캠퍼스망 192.0.2.31, GPU는 vfio-pci 부팅 시 바인딩, 패스스루 실측 완료 2026-09-08, 플랫폼 미등록
 ```
 
 vmbr1은 인프라 전용, vmbr2는 사용자 전용이고 둘 사이에 직접 경로가 없습니다. 산출물은
 전부 셸과 마크다운입니다. 주 대상은 Proxmox 호스트이고, 플랫폼에 편입된 비Proxmox
-노드의 편입 절차도 함께 다룹니다. 비Proxmox 노드 두 대는 접속 경로만 구성된 상태이고,
-플랫폼 서비스는 아직 배치되어 있지 않습니다.
+노드의 편입 절차도 함께 다룹니다. dept-node는 기존 Ubuntu와 Docker를 유지하며 PBS VM과
+qnetd는 아직 설치하지 않았습니다. pve-node-2와 pve-node-3은 NetBird에 등록된 빈
+`example-prod` 클러스터입니다. 순차 재부팅 후 관리 SSH와 HTTPS, 정족수 복귀를 확인했습니다.
+GPU 노드는 호스트 GPU 시험의 NVIDIA와 CUDA 실행 패키지를 제거하고 VFIO 바인딩과
+nouveau/nova 차단을 유지합니다. 두 Proxmox 노드는 플랫폼 배치 대상으로 등록하지 않았습니다.
 
 ## 주요 기능
 

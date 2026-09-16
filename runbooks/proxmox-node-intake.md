@@ -291,14 +291,19 @@ GPU가 있는 노드를 VM 패스스루용으로 두는 호스트 설정이다. 
 
 그룹에 다른 장치가 섞여 있으면 그 장치도 함께 넘어가야 하므로 여기서 멈추고 슬롯을 바꾼다.
 
-**호스트가 카드를 잡지 않게 한다.** 방침은 「vfio-pci가 부팅 때 먼저 잡는다」이고, 호스트의
-NVIDIA 패키지는 지우지 않는다. 컨테이너 경로가 쓰던 것이고 바인딩되지 않으면 아무 일도
-하지 않으며, 지우는 것보다 한 파일을 빼는 것이 되돌리기 쉽다. 커널 커맨드라인에
+**호스트가 카드를 잡지 않게 한다.** 방침은 「vfio-pci가 부팅 때 먼저 잡는다」이다. 호스트의
+NVIDIA와 CUDA 패키지는 VM 패스스루에 필요하지 않다. 호스트 GPU 시험 패키지를 제거할 때는
+실행 중인 소비자와 패키지 의존성을 확인하고 정확한 제거 목록을 시뮬레이션한다. `autoremove`로
+범용 관리 도구까지 지우지 않는다. 별도 blacklist와 VFIO 설정, IOMMU 부팅 옵션은 보존한다.
+
+VFIO 설정은 드라이버 패키지의 설치 여부와 독립적으로 유지한다. 커널 커맨드라인에
 `vfio-pci.ids=`를 적는 방법도 있지만 여기서는 쓰지 않는다. `cat /proc/cmdline`에 vfio가 없는
 것이 정상이다.
 
 1. `hosts/pve-node-3/modprobe.d/vfio.conf`를 `/etc/modprobe.d/vfio.conf`로,
-   `hosts/pve-node-3/modules-load.d/vfio.conf`를 `/etc/modules-load.d/vfio.conf`로 복사한다. 앞엣것이
+   `hosts/pve-node-3/modules-load.d/vfio.conf`를 `/etc/modules-load.d/vfio.conf`로 복사한다.
+   `hosts/pve-node-3/modprobe.d/blacklist-nouveau.conf`도 같은 이름으로 `/etc/modprobe.d/`에 둔다.
+   nouveau와 nova_core 차단을 NVIDIA 패키지의 설정 파일에 의존하지 않게 한다. VFIO 파일은
    장치 id로 vfio-pci를 지정하고 `softdep`으로 nvidia, nouveau, snd_hda_intel보다 먼저 올라오게
    한다. 어느 경로로 그 드라이버가 올라오든 libkmod가 `softdep pre`를 처리하고, 한 번 붙은
    장치는 다른 드라이버가 빼앗지 못하므로 순서 경쟁이 없다. 카드가 다르면 `lspci -nn`의
@@ -313,8 +318,9 @@ NVIDIA 패키지는 지우지 않는다. 컨테이너 경로가 쓰던 것이고
    vfio_pci를 `ids` 옵션으로 올리는 순간 일어난다. `update-initramfs`는 initrd 안의 modprobe.d
    사본을 같은 내용으로 두기 위한 것이다. 조기 바인딩이 정말 필요해지면(initrd에 카드를 잡는
    드라이버가 들어가는 구성) `/etc/initramfs-tools/modules`에 `vfio_pci`를 넣어야 한다.
-4. `systemctl disable --now nvidia-persistenced`. 카드가 없으면 쓸모없고 nvidia 모듈을 올려 두게
-   하므로 끈다.
+4. NVIDIA host 패키지가 설치된 경우 `systemctl disable --now nvidia-persistenced`를 실행한다.
+   패키지를 제거한 호스트에는 이 유닛이 없을 수 있다. 카드가 없으면 쓸모없고 nvidia 모듈을
+   올려 두게 하므로 설치된 경우에만 끈다.
 5. 재부팅 전에 동적으로 확인할 수 있다. `nvidia-persistenced`를 멈추고 두 기능을
    `unbind`한 뒤 `driver_override`에 `vfio-pci`를 쓰고 `drivers_probe`로 다시 붙이면
    `lspci -nnk`의 `driver in use`가 `vfio-pci`가 되고 `/dev/vfio/<그룹>`이 생긴다. pve-node-3에서
