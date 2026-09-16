@@ -98,9 +98,9 @@ runbooks/         운영 절차                                    // 이 예시
 |---|---|
 | 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh` |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
-| 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `apply-relay-token.sh` |
+| 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
 | 운영 | `db-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py` |
-| 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh` |
+| 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
 
 `apply-settings.sh`는 누락된 런타임 설정 키를 추가하고 기존 값은 유지합니다. GPU 미연결
@@ -116,6 +116,11 @@ PBS 준비 도구는 Ubuntu 22.04 amd64의 libvirt와 네트워크를 유지하�
 절차와 복구 범위는 [백업 호스트 런북](runbooks/backup-host.md)에 있습니다.
 첫 root 실행은 `bootstrap-backup-host.sh --expected-host <hostname> --check`입니다.
 기존 도구로 disk/RAID 상태만 수집하며, 확인하지 못한 RAID 상태를 정상으로 표시하지 않습니다.
+
+운영 SDN 도구는 `hosts/production/network.json`을 입력으로 사용합니다. PVE와 NetBird의
+기존 firewall을 유지하며, guest 정책을 우회하는 mark와 VLAN frame을 별도 guard로 처리합니다.
+기본 실행은 사전 검사이고 실제 적용은 아직 수행하지 않았습니다. 생성된 SDN 파일을 수동으로
+편집하지 않는 부팅·rollback 절차는 [운영 네트워크 런북](runbooks/production-network.md)에 있습니다.
 
 스모크는 목이 아니라 살아 있는 시스템에 실제 요청을 보냅니다. `smoke-provisioning.sh`는
 회원가입부터 인증, 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기, SSH 도달 확인,

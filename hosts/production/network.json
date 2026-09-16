@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "cluster": "example-prod",
+  "zone": "prodvx",
+  "gateway_owner": "pve-node-2",
+  "host_mtu": 1420,
+  "guest_mtu": 1370,
+  "uplink": "vmbr0",
+  "mesh_interface": "wt0",
+  "nodes": {
+    "pve-node-2": {"campus": "192.0.2.30", "mesh": "100.64.0.30", "bmc_interface": "nic1", "bmc_address": "198.18.250.2"},
+    "pve-node-3": {"campus": "192.0.2.31", "mesh": "100.64.0.31"}
+  },
+  "vnets": {
+    "pinfra": {"vni": 927000, "cidr": "198.18.0.0/17", "gateway": "198.18.0.1"},
+    "pguest": {"vni": 928000, "cidr": "198.19.0.0/17", "gateway": "198.19.0.1"}
+  },
+  "service_sources": {"api": "198.18.1.20", "proxy": "198.18.1.10", "sshgw": "198.18.1.30", "relay": "100.64.0.1"}
+}
