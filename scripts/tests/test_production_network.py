@@ -19,9 +19,9 @@ CONFIG = {
     "host_mtu": 1420, "guest_mtu": 1370, "uplink": "vmbr0", "mesh_interface": "wt0",
     "nodes": {"pve-a": {"campus": "192.0.2.30", "mesh": "100.64.0.30", "bmc_interface": "nic1", "bmc_address": "198.51.100.2"},
               "pve-b": {"campus": "192.0.2.31", "mesh": "100.64.0.31"}},
-    "vnets": {"pinfra": {"vni": 927000, "cidr": "198.18.0.0/16", "gateway": "198.18.0.1"},
-              "pguest": {"vni": 928000, "cidr": "198.19.0.0/16", "gateway": "198.19.0.1"}},
-    "service_sources": {"api": "198.18.1.20", "proxy": "198.18.1.10", "sshgw": "198.18.1.30", "relay": "100.64.0.1"},
+    "vnets": {"pinfra": {"vni": 927000, "cidr": "100.65.0.0/16", "gateway": "100.65.0.1"},
+              "pguest": {"vni": 928000, "cidr": "100.66.0.0/16", "gateway": "100.66.0.1"}},
+    "service_sources": {"api": "100.65.1.20", "proxy": "100.65.1.10", "sshgw": "100.65.1.30", "relay": "100.64.0.1"},
 }
 FILTER = '-A FORWARD -m mark --mark 0x1bd20 -j ACCEPT\n'
 MANGLE = '-A NETBIRD-RT-PRE -i wt0 -m addrtype --dst-type LOCAL -j MARK --set-xmark 0x1bd20/0xffffffff\n'
@@ -50,7 +50,7 @@ class ProductionNetworkTests(unittest.TestCase):
 
     def test_initial_routes_reject_overlap_even_when_not_on_main_table(self):
         module = load_script('production-network')
-        result = subprocess.CompletedProcess([], 0, json.dumps([{'dst': '198.19.9.0/24', 'table': 100}]), '')
+        result = subprocess.CompletedProcess([], 0, json.dumps([{'dst': '100.66.9.0/24', 'table': 100}]), '')
         with patch.object(module, 'run', return_value=result):
             with self.assertRaisesRegex(AssertionError, 'existing route overlaps'):
                 module.check_initial_routes(CONFIG)

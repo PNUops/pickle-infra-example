@@ -117,8 +117,11 @@ PBS 준비 도구는 Ubuntu 22.04 amd64의 libvirt와 네트워크를 유지하�
 첫 root 실행은 `bootstrap-backup-host.sh --expected-host <hostname> --check`입니다.
 기존 도구로 disk/RAID 상태만 수집하며, 확인하지 못한 RAID 상태를 정상으로 표시하지 않습니다.
 
-운영 SDN 도구는 `hosts/production/network.json`을 입력으로 사용합니다. PVE와 NetBird의
-기존 firewall을 유지하며, guest 정책을 우회하는 mark와 VLAN frame을 별도 guard로 처리합니다.
+운영 SDN 도구는 `hosts/production/network.json`을 입력으로 사용합니다. 예시 운영망은
+`100.65.0.0/16`과 `100.66.0.0/16`이며 기존 개발망 `198.18.0.0/16`·`198.19.0.0/16`과
+mesh `100.64.0.*` 예시를 구분합니다. 실제 배포 전에는 이 예약 주소를 해당 환경에 맞게 교체합니다.
+PVE와 NetBird의 기존 firewall을 유지하며, guest 정책을 우회하는 mark와 VLAN frame을
+별도 guard로 처리합니다.
 기본 실행은 사전 검사이고 실제 적용은 아직 수행하지 않았습니다. 생성된 SDN 파일을 수동으로
 편집하지 않는 부팅·rollback 절차는 [운영 네트워크 런북](runbooks/production-network.md)에 있습니다.
 

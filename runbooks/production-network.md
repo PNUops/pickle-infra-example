@@ -6,15 +6,16 @@ PVE가 생성하는 `/etc/network/interfaces.d/sdn`은 API가 관리하며 수�
 
 ## 구성과 소유권
 
-정본 입력은 `hosts/production/network.json`이다. 이 예시는 실제 배포 주소 대신 reserved
-range를 사용한다. Infra/guest의 `/17`은 예시 BMC subnet과 겹치지 않게 나눈 값이며,
-실제 배포 전 모든 host route와 충돌하지 않는 주소 계획으로 교체한다.
+정본 입력은 `hosts/production/network.json`이다. 예시 운영망은 RFC 6598의
+`100.65.0.0/16`과 `100.66.0.0/16`을 사용해 기존 개발망 예시 `198.18.0.0/16`·
+`198.19.0.0/16`, BMC와 mesh 예시 주소를 구분한다. 실제 배포 전에는 이 예약 주소를
+그대로 사용하지 않고 모든 host와 tunnel route에 충돌하지 않는 주소 계획으로 교체한다.
 
 | 항목 | 값 |
 |---|---|
 | Cluster / zone | `example-prod` / `prodvx` |
-| Infra | `pinfra`, VNI 927000, `198.18.0.0/17`, gateway `198.18.0.1` |
-| Guest | `pguest`, VNI 928000, `198.19.0.0/17`, gateway `198.19.0.1` |
+| Infra | `pinfra`, VNI 927000, `100.65.0.0/16`, gateway `100.65.0.1` |
+| Guest | `pguest`, VNI 928000, `100.66.0.0/16`, gateway `100.66.0.1` |
 | VTEP | pve-node-2 `100.64.0.30`, pve-node-3 `100.64.0.31` |
 | MTU | NetBird 1420, VNet와 guest NIC 1370 |
 | 초기 gateway | pve-node-2만 두 gateway IPv4와 campus SNAT, IPv4 forwarding 소유 |

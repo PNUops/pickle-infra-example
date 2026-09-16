@@ -15,8 +15,8 @@
 #
 #   - the ranges RFC 5737 reserves for documentation, which is what every
 #     substituted address becomes;
-#   - the private ranges this copy deliberately keeps, because a script whose
-#     internal addressing has been blanked out no longer explains anything;
+#   - benchmarking and explicitly allowed shared ranges used by the network
+#     examples, so the configuration remains readable without real addresses;
 #   - loopback, the unspecified address, and a well-known public resolver.
 #
 # Anything else is a routable address that belongs to somebody, and in this tree
@@ -66,12 +66,14 @@ addr_allowed() {
   case "$1" in
     # RFC 5737 documentation ranges — the public-facing substitutes.
     192.0.2.* | 198.51.100.* | 203.0.113.*) return 0 ;;
-    # RFC 2544 benchmarking space stands in for the internal bridges and RFC
-    # 6598 shared space for the tunnel. Private addressing does NOT pass: this
-    # tree used to allow RFC 1918 wholesale, which made a substituted address
+    # RFC 2544 benchmarking space stands in for development bridges; the three
+    # explicit RFC 6598 ranges represent the mesh and production guest networks.
+    # Private addressing does NOT pass: this tree used to allow RFC 1918
+    # wholesale, which made a substituted address
     # and a real one indistinguishable to the one check meant to tell them apart.
     198.18.* | 198.19.*) return 0 ;;
     100.64.0.*) return 0 ;;
+    100.65.* | 100.66.*) return 0 ;;
     # Loopback, unspecified, broadcast, and the public resolver used in examples.
     127.* | 0.0.0.0 | 255.255.255.* | 8.8.8.8 | 8.8.4.4) return 0 ;;
   esac
@@ -119,7 +121,7 @@ sanitization_check() {
     file=${line%%:*}
     addr=${line#*:}
     addr_allowed "$addr" && continue
-    sfail "$file carries $addr, which is neither a documentation range nor private addressing"
+    sfail "$file carries $addr, which is outside the allowed address set"
     # This file is skipped because it is made of samples the rules exist to
     # reject: its selftest needs values the address rule must refuse, so
     # scanning itself would bury a real finding among its own probes.
@@ -202,6 +204,19 @@ sanitization_selftest() {
   for probe in 203.0.113.20 198.18.9.9 100.64.0.9 127.0.0.1; do
     if ! addr_allowed "$probe"; then
       echo "sanitization selftest: $probe would be rejected" >&2
+      return 1
+    fi
+  done
+  # Accept only the two complete production example ranges, not adjacent space.
+  for probe in 100.65.0.0 100.65.255.255 100.66.0.0 100.66.255.255; do
+    if ! addr_allowed "$probe"; then
+      echo "sanitization selftest: $probe would be rejected" >&2
+      return 1
+    fi
+  done
+  for probe in 100.64.1.0 100.64.255.255 100.67.0.0 100.127.255.255; do
+    if addr_allowed "$probe"; then
+      echo "sanitization selftest: $probe would be accepted" >&2
       return 1
     fi
   done
