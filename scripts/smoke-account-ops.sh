@@ -229,14 +229,10 @@ if has_phase account; then
     -H 'Content-Type: application/json' \
     -d '{"currentPassword":"nope-nope-nope","newPassword":"third-password-10"}'
 
-  # reset: only the uniform-response half is checked here. Confirming a reset
-  # needs the token from the mail, and this deployment runs the prod profile --
-  # mail goes out over real SMTP and the token is stored hashed, so there is no
-  # way to read it back. The rest of this flow (confirm, single-use, the old
-  # session dying) is unverified until something gives the smoke a copy of what
-  # was sent. Dropping it deliberately beats the previous state, where it read
-  # an empty token from a spool that stopped filling and failed for a reason
-  # nobody was looking at.
+  # Check only the uniform reset-request response. The token is delivered by
+  # SMTP and stored as a hash, so confirmation, single-use enforcement and
+  # revocation of older sessions need access to the delivered message and are
+  # not exercised by this smoke.
   req "reset request 202 (existing)" 202 -X POST "$BASE/auth/password-reset" \
     -H 'Content-Type: application/json' -d "{\"email\":\"$U1\"}"
   req "reset request 202 (unknown — uniform)" 202 -X POST "$BASE/auth/password-reset" \

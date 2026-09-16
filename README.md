@@ -100,7 +100,7 @@ runbooks/         운영 절차                                    // 이 예시
 | 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 예약 용량 기록) |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
-| 운영 | `db-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `activate-qdevice.py` |
+| 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `activate-qdevice.py` |
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
 
@@ -116,9 +116,9 @@ PBS 준비 도구는 Ubuntu 22.04 amd64의 libvirt와 네트워크를 유지하�
 설치 기준은 PBS 4.2.5-1, NetBird 0.78.2, qnetd 3.0.1-1입니다.
 절차와 복구 범위는 [백업 호스트 런북](runbooks/backup-host.md)에 있습니다.
 첫 root 실행은 `bootstrap-backup-host.sh --expected-host <hostname> --check`입니다.
+기존 도구로 disk/RAID 상태만 수집하며, 확인하지 못한 RAID 상태를 정상으로 표시하지 않습니다.
 인증서 등록을 마친 PVE 두 노드에서는 [qdevice 활성화 런북](runbooks/qdevice-activation.md)에
 따라 설정 잠금과 TLS 및 정족수 확인을 진행합니다.
-기존 도구로 disk/RAID 상태만 수집하며, 확인하지 못한 RAID 상태를 정상으로 표시하지 않습니다.
 
 운영 SDN 도구는 `hosts/production/network.json`을 입력으로 사용합니다. 예시 운영망은
 `100.65.0.0/16`과 `100.66.0.0/16`이며 기존 개발망 `198.18.0.0/16`·`198.19.0.0/16`과
@@ -133,6 +133,13 @@ PVE와 NetBird의 기존 firewall을 유지하며, guest 정책을 우회하는 
 API는 시작을 막는 marker와 비활성 job 설정을 적용한 상태로 남습니다. 스키마, 카탈로그,
 기존 데이터 이관과 공개 진입은 후속 작업입니다. 실제 설치와 전체 서비스 복구 검증은
 [격리 core 런북](runbooks/isolated-core-bootstrap.md)의 순서와 소유권 확인을 따릅니다.
+
+DB/PBS 도구는 Python 3와 `proxmox-backup-client`, source의 PostgreSQL 18 client를
+사용합니다. 기본 실행은 계획 출력이며 실제 백업은 `--run`으로 시작합니다. DB dump를
+암호화하여 업로드하고 실제 복원한 파일의 hash를 대조한 뒤 별도 검증 receipt를 게시합니다.
+다른 호스트의 monitor는 현재 PBS 증거로 10분 경고와 15분 실패를 판단합니다. timer와
+메일은 별도 설치 및 활성화가 필요합니다. 키 보관, 보존 정책과 전체 서비스 복원 시험은
+[DB/PBS 런북](runbooks/db-pbs-backup.md)에 있습니다. 사용자 VM 정기 백업은 이 도구의 대상이 아닙니다.
 
 스모크는 목이 아니라 살아 있는 시스템에 실제 요청을 보냅니다. `smoke-provisioning.sh`는
 회원가입부터 인증, 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기, SSH 도달 확인,
@@ -158,6 +165,7 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 실측 체크리스트, 운영자 접속 키 설치, 대역외 관리 평면 점검), `drift-resolution.md`(DB와
 하이퍼바이저 상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원),
 `isolated-core-bootstrap.md`(새 API/콘솔과 별도 DB LXC의 private TLS 연결 및 기동 제한),
+`db-pbs-backup.md`(플랫폼 DB의 암호화 PBS 백업, 독립 복구점 감시 및 같은 서비스의 수동 복원),
 `gpu-node-vllm.md`(GPU 노드 vLLM 서빙 운영 — 시작·종료, 모델·플래그 교체와 롤백, 장애
 복구, 재부팅), `proxmox-node-intake.md`(Proxmox 노드 후보 인수 절차 초안 — 초기화 전
 실측, 설치 전 결정 항목, standalone 설치, 등록 전에 실행하면 안 되는 스크립트),
@@ -167,17 +175,25 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 ## 검증
 
 ```bash
-scripts/verify.sh        # shellcheck, 설정 초기화와 격리 core 테스트, 정제와 스케줄 유닛 검사
+scripts/verify.sh        # shellcheck, 설정 초기화, core, DB 백업, SDN, qdevice와 노드 등록 테스트, 정제와 스케줄 유닛 검사
 ```
 
 `verify.sh`는 커밋 전 필수입니다. shellcheck 위반이 하나라도 있으면 실패하고, 이어서 도는
 정제 검사는 이 샘플에 실제 주소나 실제 값이 섞이지 않았는지 확인합니다.
+
+기본 검증은 설정 초기화, 격리 core, DB/PBS 백업, 운영 SDN, qdevice 활성화와 노드 등록의
+여섯 테스트 묶음을 실행합니다. 호스트 설정이나 운영 DB를 변경하지 않습니다. 노드 등록의
+실제 SQL 검증 두 건은 별도 선택 사항이며, 로컬 Docker에 있는 PostgreSQL image digest를
+`PICKLE_TEST_POSTGRES_IMAGE`에 지정하고 `python3 -B scripts/tests/test_node_registration.py`로
+실행합니다. 이 시험은 네트워크가 차단된 임시 컨테이너를 만들고 종료 후 정리합니다.
 
 설정 초기화 테스트는 Python 3와 jq를 사용합니다. 호스트에 연결하지 않고 로컬 SQL
 픽스처로 스크립트를 두 번 실행해 기존 설정값과 수정 시각이 유지되는지 검사합니다.
 PostgreSQL의 타입 검사와 실제 컨테이너 연결은 이 테스트의 범위에 포함하지 않습니다.
 격리 core 테스트는 Python 3 표준 라이브러리로 입력 검증과 기존 자원 보호, TLS 및
 서비스 기동 조건을 확인합니다. 실제 PVE 호스트에 접속하거나 컨테이너를 만들지 않습니다.
+DB 백업 테스트는 PBS 응답을 대신하는 메모리 객체로 snapshot 누락, 복원 대조 실패,
+조회 지연과 알림 재시도를 확인합니다. 실제 DB/PBS/SMTP 접속과 서비스 복구는 별도 시험입니다.
 
 ## 무엇을 바꿨나
 
