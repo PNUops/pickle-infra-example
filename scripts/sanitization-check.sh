@@ -114,7 +114,7 @@ sanitize_host_allowed() {
     # Public infrastructure these scripts genuinely fetch from.
     github.com | *.github.com | githubusercontent.com | *.githubusercontent.com) return 0 ;;
     *.debian.org | *.ubuntu.com | *.postgresql.org | *.proxmox.com | *.docker.com) return 0 ;;
-    pkgs.netbird.io | docs.netbird.io) return 0 ;;
+    pkgs.netbird.io | docs.netbird.io | www.dell.com) return 0 ;;
     *.letsencrypt.org | *.cloudflare.com | *.npmjs.org | *.golang.org | *.maven.org) return 0 ;;
   esac
   return 1

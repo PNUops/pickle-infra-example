@@ -100,7 +100,7 @@ runbooks/         운영 절차                                    // 이 예시
 | 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 예약 용량 기록) |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
-| 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `activate-qdevice.py` |
+| 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py` |
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
 
@@ -116,6 +116,7 @@ PBS 준비 도구는 Ubuntu 22.04 amd64의 libvirt와 네트워크를 유지하�
 설치 기준은 PBS 4.2.5-1, NetBird 0.78.2, qnetd 3.0.1-1입니다.
 절차와 복구 범위는 [백업 호스트 런북](runbooks/backup-host.md)에 있습니다.
 첫 root 실행은 `bootstrap-backup-host.sh --expected-host <hostname> --check`입니다.
+`check-backup-storage.py`는 hash로 고정한 portable SMART/PERC 도구를 읽기 진단에 사용합니다. 패키지나 서비스를 설치하지 않습니다.
 기존 도구로 disk/RAID 상태만 수집하며, 확인하지 못한 RAID 상태를 정상으로 표시하지 않습니다.
 인증서 등록을 마친 PVE 두 노드에서는 [qdevice 활성화 런북](runbooks/qdevice-activation.md)에
 따라 설정 잠금과 TLS 및 정족수 확인을 진행합니다.
@@ -181,8 +182,8 @@ scripts/verify.sh        # shellcheck, 설정 초기화, core, DB 백업, SDN, q
 `verify.sh`는 커밋 전 필수입니다. shellcheck 위반이 하나라도 있으면 실패하고, 이어서 도는
 정제 검사는 이 샘플에 실제 주소나 실제 값이 섞이지 않았는지 확인합니다.
 
-기본 검증은 설정 초기화, 격리 core, DB/PBS 백업, 운영 SDN, qdevice 활성화와 노드 등록의
-여섯 테스트 묶음을 실행합니다. 호스트 설정이나 운영 DB를 변경하지 않습니다. 노드 등록의
+기본 검증은 설정 초기화, disk 진단 수집기, 격리 core, DB/PBS 백업, 운영 SDN, qdevice 활성화와 노드 등록의
+일곱 테스트 묶음을 실행합니다. 호스트 설정이나 운영 DB를 변경하지 않습니다. 노드 등록의
 실제 SQL 검증 두 건은 별도 선택 사항이며, 로컬 Docker에 있는 PostgreSQL image digest를
 `PICKLE_TEST_POSTGRES_IMAGE`에 지정하고 `python3 -B scripts/tests/test_node_registration.py`로
 실행합니다. 이 시험은 네트워크가 차단된 임시 컨테이너를 만들고 종료 후 정리합니다.

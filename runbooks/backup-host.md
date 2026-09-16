@@ -10,6 +10,7 @@
 |---|---|
 | `scripts/bootstrap-backup-host.sh` | dept-node root. host NetBird와 masked qnetd, PBS 디렉터리 준비 |
 | `scripts/check-backup-host.py` | dept-node root. 기존 도구만 사용한 disk/RAID 상태 수집, 변경과 설치 없음 |
+| `scripts/check-backup-storage.py` | dept-node root. 공식 패키지에서 추출한 SMART/PERC 바이너리의 hash 검증과 읽기 수집 |
 | `scripts/enroll-backup-peer.sh` | dept-node 또는 PBS guest root. 일회용 key 파일로 host-only peer 등록 |
 | `scripts/configure-qnetd.sh` | dept-node root. mesh 주소 바인딩 또는 검증한 CSR 서명 |
 | `scripts/create-pbs-vm.sh` | dept-node root. 새 파일과 domain만 생성하고 guest bootstrap 실행 |
@@ -43,8 +44,29 @@ APT 서명 키를 검증하며, 필요한 정확한 버전이 없으면 다른 �
    `/home`은 ext4이며 PBS data 파일을 둘 위치다. 기존 `/vm` pool을 data 대상으로 쓰지 않는다.
    종료 코드 0은 수집 완료일 뿐 disk가 정상이라는 판정이 아니다. 기존 PERC/StorCLI가 없으면
    `raid_health=UNKNOWN`으로 표시한다. `smartmontools`도 없으면 설치하지 않고 누락을 기록한다.
-   그 경우 필요한 별도 설치 단계는 `apt-get install --no-install-recommends smartmontools`이며,
-   설치 전에 버전과 새 smartd service의 시작 여부를 검토하고 변경 목록에 포함한다.
+   도구가 없으면 공식 패키지를 일반 사용자 경로에 내려받고 `dpkg-deb -x`로 추출한다.
+   패키지를 설치하거나 maintainer script를 실행하지 않는다. Ubuntu APT의 검증된 패키지
+   metadata와 Dell 공식 다운로드의 SHA256을 각각 대조한 뒤 실행 파일의 SHA256도 기록한다.
+   H755와 Ubuntu 22.04를 명시하는 [Dell PERCCLI 7.2616 A15](https://www.dell.com/support/home/en-us/drivers/driversdetails?driverid=pdg3h)를 사용한다.
+   새 버전이라도 해당 controller와 OS 지원 목록이 다르면 조용히 바꾸지 않는다.
+
+   ```bash
+   sudo python3 -I scripts/check-backup-storage.py --expected-host dept-node \
+     --smartctl /absolute/path/to/smartctl --smartctl-sha256 <sha256> \
+     --raid-cli /absolute/path/to/perccli64 --raid-cli-sha256 <sha256> \
+     > storage-health.json
+   ```
+
+   `umask 077`인 운영자 터미널에서 실행한다. 바이너리는 root 전용 `/run` 임시 디렉터리에
+   복사한 뒤 hash를 확인하고 실행한다. 읽는 항목은 controller·virtual disk·physical disk·
+   BBU/CacheVault와 NVMe SMART다. Controller 조회는 `noforeign`으로 foreign scan을 피한다.
+   SMART 자동 탐색은 ioctl device node를 생성할 수 있어 실행하지 않으며, `/dev/nvme0n1`과
+   `/dev/nvme1n1`만 읽는다. 경로가 없으면 명시적 누락으로 남긴다. RAID 물리 disk는 PERC의
+   상태·media error·SMART alert로 판정하고 raw SAS SMART attributes는 수집하지 않는다.
+   Self-test, firmware, RAID 구성·cache 정책 변경은 하지 않는다.
+   BBU와 CacheVault 중 미장착 항목의 오류를 전체 disk 실패로 취급하지 않는다. 출력은
+   수동 판정 대상으로 남으며 명령 실패·SMART bitmask·매체 오류·cache 보호를 직접 확인한다.
+   실행 종료 때 임시 root 사본을 제거한다. 검토 후 일반 사용자 경로의 진단 묶음도 회수한다.
    RAID와 disk 상태를 판단한 뒤에만 PBS 파일 할당을 진행한다.
 2. 새 실행의 backup 디렉터리를 root 소유 0700으로 만들고 다음을 먼저 사전 검사한다.
 
