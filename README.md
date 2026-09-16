@@ -96,7 +96,7 @@ runbooks/         운영 절차                                    // 이 예시
 
 | 분류 | 스크립트 |
 |---|---|
-| 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh` |
+| 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh`, `bootstrap-isolated-core.sh` |
 | 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 예약 용량 기록) |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
@@ -128,6 +128,12 @@ PVE와 NetBird의 기존 firewall을 유지하며, guest 정책을 우회하는 
 기본 실행은 사전 검사이고 실제 적용은 아직 수행하지 않았습니다. 생성된 SDN 파일을 수동으로
 편집하지 않는 부팅·rollback 절차는 [운영 네트워크 런북](runbooks/production-network.md)에 있습니다.
 
+격리 core 도구는 Debian 13 템플릿으로 PostgreSQL 18과 Java 25 실행 환경을 준비합니다.
+대상 노드와 CTID, private 주소, 검증한 패키지 버전 및 새 자격증명 파일을 명시합니다.
+API는 시작을 막는 marker와 비활성 job 설정을 적용한 상태로 남습니다. 스키마, 카탈로그,
+기존 데이터 이관과 공개 진입은 후속 작업입니다. 실제 설치와 전체 서비스 복구 검증은
+[격리 core 런북](runbooks/isolated-core-bootstrap.md)의 순서와 소유권 확인을 따릅니다.
+
 스모크는 목이 아니라 살아 있는 시스템에 실제 요청을 보냅니다. `smoke-provisioning.sh`는
 회원가입부터 인증, 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기, SSH 도달 확인,
 전원 왕복, 삭제, DB 정합 검증까지 한 번에 통과시킵니다.
@@ -151,6 +157,7 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 사람만 할 수 있는 단계·절차가 없는 지점 명시), `node-intake.md`(비Proxmox 노드 편입 절차 —
 실측 체크리스트, 운영자 접속 키 설치, 대역외 관리 평면 점검), `drift-resolution.md`(DB와
 하이퍼바이저 상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원),
+`isolated-core-bootstrap.md`(새 API/콘솔과 별도 DB LXC의 private TLS 연결 및 기동 제한),
 `gpu-node-vllm.md`(GPU 노드 vLLM 서빙 운영 — 시작·종료, 모델·플래그 교체와 롤백, 장애
 복구, 재부팅), `proxmox-node-intake.md`(Proxmox 노드 후보 인수 절차 초안 — 초기화 전
 실측, 설치 전 결정 항목, standalone 설치, 등록 전에 실행하면 안 되는 스크립트),
@@ -160,7 +167,7 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 ## 검증
 
 ```bash
-scripts/verify.sh        # shellcheck, 설정 초기화 재실행 테스트, 정제와 스케줄 유닛 검사
+scripts/verify.sh        # shellcheck, 설정 초기화와 격리 core 테스트, 정제와 스케줄 유닛 검사
 ```
 
 `verify.sh`는 커밋 전 필수입니다. shellcheck 위반이 하나라도 있으면 실패하고, 이어서 도는
@@ -169,6 +176,8 @@ scripts/verify.sh        # shellcheck, 설정 초기화 재실행 테스트, 정
 설정 초기화 테스트는 Python 3와 jq를 사용합니다. 호스트에 연결하지 않고 로컬 SQL
 픽스처로 스크립트를 두 번 실행해 기존 설정값과 수정 시각이 유지되는지 검사합니다.
 PostgreSQL의 타입 검사와 실제 컨테이너 연결은 이 테스트의 범위에 포함하지 않습니다.
+격리 core 테스트는 Python 3 표준 라이브러리로 입력 검증과 기존 자원 보호, TLS 및
+서비스 기동 조건을 확인합니다. 실제 PVE 호스트에 접속하거나 컨테이너를 만들지 않습니다.
 
 ## 무엇을 바꿨나
 
