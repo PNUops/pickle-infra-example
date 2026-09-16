@@ -6,6 +6,7 @@ mapfile -t scripts < <(find . -name '*.sh' -not -path './.git/*')
 shellcheck "${scripts[@]}"
 python3 scripts/tests/test_settings_bootstrap.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_production_network.py
+python3 -B scripts/tests/test_qdevice_activation.py
 
 readiness_url='readonly HEALTH_URL="http://127.0.0.1:8080/actuator/health/readiness"'
 grep -Fxq "$readiness_url" scripts/deploy-api.sh || {

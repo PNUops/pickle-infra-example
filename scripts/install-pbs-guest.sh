@@ -41,7 +41,7 @@ if [[ -f $state_dir/complete ]]; then
   [[ $(blkid -s UUID -o value "$data_device") == "$saved_uuid" ]] || fail 'PBS_DATA의 UUID가 보관된 값과 다릅니다.'
   [[ $(findmnt -n -o UUID /mnt/datastore/example-prod) == "$saved_uuid" ]] || fail '실제 mount의 UUID가 다릅니다.'
   runuser -u backup -- test -w /mnt/datastore/example-prod || fail 'backup 계정이 datastore에 쓸 수 없습니다.'
-  proxmox-backup-manager datastore list --output-format json | python3 -c 'import json,sys; rows=json.load(sys.stdin); assert len([r for r in rows if r.get("name")=="example-prod" and r.get("path")=="/mnt/datastore/example-prod"])==1, "datastore config does not match"'
+  proxmox-backup-manager datastore list --output-format json | python3 -I -c 'import json,sys; rows=json.load(sys.stdin); assert len([r for r in rows if r.get("name")=="example-prod" and r.get("path")=="/mnt/datastore/example-prod"])==1, "datastore config does not match"'
   echo 'PBS guest bootstrap은 이미 완료됐습니다.'
   exit 0
 fi
@@ -171,7 +171,7 @@ systemctl enable --now pickle-pbs-firewall.service qemu-guest-agent.service netb
 systemctl unmask proxmox-backup.service proxmox-backup-proxy.service
 systemctl enable --now proxmox-backup.service proxmox-backup-proxy.service
 datastore_state=$(proxmox-backup-manager datastore list --output-format json)
-datastore_path=$(python3 -c 'import json,sys; rows=json.load(sys.stdin); found=[r for r in rows if r.get("name")=="example-prod"]; assert len(found)<=1; print(found[0]["path"] if found else "")' <<< "$datastore_state")
+datastore_path=$(python3 -I -c 'import json,sys; rows=json.load(sys.stdin); found=[r for r in rows if r.get("name")=="example-prod"]; assert len(found)<=1; print(found[0]["path"] if found else "")' <<< "$datastore_state")
 if [[ -n $datastore_path ]]; then
   [[ $datastore_path == /mnt/datastore/example-prod ]] || fail '다른 경로의 example-prod datastore가 있습니다.'
 elif [[ -d /mnt/datastore/example-prod/.chunks ]]; then
@@ -180,7 +180,7 @@ elif [[ -d /mnt/datastore/example-prod/.chunks ]]; then
 else
   proxmox-backup-manager datastore create example-prod /mnt/datastore/example-prod
 fi
-proxmox-backup-manager datastore list --output-format json | python3 -c 'import json,sys; rows=json.load(sys.stdin); assert len([r for r in rows if r.get("name")=="example-prod" and r.get("path")=="/mnt/datastore/example-prod"])==1, "datastore config does not match"'
+proxmox-backup-manager datastore list --output-format json | python3 -I -c 'import json,sys; rows=json.load(sys.stdin); assert len([r for r in rows if r.get("name")=="example-prod" and r.get("path")=="/mnt/datastore/example-prod"])==1, "datastore config does not match"'
 mountpoint -q /mnt/datastore/example-prod
 runuser -u backup -- test -w /mnt/datastore/example-prod || fail 'backup 계정이 datastore에 쓸 수 없습니다.'
 runuser -u backup -- test -w /mnt/datastore/example-prod/.chunks || fail 'backup 계정이 chunk 디렉터리에 쓸 수 없습니다.'

@@ -52,7 +52,7 @@ else
   if systemctl is-active --quiet corosync-qnetd.service; then
     fail '실행 중인 witness는 재설정하지 않습니다. quorum을 확인하는 별도 변경 절차가 필요합니다.'
   fi
-  python3 - "$mesh_ip" <<'PY'
+  python3 -I - "$mesh_ip" <<'PY'
 import ipaddress, json, subprocess, sys
 address = ipaddress.IPv4Address(sys.argv[1])
 assert address in ipaddress.IPv4Network('100.64.0.0/10'), 'mesh address must be in shared space'
@@ -81,7 +81,7 @@ UNIT
   systemctl unmask corosync-qnetd.service
   systemctl enable --now corosync-qnetd.service
   systemctl is-active --quiet corosync-qnetd.service || fail 'qnetd 기동을 확인하지 못했습니다.'
-  python3 - "$mesh_ip" <<'PY'
+  python3 -I - "$mesh_ip" <<'PY'
 import subprocess, sys
 rows = subprocess.check_output(['ss', '-H', '-ltn', 'sport', '=', ':5403'], text=True).splitlines()
 assert {row.split()[3] for row in rows} == {sys.argv[1] + ':5403'}, 'qnetd listener does not match the mesh address'

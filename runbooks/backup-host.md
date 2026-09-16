@@ -135,10 +135,13 @@ token을 사용한다. Encryption key는 PBS VM 밖에도 복구 가능한 형�
    생성 PKCS12는 private key를 포함한다. PVE root끼리 직접 전달하고 0600으로 보호한다.
    pve-node-3에서는 `-m -c <pkcs12>`로 import하며 임시 PKCS12는 이후 삭제한다.
 6. 두 PVE가 online/quorate일 때 `quorum.device`를 `model=net`, `votes=1`,
-   `algorithm=ffsplit`, `tls=on`, `host=<dept-node mesh IPv4>`로 등록한다.
+   `algorithm=ffsplit`, `tls=required`, `host=<dept-node mesh IPv4>`로 등록한다.
    지원되는 PVE lock/atomic-write 경로에서 최신 config_version을 증가시킨다.
 7. 두 qdevice service와 `corosync-cfgtool -R` 후 expected/total votes 3, quorum 2와
    TLS client 상태를 확인한다. raw pmxcfs SQLite를 열지 않는다.
+
+6–7단계의 사전 검사, 잠금과 적용 후 검증은 [qdevice 활성화 도구](qdevice-activation.md)를
+사용한다. 이 도구는 앞선 인증서 교환을 대신하지 않는다.
 
 ## 복구와 완료 확인
 

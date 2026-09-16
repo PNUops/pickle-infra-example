@@ -28,7 +28,7 @@ done
 [[ $boot_image == /* && -f $boot_image && ! -L $boot_image ]] || fail 'boot image 절대 경로가 필요합니다.'
 [[ $expected_hash =~ ^[[:xdigit:]]{64}$ ]] || fail '신뢰한 checksum 목록의 SHA256이 필요합니다.'
 [[ $(sha256sum "$boot_image" | awk '{print $1}') == "$expected_hash" ]] || fail 'boot image SHA256이 다릅니다.'
-python3 - "$boot_image" <<'PY'
+python3 -I - "$boot_image" <<'PY'
 import json, subprocess, sys
 info = json.loads(subprocess.check_output(['qemu-img', 'info', '--output=json', sys.argv[1]]))
 assert info['format'] == 'qcow2' and not info.get('backing-filename'), 'standalone qcow2 image required'
@@ -51,7 +51,7 @@ data_dir=/home/libvirt/backup-vm
 script_dir=$(cd "$(dirname "$0")" && pwd)
 guest_script=$script_dir/install-pbs-guest.sh
 [[ -f $guest_script ]] || fail '같은 scripts 디렉터리에 guest 설치 스크립트가 필요합니다.'
-python3 - <<'PY'
+python3 -I - <<'PY'
 import subprocess, xml.etree.ElementTree as E
 root = E.fromstring(subprocess.check_output(['virsh', '-c', 'qemu:///system', 'net-dumpxml', 'default']))
 assert root.find('forward').get('mode') == 'nat', 'default network must use NAT'
@@ -61,7 +61,7 @@ for host in root.findall('./ip/dhcp/host'):
 leases = subprocess.check_output(['virsh', '-c', 'qemu:///system', 'net-dhcp-leases', 'default'], text=True)
 assert '198.19.122.10/' not in leases, 'PBS address already has a DHCP lease'
 PY
-qemu_identity=$(python3 - <<'PY'
+qemu_identity=$(python3 -I - <<'PY'
 import pwd, re, subprocess, xml.etree.ElementTree as E
 root = E.fromstring(subprocess.check_output(['virsh', '-c', 'qemu:///system', 'capabilities']))
 labels = [s.findtext("baselabel[@type='kvm']") for s in root.findall('./host/secmodel') if s.findtext('model') == 'dac']
@@ -82,7 +82,7 @@ chmod 750 "$boot_dir" "$data_dir"
 qemu-img convert -f qcow2 -O qcow2 "$boot_image" "$boot_disk"
 qemu-img resize "$boot_disk" 64G
 qemu-img create -f raw -o preallocation=falloc "$data_disk" 1T
-python3 - "$boot_dir" "$public_key" "$guest_script" <<'PY'
+python3 -I - "$boot_dir" "$public_key" "$guest_script" <<'PY'
 from pathlib import Path
 import base64, json, sys, uuid
 root = Path(sys.argv[1])
