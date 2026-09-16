@@ -1,0 +1,22 @@
+{
+  "node": "node-example",
+  "cluster": "example-prod",
+  "api_url": "https://node-example.example.com:8006",
+  "api_address": "192.0.2.20",
+  "ca_file": "/etc/pve/pve-root-ca.pem",
+  "bridge": "guest0",
+  "bridge_mtu": 1370,
+  "storage": "local-lvm",
+  "pool_name": "guest-private",
+  "pool_cidr": "100.66.0.0/16",
+  "pool_gateway": "100.66.0.1",
+  "reserve_cpu_threads": 4,
+  "reserve_memory_mb": 8192,
+  "reserve_disk_gb": 128,
+  "gpu_node": false,
+  "database": "pickle_example",
+  "database_hostname": "db-example",
+  "database_system_identifier": "7600000000000000001",
+  "database_socket_dir": "/var/run/postgresql",
+  "existing_public_id": null
+}
