@@ -125,6 +125,9 @@ if [ ! -f /etc/pickle/api.env ]; then
 #PICKLE_SMTP_PORT=
 #PICKLE_SMTP_USERNAME=
 #PICKLE_SMTP_PASSWORD=
+# Sender shown in the inbox, `Name <address>`. Required outside dev/test
+# (startup fails fast without it). It is NOT derived from the SMTP username:
+# with a hosted sending service that username is a credential, not an address.
 #PICKLE_MAIL_FROM=Pickle <no-reply@example.ac.kr>
 #PICKLE_PROXMOX_URL=
 #PICKLE_PROXMOX_TOKEN_ID=
