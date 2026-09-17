@@ -98,6 +98,7 @@ runbooks/         운영 절차                                    // 이 예시
 |---|---|
 | 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh`, `bootstrap-isolated-core.sh` |
 | 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 예약 용량 기록) |
+| 전용 관리 계정 | `provision-operator-access.py`, `revoke-operator-access.py` (기본 사전 검사, 새 pickle 계정에 비밀번호 없는 전체 root sudo 권한 등록 및 회수) |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
 | 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py` |
@@ -117,6 +118,8 @@ PBS 준비 도구는 Ubuntu 22.04 amd64의 libvirt와 네트워크를 유지하�
 절차와 복구 범위는 [백업 호스트 런북](runbooks/backup-host.md)에 있습니다.
 첫 root 실행은 `bootstrap-backup-host.sh --expected-host <hostname> --check`입니다.
 `check-backup-storage.py`는 hash로 고정한 portable SMART/PERC 도구를 읽기 진단에 사용합니다. 패키지나 서비스를 설치하지 않습니다.
+
+전용 관리 계정의 준비·등록·철회는 [운영자 접근 런북](runbooks/operator-access.md)을 따릅니다.
 기존 도구로 disk/RAID 상태만 수집하며, 확인하지 못한 RAID 상태를 정상으로 표시하지 않습니다.
 인증서 등록을 마친 PVE 두 노드에서는 [qdevice 활성화 런북](runbooks/qdevice-activation.md)에
 따라 설정 잠금과 TLS 및 정족수 확인을 진행합니다.
