@@ -59,11 +59,19 @@ assert address in ipaddress.IPv4Network('100.64.0.0/10'), 'mesh address must be 
 links = json.loads(subprocess.check_output(['ip', '-j', '-4', 'address', 'show', 'dev', 'wt0']))
 assert any(a['local'] == str(address) for link in links for a in link.get('addr_info', [])), 'address is not assigned to wt0'
 PY
+  # Ubuntu 3.0.1 accepts 'req' here even though its manual spells out 'required'.
+  python3 -I - <<'PY'
+import subprocess
+probe = subprocess.run(['corosync-qnetd', '-s', 'req', '-c', 'on', '-h'],
+                       capture_output=True, text=True, timeout=10)
+if probe.returncode not in (0, 1) or probe.stderr.strip() or not probe.stdout.startswith('usage: corosync-qnetd '):
+    raise SystemExit('Installed qnetd rejected mandatory TLS/client-certificate arguments')
+PY
   systemctl is-active --quiet netbird || fail 'NetBird가 실행 중이 아닙니다.'
   echo "qnetd를 $mesh_ip:5403/TCP에 TLS 필수로 바인딩합니다."
   ((apply)) || exit 0
   install -d -o root -g root -m 755 /etc/systemd/system/corosync-qnetd.service.d "$public_dir"
-  printf 'COROSYNC_QNETD_OPTIONS="-4 -l %s -p 5403 -s required -c on"\n' "$mesh_ip" > /etc/default/corosync-qnetd
+  printf 'COROSYNC_QNETD_OPTIONS="-4 -l %s -p 5403 -s req -c on"\n' "$mesh_ip" > /etc/default/corosync-qnetd
   chmod 644 /etc/default/corosync-qnetd
   cat > /etc/systemd/system/corosync-qnetd.service.d/netbird.conf <<'UNIT'
 [Unit]
@@ -74,12 +82,16 @@ StartLimitIntervalSec=0
 [Service]
 Restart=on-failure
 RestartSec=5s
+StandardError=journal
 UNIT
   chmod 644 /etc/systemd/system/corosync-qnetd.service.d/netbird.conf
   install -o root -g root -m 644 /etc/corosync/qnetd/nssdb/qnetd-cacert.crt "$public_dir/"
   systemctl daemon-reload
   systemctl unmask corosync-qnetd.service
-  systemctl enable --now corosync-qnetd.service
+  if ! systemctl enable --now corosync-qnetd.service; then
+    systemctl stop corosync-qnetd.service
+    fail 'qnetd 시작에 실패했습니다. journalctl -u corosync-qnetd로 원인을 확인하세요.'
+  fi
   systemctl is-active --quiet corosync-qnetd.service || fail 'qnetd 기동을 확인하지 못했습니다.'
   python3 -I - "$mesh_ip" <<'PY'
 import subprocess, sys

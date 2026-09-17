@@ -60,6 +60,24 @@ class InputAndReadinessTests(unittest.TestCase):
 
 
 class BootstrapEnvironmentTests(unittest.TestCase):
+    def test_tls_argument_probe_rejects_a_parser_error_before_configuration(self):
+        script = (SOURCE.parent / 'configure-qnetd.sh').read_text()
+        blocks = re.findall(r"python3 -I - <<'PY'\n(.*?)\nPY", script, re.S)
+        probe = next(block for block in blocks if "'-s', 'req'" in block)
+        with tempfile.TemporaryDirectory() as directory:
+            command = Path(directory) / 'corosync-qnetd'
+            environment = {**os.environ, 'PATH': directory + os.pathsep + os.environ.get('PATH', '')}
+            for body, expected_success in [
+                ("printf 'usage: corosync-qnetd [-s tls]\\n'; exit 1", True),
+                ("echo 'tls must be one of on, off, req' >&2; exit 1", False),
+                ("exit 127", False),
+            ]:
+                command.write_text('#!/bin/sh\n' + body + '\n')
+                command.chmod(0o700)
+                result = subprocess.run([sys.executable, '-I', '-'], input=probe, env=environment,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode == 0, expected_success)
+
     def test_mesh_guard_rejects_invalid_address_with_optimized_parent_environment(self):
         script = (SOURCE.parent / 'configure-qnetd.sh').read_text()
         match = re.search(r"python3 ([^\n]+) <<'PY'\n(.*?)\nPY", script, re.S)

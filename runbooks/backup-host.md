@@ -99,6 +99,11 @@ APT 서명 키를 검증하며, 필요한 정확한 버전이 없으면 다른 �
    실제 `wt0` IPv4를 확인한 뒤 `configure-qnetd.sh --mesh-ip <IPv4> --apply`를 실행한다.
    listener가 그 주소에만 있고 TLS/client certificate가 필수인지 확인한다.
 
+Ubuntu qnetd 3.0.1의 daemon CLI는 TLS 필수 값으로 `-s req`를 받는다. 동봉 man page의
+`required` 표기와 다르므로, 변경 전에 실제 binary의 인자 해석을 검사한다. PVE qdevice의
+corosync 설정값 `tls=required`와 혼동하지 않는다. stderr는 journal에 남기며 최초 시작이
+실패하면 반복 재시도를 중지하고 원인을 확인한다.
+
 qnetd는 NetBird 서비스 이후 시작하고 bind 실패를 재시도한다. 이것은 NetBird peer 준비를
 대신하지 않는다. `netbird status`, 실제 연결과 qnetd listener를 함께 확인한다.
 
