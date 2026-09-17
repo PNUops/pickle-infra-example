@@ -258,7 +258,7 @@ U1PW='terminal-owner-1'
 U1="smoke-term-own-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U1")
 read -r U1T _ <<<"$(mk_user "$U1" "$U1PW" '터미널소유자')"
 req "create team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
-  -d "{\"kind\":\"TEAM\",\"name\":\"smoke-term-$TS\"}"
+  -d "{\"kind\":\"PROJECT\",\"name\":\"smoke-term-$TS\"}"
 GID=$(jq -r '.id' "$B")
 req "vm request 201" 201 -X POST "$BASE/requests" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
   -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$ORG,\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":$TPL,\"flavorId\":$FID,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"specReason\":null}}"

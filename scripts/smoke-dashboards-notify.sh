@@ -90,7 +90,7 @@ phase_setup(){
   req "verify-email" 200 -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' -d "{\"token\":\"$tok\"}" || return 1
   req "user login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$EM\",\"password\":\"$PW\"}" || return 1
   SAT=$(jq -r .accessToken "$B")
-  req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"name\":\"dash e2e\",\"kind\":\"TEAM\"}" || return 1
+  req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"name\":\"dash e2e\",\"kind\":\"PROJECT\"}" || return 1
   GID=$(jq -r .id "$B")
   AAT=$(login "$ORGADMIN_EMAIL" "$ORGADMIN_PW")
   { [ -n "$AAT" ] && ok "orgadmin login (org lookup)"; } || { ko "orgadmin login (org lookup)"; return 1; }

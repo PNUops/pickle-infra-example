@@ -259,7 +259,7 @@ phase_account() {
   # e2e VM keeps the dev- prefix the residue guard looks for.
   step "create workspace" 201 -X POST "$BASE/workspaces" \
     -H "Authorization: Bearer $USER_AT" -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"TEAM\",\"name\":\"스모크팀 $TS\",\"description\":\"provisioning smoke\"}" || return 1
+    -d "{\"kind\":\"PROJECT\",\"name\":\"스모크팀 $TS\",\"description\":\"provisioning smoke\"}" || return 1
   WORKSPACE_ID=$(jq -r .id "$BODY")
 }
 

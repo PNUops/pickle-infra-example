@@ -97,7 +97,7 @@ if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
   fi
   req "owner login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$OEMAIL\",\"password\":\"$OPW\"}"
   OAT=$(jq -r '.accessToken // empty' "$B")
-  req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"prodsmoke\",\"kind\":\"TEAM\"}"
+  req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"prodsmoke\",\"kind\":\"PROJECT\"}"
   GID=$(jq -r '.id // empty' "$B")
   # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
   ADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"

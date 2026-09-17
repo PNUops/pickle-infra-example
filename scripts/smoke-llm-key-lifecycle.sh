@@ -123,7 +123,7 @@ APPROVER_TOKEN="$REQUESTER_TOKEN"
 
 request 'create workspace' 201 -X POST "$BASE/workspaces" \
   -H "Authorization: Bearer $REQUESTER_TOKEN" -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg name "LLM smoke $TS" '{kind:"TEAM",name:$name}')" || exit 1
+  -d "$(jq -nc --arg name "LLM smoke $TS" '{kind:"PROJECT",name:$name}')" || exit 1
 WORKSPACE_ID=$(jq -r '.id // empty' "$BODY")
 
 request 'read requester organisation roles' 200 "$BASE/me" \

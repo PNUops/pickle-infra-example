@@ -290,7 +290,7 @@ if has_phase group; then
   read -r U3T U3ID _ <<<"$(mk_user "$U3" 'group-password-10' '그룹스모크')"
   req "create team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U3T")" \
     -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"TEAM\",\"name\":\"smoke-acct-team-$TS\"}"
+    -d "{\"kind\":\"PROJECT\",\"name\":\"smoke-acct-team-$TS\"}"
   GID=$(jq -r '.id' "$B")
   # a SUBMITTED request must be canceled by the delete
   req "submit vm request 201" 201 -X POST "$BASE/requests" -H "$(auth "$U3T")" \
@@ -302,7 +302,7 @@ if has_phase group; then
   req "  deleted workspace is gone (404)" 404 "$BASE/workspaces/$GID" -H "$(auth "$U3T")"
   req "  name reusable (201)" 201 -X POST "$BASE/workspaces" -H "$(auth "$U3T")" \
     -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"TEAM\",\"name\":\"smoke-acct-team-$TS\"}"
+    -d "{\"kind\":\"PROJECT\",\"name\":\"smoke-acct-team-$TS\"}"
   GID2=$(jq -r '.id' "$B")
   req "  cleanup second team 204" 204 -X DELETE "$BASE/workspaces/$GID2" -H "$(auth "$U3T")"
   PGID=$(pgq "select g.id from workspaces g join workspace_members gm on gm.workspace_id=g.id
@@ -320,7 +320,7 @@ if has_phase protect; then
   # membership tests need an invitable group — PERSONAL membership is immutable
   req "create protect team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U4T")" \
     -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"TEAM\",\"name\":\"smoke-acct-prot-$TS\"}"
+    -d "{\"kind\":\"PROJECT\",\"name\":\"smoke-acct-prot-$TS\"}"
   PGID4=$(jq -r '.id' "$B")
   req "vm request 201" 201 -X POST "$BASE/requests" -H "$(auth "$U4T")" \
     -H 'Content-Type: application/json' -d "$(req_payload "$PGID4" '보호 스모크')"

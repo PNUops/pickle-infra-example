@@ -182,7 +182,7 @@ echo "== provision (owner O creates group + VM) =="
 OWNER_EMAIL="sgw-owner-${TS}@pusan.ac.kr"; OWNER_PW="sgw-pass-${TS}!"
 read -r OAT OUID _ < <(mk_user "$OWNER_EMAIL" "$OWNER_PW" "SGW Owner")
 [ -n "$OAT" ] && [ -n "$OUID" ] && ok "owner user id=$OUID" || { ko "owner signup"; exit 1; }
-req "group" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"sgw\",\"kind\":\"TEAM\"}" || exit 1
+req "group" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"sgw\",\"kind\":\"PROJECT\"}" || exit 1
 GID=$(jq -r .id "$B")
 # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
 req "orgadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ORGADMIN_EMAIL\",\"password\":\"$ORGADMIN_PW\"}" || exit 1
