@@ -56,6 +56,27 @@ for i in \$(seq 1 $HEALTH_TICKS); do
   if curl -fsS $HEALTH_URL >/dev/null 2>&1; then echo 'health OK'; exit 0; fi
 done
 echo 'health check failed; rolling back' >&2
+# The journal is printed here, before the rollback restart: the rollback
+# relinks and restarts at once, so the old jar's startup lines would otherwise
+# be the last thing in the journal and the real exception would never be seen.
+# Without this the operator gets only the line above, and a missing env key
+# reads exactly like a bad database password.
+#
+# A line count, never a time window. The container clock is UTC, and a KST
+# timestamp handed to a journalctl time window once returned no entries, which
+# was read as no errors. A count needs no clock, and the failed attempt is by
+# construction the most recent lines. systemd's own restart-counter lines come
+# with it, and those are what separate a crash loop from a migration still
+# running.
+#
+# The trailing true keeps a journal hiccup from aborting the rollback below.
+#
+# This output reaches the deploy workflow log, which is read by more people
+# than root on this host. A startup guard's message must name the shape of a
+# rejected value and never the value itself.
+echo '--- pickle-api journal, last 150 lines ---' >&2
+journalctl -u pickle-api -n 150 --no-pager >&2 || true
+echo '--- end journal ---' >&2
 if [ -n \"\$prev\" ]; then
   ln -sfn \"\$prev\" current.jar; systemctl restart pickle-api
 else
