@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,35 @@ spec.loader.exec_module(storage)
 
 
 class StorageCollectionTest(unittest.TestCase):
+    @patch.object(storage.os, "ST_NOEXEC", 8, create=True)
+    def test_noexec_filesystem_is_refused_without_remounting(self):
+        metadata = SimpleNamespace(st_mode=0o40700, st_uid=0)
+        with patch.object(storage.Path, "lstat", return_value=metadata), patch.object(storage.os, "statvfs", return_value=SimpleNamespace(f_flag=storage.os.ST_NOEXEC)):
+            with self.assertRaisesRegex(ValueError, "does not permit"):
+                storage.execution_parent()
+
+    @patch.object(storage.os, "ST_NOEXEC", 8, create=True)
+    def test_execution_parent_must_be_root_private_directory(self):
+        for mode, uid in ((0o40755, 0), (0o40700, 1000), (0o120700, 0)):
+            with patch.object(storage.Path, "lstat", return_value=SimpleNamespace(st_mode=mode, st_uid=uid)):
+                with self.assertRaises(ValueError):
+                    storage.execution_parent()
+        with patch.object(storage.Path, "lstat", return_value=SimpleNamespace(st_mode=0o40700, st_uid=0)), patch.object(storage.os, "statvfs", return_value=SimpleNamespace(f_flag=0)):
+            self.assertEqual(storage.execution_parent(), Path("/root"))
+
+    def test_spawn_error_is_incomplete_but_device_exit_code_is_not_health_verdict(self):
+        result = {"smart_version": {"exit_code": 0}, "raid": [{"exit_code": 255}], "smart": [{"exit_code": 8}]}
+        self.assertTrue(storage.collection_complete(result))
+        result["raid"][0] = {"error": "Permission denied"}
+        self.assertFalse(storage.collection_complete(result))
+        result["raid"][0] = {"timed_out": True}
+        self.assertFalse(storage.collection_complete(result))
+        result["raid"][0] = {"exit_code": -11}
+        self.assertFalse(storage.collection_complete(result))
+        result["raid"][0] = {"exit_code": 255}
+        result["smart_version"] = {"exit_code": 127}
+        self.assertFalse(storage.collection_complete(result))
+
     def test_tool_is_copied_and_hash_checked_before_execution(self):
         with tempfile.TemporaryDirectory() as root:
             source, target = Path(root) / "input", Path(root) / "copy"

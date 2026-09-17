@@ -13,6 +13,26 @@ import subprocess
 import tempfile
 
 
+def execution_parent():
+    """Use an executable root-private directory without changing mount policy."""
+    parent = Path("/root")
+    metadata = parent.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
+        raise ValueError("/root must be a root-owned private directory, not a symlink")
+    if os.statvfs(parent).f_flag & os.ST_NOEXEC:
+        raise ValueError("/root filesystem does not permit diagnostic executables")
+    return parent
+
+
+def collection_complete(result):
+    """Command collection success does not certify hardware health."""
+    entries = [result["smart_version"], *result["raid"], *result["smart"]]
+    return result["smart_version"].get("exit_code") == 0 and all(
+        "error" not in entry and not entry.get("timed_out")
+        and isinstance(entry.get("exit_code"), int) and entry["exit_code"] >= 0
+        for entry in entries)
+
+
 def snapshot(source, digest, destination):
     """Copy and verify before executing bytes outside operator-writable storage."""
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -94,13 +114,16 @@ def main():
         parser.error("Root privileges and the exact host name are required")
     os.umask(0o077)
     try:
-        with tempfile.TemporaryDirectory(prefix="pickle-storage-check-", dir="/run") as temporary:
+        with tempfile.TemporaryDirectory(prefix="pickle-storage-check-", dir=execution_parent()) as temporary:
             directory = Path(temporary)
             smartctl = snapshot(args.smartctl, args.smartctl_sha256, directory / "smartctl")
             raid_cli = snapshot(args.raid_cli, args.raid_cli_sha256, directory / "perccli64")
             result = collect(smartctl, raid_cli, directory)
             result["tool_sha256"] = {"smartctl": args.smartctl_sha256, "raid_cli": args.raid_cli_sha256}
+            result["collection_complete"] = collection_complete(result)
             print(json.dumps(result, indent=2, ensure_ascii=False))
+            if not result["collection_complete"]:
+                parser.exit(1, "Storage collection incomplete; inspect the preserved JSON errors\n")
     except (OSError, ValueError) as error:
         parser.exit(1, f"Storage collection refused: {error}\n")
 

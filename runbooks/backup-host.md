@@ -57,8 +57,12 @@ APT 서명 키를 검증하며, 필요한 정확한 버전이 없으면 다른 �
      > storage-health.json
    ```
 
-   `umask 077`인 운영자 터미널에서 실행한다. 바이너리는 root 전용 `/run` 임시 디렉터리에
-   복사한 뒤 hash를 확인하고 실행한다. 읽는 항목은 controller·virtual disk·physical disk·
+   `umask 077`인 운영자 터미널에서 실행한다. 바이너리는 root 소유의 비공개 `/root` 아래 임시 디렉터리에
+   복사한 뒤 hash를 확인하고 실행한다. 실행 전에 해당 filesystem의 `noexec` 여부를
+   확인하며 mount 보안 옵션은 바꾸지 않는다. `/run`은 `noexec`일 수 있어 실행 파일의
+   사본 위치로 사용하지 않는다. 실행 실패·시간 초과·장치 누락은 JSON을 보존하고
+   종료 코드 1과 `collection_complete=false`로 표시한다. `collection_complete=true`도
+   수집 완료일 뿐 하드웨어 정상 판정이 아니다. 읽는 항목은 controller·virtual disk·physical disk·
    BBU/CacheVault와 NVMe SMART다. Controller 조회는 `noforeign`으로 foreign scan을 피한다.
    SMART 자동 탐색은 ioctl device node를 생성할 수 있어 실행하지 않으며, `/dev/nvme0n1`과
    `/dev/nvme1n1`만 읽는다. 경로가 없으면 명시적 누락으로 남긴다. RAID 물리 disk는 PERC의
