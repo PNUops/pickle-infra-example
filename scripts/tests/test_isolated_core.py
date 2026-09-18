@@ -364,6 +364,40 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
         self.assertIn('ip saddr 100.65.1.10 tcp dport 80 accept', application)
         self.assertNotIn('tcp dport 8080 accept', application)
 
+    def test_guest_mtu_hook_noops_for_non_primary_interfaces(self):
+        hook = core.render_guest_mtu_hook(1370)
+        self.assertIn('[ "${IFACE:-}" = "eth0" ] || exit 0', hook)
+        self.assertIn('/usr/sbin/ip link set dev eth0 mtu 1370', hook)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / 'isolated-core-mtu'
+            path.write_text(hook)
+            path.chmod(0o755)
+            result = subprocess.run(['/bin/sh', str(path)], env={'IFACE': 'eth1'},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+            self.assertEqual(result.stderr, '')
+
+    def test_guest_mtu_apply_requires_exact_json_readback(self):
+        runner = FakeRunner({'guest MTU readback': json.dumps([{'ifname': 'eth0', 'mtu': 1370}])})
+        bootstrap = core.Bootstrap(config(), runner)
+        with patch.object(bootstrap, 'owned'), patch.object(bootstrap, 'put'):
+            bootstrap.ensure_guest_mtu(201, 'pickle-app')
+        apply = next(args for args, kwargs in runner.calls if kwargs.get('label') == 'guest MTU apply')
+        self.assertEqual(apply[-5:], ['set', 'dev', 'eth0', 'mtu', '1370'])
+        self.assertIn('1370', apply)
+
+    def test_guest_mtu_apply_rejects_wrong_json_readback(self):
+        for value in ([{'ifname': 'eth0', 'mtu': 1500}],
+                      [{'ifname': 'eth1', 'mtu': 1370}],
+                      ['not-an-interface-record']):
+            with self.subTest(value=value):
+                runner = FakeRunner({'guest MTU readback': json.dumps(value)})
+                bootstrap = core.Bootstrap(config(), runner)
+                with patch.object(bootstrap, 'owned'), patch.object(bootstrap, 'put'), \
+                        self.assertRaisesRegex(core.BootstrapError, 'MTU readback'):
+                    bootstrap.ensure_guest_mtu(201, 'pickle-app')
+
     def test_api_cannot_start_or_process_jobs_until_a_later_explicit_step(self):
         self.assertIn('ConditionPathExists=/etc/pickle/allow-api-start', core.API_UNIT)
         self.assertIn('Requires=isolated-core-firewall.service', core.API_UNIT)

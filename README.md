@@ -138,6 +138,8 @@ PVE와 NetBird의 기존 firewall을 유지하며, guest 정책을 우회하는 
 편집하지 않는 부팅·rollback 절차는 [운영 네트워크 런북](runbooks/production-network.md)에 있습니다.
 
 격리 core 도구는 Debian 13 템플릿으로 PostgreSQL 18과 Java 25 실행 환경을 준비합니다.
+새 게스트의 `eth0` MTU는 소유권 확인 직후 `/etc/network/if-pre-up.d/isolated-core-mtu`
+hook으로 지속 적용하고, APT 전에 `ip -j link` readback으로 검증합니다.
 대상 노드와 CTID, private 주소, 검증한 패키지 버전 및 새 자격증명 파일을 명시합니다.
 API는 `isolated` profile, 시작을 막는 marker와 비활성 job/정책/vendor 설정을 적용한 상태로
 남습니다. 별도 `--bootstrap-admin` one-shot은 host/CT/machine/DB identity와 빈 DB를 확인한

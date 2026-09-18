@@ -26,6 +26,11 @@ JobRunr와 정책 producer는 꺼진 상태이며 정상 기동은 개발 시더
   volume ID와 SHA-256을 입력한다. 스크립트는 템플릿을 내려받거나 원본을 변경하지 않는다.
 - API와 DB용 새 자격증명 및 DB TLS 자료를 외부 보호 파일로 준비한다. 기존 서비스의
   env 파일, DB dump나 archive는 이 도구의 입력이 아니다.
+- 새 게스트를 시작한 직후 소유권을 다시 확인하고 `/etc/network/if-pre-up.d/isolated-core-mtu`
+  를 root 소유 실행 파일로 설치한다. 이 hook은 `IFACE=eth0`일 때만 검증된 guest MTU를
+  적용하고 다른 인터페이스에서는 아무 작업도 하지 않는다. 부트스트랩은 hook 설치 뒤
+  `/usr/sbin/ip -j link show dev eth0`로 실제 MTU를 즉시 확인한 뒤에만 APT/package 단계로
+  진행한다. 이 방식은 Debian ifupdown hook 규약에 따른다: [interfaces(5) hook scripts](https://manpages.debian.org/trixie/ifupdown/interfaces.5.en.html#HOOK_SCRIPTS).
 
 ## 버전 기준
 

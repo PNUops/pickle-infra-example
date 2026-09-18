@@ -348,6 +348,17 @@ table inet isolated_core {{
 """
 
 
+def render_guest_mtu_hook(mtu: int) -> str:
+    """Render the bootstrap-owned ifup hook for the guest's primary NIC."""
+    if type(mtu) is not int or not 1280 <= mtu <= 1500:
+        raise BootstrapError('Guest MTU must be an integer between 1280 and 1500')
+    return f'''#!/bin/sh
+set -eu
+[ "${{IFACE:-}}" = "eth0" ] || exit 0
+exec /usr/sbin/ip link set dev eth0 mtu {mtu}
+'''
+
+
 API_UNIT = """[Unit]
 Description=Isolated Pickle API
 After=network-online.target
@@ -430,6 +441,25 @@ class Bootstrap:
         if actual_hostname != hostname or description != 'isolated-core:' + self.run_id:
             raise BootstrapError('Container ownership changed; refusing further writes')
 
+    def ensure_guest_mtu(self, ctid: int, hostname: str) -> None:
+        c = self.c
+        self.owned(ctid, hostname)
+        self.put(ctid, '/etc/network/if-pre-up.d/isolated-core-mtu',
+                 render_guest_mtu_hook(c.mtu), '0755')
+        self.owned(ctid, hostname)
+        self.r.guest(ctid, ['/usr/sbin/ip', 'link', 'set', 'dev', 'eth0', 'mtu', str(c.mtu)],
+                      label='guest MTU apply')
+        self.owned(ctid, hostname)
+        readback = json.loads(self.r.guest(
+            ctid, ['/usr/sbin/ip', '-j', 'link', 'show', 'dev', 'eth0'],
+            label='guest MTU readback'))
+        if (not isinstance(readback, list) or len(readback) != 1
+                or not isinstance(readback[0], dict)
+                or readback[0].get('ifname') != 'eth0'
+                or type(readback[0].get('mtu')) is not int
+                or readback[0].get('mtu') != c.mtu):
+            raise BootstrapError('Guest eth0 MTU readback did not match the configured MTU')
+
     def put(self, ctid: int, path: str, content: bytes | str, mode: str = '0644', owner: str = 'root:root') -> None:
         if isinstance(content, str):
             content = content.encode()
@@ -474,6 +504,7 @@ class Bootstrap:
             raise BootstrapError('New guest has no valid machine identity')
         self.manifest['created'][-1]['machine_id'] = machine_id
         self.save()
+        self.ensure_guest_mtu(ctid, hostname)
         return ctid
 
     def packages(self, ctid: int, role: str) -> None:
