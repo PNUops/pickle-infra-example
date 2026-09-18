@@ -84,7 +84,8 @@ def admin_responses(c, run_id):
             'recovery': False,
         }),
         'fresh database table guard': '[]',
-        'application TLS database identity': f'{c.db_name}|{c.db_role}|t\n',
+        'application TLS database identity': json.dumps({
+            'database': c.db_name, 'role': c.db_role, 'ssl': True}),
     }
 
 
@@ -270,6 +271,14 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
 
     def test_admin_bootstrap_rejects_identity_freshness_and_service_contradictions(self):
         cases = {
+            'Application DB path': ('application TLS database identity', json.dumps({
+                'database': 'other_database', 'role': 'pickle_verify', 'ssl': True})),
+            'role and TLS': ('application TLS database identity', json.dumps({
+                'database': 'pickle_verify', 'role': 'wrong_role', 'ssl': True})),
+            'expected role and TLS': ('application TLS database identity', json.dumps({
+                'database': 'pickle_verify', 'role': 'pickle_verify', 'ssl': False})),
+            'confirm expected role and TLS': ('application TLS database identity', json.dumps({
+                'database': 'pickle_verify', 'role': 'pickle_verify', 'ssl': 1})),
             'container ownership': ('application container identity', 'hostname: other\n'),
             'machine identity': ('application machine identity', 'c' * 32),
             'system identifier': ('privileged database identity', json.dumps({

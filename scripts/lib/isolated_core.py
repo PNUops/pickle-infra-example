@@ -729,14 +729,16 @@ class AdminBootstrap:
         connection = (f'host={c.db_hostname} hostaddr={c.db_ip} port=5432 dbname={c.db_name} '
                       f'user={c.db_role} sslmode=verify-full '
                       'sslrootcert=/etc/pickle/db-ca.crt connect_timeout=10')
-        app_identity = r.guest(
+        app_identity = json.loads(r.guest(
             c.app_ctid, ['runuser', '-u', 'pickle', '--', 'python3', '-c', ENV_FILE_EXEC,
                          '/etc/pickle/core.env', 'psql', connection, '-X', '-qAt',
                          '-v', 'ON_ERROR_STOP=1', '-c',
-                         "select current_database()||'|'||current_user||'|'||"
-                         "(select ssl from pg_stat_ssl where pid=pg_backend_pid())"],
-            label='application TLS database identity')
-        if app_identity.strip() != f'{c.db_name}|{c.db_role}|t':
+                         "select json_build_object('database',current_database(),"
+                         "'role',current_user,'ssl',"
+                         "(select ssl from pg_stat_ssl where pid=pg_backend_pid()))"],
+            label='application TLS database identity'))
+        if (app_identity != {'database': c.db_name, 'role': c.db_role, 'ssl': True}
+                or app_identity['ssl'] is not True):
             raise BootstrapError('Application DB path did not confirm expected role and TLS')
         return {'run_id': self.run_id, 'app_ctid': c.app_ctid, 'db_ctid': c.db_ctid,
                 'database_system_identifier': identity['system_identifier'], 'would_seed': ['SYS_ADMIN']}
