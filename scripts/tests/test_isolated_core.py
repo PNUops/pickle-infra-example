@@ -99,6 +99,38 @@ class FakeRunner(core.Runner):
 
 
 class IsolatedCoreSafetyTest(unittest.TestCase):
+    def test_guest_secrets_receive_private_permissions_during_copy(self):
+        for mode in ('0600', '0640'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as td:
+                c = replace(config(Path(td)), state_dir=td)
+                runner = FakeRunner()
+                bootstrap = core.Bootstrap(c, runner)
+                with patch.object(bootstrap, 'owned'):
+                    bootstrap.put(c.app_ctid, '/etc/pickle/fixture.env',
+                                  'SECRET=fixture', mode)
+                push = next(args for args, kwargs in runner.calls
+                            if kwargs.get('label') == 'new owned guest file')
+                self.assertEqual(push[-2:], ['--perms', mode])
+                self.assertNotIn('SECRET=fixture', ' '.join(push))
+
+    def test_helper_paths_remain_traversable_without_weakening_private_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            original = os.umask(0o077)
+            try:
+                core.Runner().run([
+                    sys.executable, '-c',
+                    'import pathlib,sys; p=pathlib.Path(sys.argv[1]); '
+                    '(p/"helper").mkdir(); (p/"helper"/"public").write_text("fixture")',
+                    str(root),
+                ])
+                (root / 'private-state').write_text('fixture')
+                self.assertEqual((root / 'helper').stat().st_mode & 0o777, 0o755)
+                self.assertEqual((root / 'helper' / 'public').stat().st_mode & 0o777, 0o644)
+                self.assertEqual((root / 'private-state').stat().st_mode & 0o777, 0o600)
+            finally:
+                os.umask(original)
+
     def test_default_mode_does_not_read_credentials_or_execute_host_commands(self):
         with tempfile.TemporaryDirectory() as td:
             source = Path(td) / 'config.json'

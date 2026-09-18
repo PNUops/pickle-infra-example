@@ -156,7 +156,11 @@ def plan(c: Config) -> dict:
 
 class Runner:
     def run(self, args: list[str], *, data: bytes | None = None, label: str = 'command', timeout: int = 120) -> str:
-        result = subprocess.run(args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        # PVE's mapped container root must traverse directories created by its
+        # helpers. Keep the parent's private state mask out of child processes;
+        # credential writes below always specify their private file modes.
+        result = subprocess.run(args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=timeout, umask=0o022)
         if result.returncode:
             # SQL and package errors may include input: never echo raw stderr or stdin.
             raise BootstrapError(f'{label} failed (exit {result.returncode}); inspect that owned resource separately')
@@ -407,7 +411,8 @@ class Bootstrap:
         with tempfile.NamedTemporaryFile(prefix='isolated-core-', dir=self.c.state_dir) as source:
             source.write(content)
             source.flush()
-            self.r.run(['pct', 'push', str(ctid), source.name, path], label='new owned guest file')
+            self.r.run(['pct', 'push', str(ctid), source.name, path, '--perms', mode],
+                       label='new owned guest file')
         self.r.guest(ctid, ['chown', owner, path], label='guest file owner')
         self.r.guest(ctid, ['chmod', mode, path], label='guest file permissions')
 
