@@ -50,6 +50,10 @@ class ClusterQuorumNotReady(StartupNotReady):
     pass
 
 
+class ClusterMetadataNotReady(StartupNotReady):
+    pass
+
+
 class MeshNotReady(StartupNotReady):
     pass
 
@@ -100,8 +104,18 @@ def cluster_check(config, empty=False):
     rows = api("/cluster/status")
     cluster = [row for row in rows if row.get("type") == "cluster"]
     nodes = [row for row in rows if row.get("type") == "node"]
-    assert len(cluster) == 1 and cluster[0]["name"] == config["cluster"], "unexpected cluster identity"
-    assert {row["name"] for row in nodes} == set(config["nodes"]), "unexpected cluster membership"
+    assert len(cluster) <= 1, "duplicate cluster metadata"
+    cluster_name = cluster[0].get("name") if cluster else None
+    name_missing = cluster_name is None or cluster_name == ""
+    if not name_missing:
+        assert isinstance(cluster_name, str) and cluster_name == config["cluster"], \
+            "unexpected cluster identity"
+    node_names = [row.get("name") for row in nodes]
+    assert all(isinstance(name, str) and name for name in node_names), "unknown cluster member"
+    assert len(node_names) == len(set(node_names)), "duplicate cluster member"
+    expected_nodes = set(config["nodes"])
+    observed_nodes = set(node_names)
+    assert not observed_nodes - expected_nodes, "unknown cluster member"
     assert api("/cluster/ha/resources") == [], "HA resources are outside this procedure"
     local = socket.gethostname().split(".")[0]
     firewall_options = api(f"/nodes/{local}/firewall/options")
@@ -109,6 +123,15 @@ def cluster_check(config, empty=False):
             or (type(firewall_options["nftables"]) in (int, bool)
                 and firewall_options["nftables"] in (0, False))), \
         "Proxmox nftables backend is outside this procedure"
+    missing_nodes = expected_nodes - observed_nodes
+    if name_missing or missing_nodes:
+        observed = ",".join(sorted(observed_nodes)) or "<none>"
+        missing = ",".join(sorted(missing_nodes)) or "<none>"
+        name = "<absent>" if name_missing else cluster_name
+        raise ClusterMetadataNotReady(
+            f"cluster metadata not ready: cluster_rows={len(cluster)} cluster_name={name} "
+            f"observed_node_count={len(observed_nodes)} observed_nodes={observed} "
+            f"missing_node_count={len(missing_nodes)} missing_nodes={missing}")
     if cluster[0].get("quorate") != 1:
         raise ClusterQuorumNotReady("cluster is not quorate")
     if empty:
@@ -372,18 +395,23 @@ def wait_for_startup_readiness(config, node, state, timeout):
     deadline = started + timeout
     attempts = 0
     last_error = None
+    reason_counts = {}
     while time.monotonic() < deadline:
         attempts += 1
         try:
             reconcile_readiness(config, node, state)
-        except (ClusterQuorumNotReady, MeshNotReady, NetBirdMarkNotReady,
+        except (ClusterMetadataNotReady, ClusterQuorumNotReady, MeshNotReady, NetBirdMarkNotReady,
                 GuestFirewallNotReady) as error:
             last_error = str(error)
+            reason = type(error).__name__
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
         else:
             completed = time.monotonic()
             if completed < deadline:
                 return {"attempts": attempts,
-                        "elapsed_seconds": round(completed - started, 3)}
+                        "elapsed_seconds": round(completed - started, 3),
+                        "last_not_ready": last_error,
+                        "reason_counts": reason_counts}
             break
         completed = time.monotonic()
         remaining = deadline - completed

@@ -42,19 +42,25 @@ class ProductionNetworkTests(unittest.TestCase):
         module = load_script('production-network')
         now = [0.0]
         with patch.object(module, 'reconcile_readiness', side_effect=[
-                module.ClusterQuorumNotReady('quorum'), module.MeshNotReady('mesh'),
+                module.ClusterMetadataNotReady('metadata'), module.MeshNotReady('mesh'),
                 (False, (0x1bd20, 0xffffffff, 0x80000000))]) as readiness, \
              patch.object(module, 'reconcile') as reconcile, \
              patch.object(module.time, 'monotonic', side_effect=lambda: now[0]), \
              patch.object(module.time, 'sleep', side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)):
             result = module.wait_for_startup_readiness(CONFIG, 'pve-a', {}, 5)
-        self.assertEqual(result, {'attempts': 3, 'elapsed_seconds': 2.0})
+        self.assertEqual(result, {
+            'attempts': 3,
+            'elapsed_seconds': 2.0,
+            'last_not_ready': 'mesh',
+            'reason_counts': {'ClusterMetadataNotReady': 1, 'MeshNotReady': 1},
+        })
         self.assertEqual(readiness.call_count, 3)
         reconcile.assert_not_called()
 
     def test_boot_readiness_times_out_each_typed_absence(self):
         module = load_script('production-network')
-        for error in (module.ClusterQuorumNotReady('quorum'), module.MeshNotReady('mesh'),
+        for error in (module.ClusterMetadataNotReady('metadata'),
+                      module.ClusterQuorumNotReady('quorum'), module.MeshNotReady('mesh'),
                       NetBirdMarkNotReady('marks'), module.GuestFirewallNotReady('firewall')):
             now = [0.0]
             with self.subTest(error=error), patch.object(module, 'reconcile_readiness', side_effect=error), \
@@ -120,7 +126,7 @@ class ProductionNetworkTests(unittest.TestCase):
                 module.guest_firewall_check()
         run.assert_not_called()
 
-    def test_cluster_wait_classifies_only_expected_identity_without_quorum(self):
+    def test_cluster_wait_classifies_transient_metadata_and_quorum(self):
         module = load_script('production-network')
         rows = [{'type': 'cluster', 'name': CONFIG['cluster'], 'quorate': 0},
                 *[{'type': 'node', 'name': name} for name in CONFIG['nodes']]]
@@ -137,17 +143,63 @@ class ProductionNetworkTests(unittest.TestCase):
         with patch.object(module, 'api', side_effect=cluster_api(rows)):
             with self.assertRaises(module.ClusterQuorumNotReady):
                 module.cluster_check(CONFIG)
-        wrong = copy.deepcopy(rows)
+
+        local_node_only = [{'type': 'node', 'name': 'pve-a', 'local': 1, 'online': 1}]
+        with patch.object(module, 'api', side_effect=cluster_api(local_node_only)):
+            with self.assertRaisesRegex(
+                    module.ClusterMetadataNotReady,
+                    r'cluster_rows=0.*observed_nodes=pve-a.*missing_nodes=pve-b'):
+                module.cluster_check(CONFIG)
+
+        partial_members = [rows[0], rows[1]]
+        with patch.object(module, 'api', side_effect=cluster_api(partial_members)):
+            with self.assertRaisesRegex(
+                    module.ClusterMetadataNotReady,
+                    r'cluster_rows=1.*cluster_name=example-prod.*missing_nodes=pve-b'):
+                module.cluster_check(CONFIG)
+
+        missing_name = [{'type': 'cluster', 'quorate': 0}, *copy.deepcopy(rows[1:])]
+        with patch.object(module, 'api', side_effect=cluster_api(missing_name)):
+            with self.assertRaisesRegex(
+                    module.ClusterMetadataNotReady,
+                    r'cluster_rows=1.*cluster_name=<absent>.*observed_node_count=2'):
+                module.cluster_check(CONFIG)
+
+        wrong = copy.deepcopy(rows[:-1])
         wrong[0]['name'] = 'other-cluster'
         with patch.object(module, 'api', side_effect=cluster_api(wrong)):
             with self.assertRaisesRegex(AssertionError, 'cluster identity'):
                 module.cluster_check(CONFIG)
-        wrong_members = copy.deepcopy(rows[:-1])
-        with patch.object(module, 'api', side_effect=cluster_api(wrong_members)):
-            with self.assertRaisesRegex(AssertionError, 'cluster membership'):
+
+        missing_name_with_unknown_member = [
+            {'type': 'cluster', 'quorate': 0},
+            {'type': 'node', 'name': 'pve-a'},
+            {'type': 'node', 'name': 'pve-c'},
+        ]
+        with patch.object(module, 'api', side_effect=cluster_api(missing_name_with_unknown_member)):
+            with self.assertRaisesRegex(AssertionError, 'unknown cluster member'):
                 module.cluster_check(CONFIG)
+
+        for contradictory in (
+                [rows[0], rows[1], copy.deepcopy(rows[1])],
+                [rows[0], rows[1], {'type': 'node', 'name': 'pve-c'}],
+                [rows[0], copy.deepcopy(rows[0]), *rows[1:]],
+        ):
+            with self.subTest(contradictory=contradictory), \
+                 patch.object(module, 'api', side_effect=cluster_api(contradictory)):
+                with self.assertRaises(AssertionError):
+                    module.cluster_check(CONFIG)
+
         with patch.object(module, 'api', side_effect=cluster_api(rows, ha=[{'vmid': 100}])):
             with self.assertRaisesRegex(AssertionError, 'HA resources'):
+                module.cluster_check(CONFIG)
+        with patch.object(module, 'api', side_effect=cluster_api(
+                local_node_only, ha=[{'vmid': 100}])):
+            with self.assertRaisesRegex(AssertionError, 'HA resources'):
+                module.cluster_check(CONFIG)
+        with patch.object(module, 'api', side_effect=cluster_api(
+                local_node_only, options={'nftables': True})):
+            with self.assertRaisesRegex(AssertionError, 'nftables backend'):
                 module.cluster_check(CONFIG)
 
         ready = copy.deepcopy(rows)

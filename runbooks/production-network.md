@@ -156,6 +156,11 @@ sysctl과 state를 쓰지 않는다. 예상 cluster 신원·구성·owner·기�
 다르거나 명령 자체가 실패하면 기다리지 않고 즉시 중단한다. 준비 판정 뒤 실제 쓰기 직전에
 같은 검사를 다시 한다. 180초 unit timeout은 적용 작업을 위한 여유를 남긴다.
 
+설치된 PVE의 `/cluster/status`는 부팅 초기에 local node 행만 반환하거나 cluster 행·이름과
+다른 expected node 행을 아직 내놓지 않을 수 있다. 이 metadata 부재는 local Corosync/native
+파일 hash, committed state와 owner가 모두 그대로인 boot bounded wait 안에서만 재시도한다.
+값이 있는 다른 cluster 이름, 알 수 없거나 중복된 node 이름은 즉시 fatal로 판정한다.
+
 Network unit의 첫 실행이 실패하면 `pve-guests.service`의 dependency job도 실패하고,
 network unit의 뒤늦은 재시작 성공이 그 job을 다시 실행하지 않는다. Vendor unit은
 `RefuseManualStart=true`이므로 `systemctl start pve-guests`를 복구 절차로 사용하지 않는다.
