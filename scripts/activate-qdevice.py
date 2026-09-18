@@ -104,7 +104,7 @@ print(json.dumps({'node':node,'ca_matches':True,'client_certificate_matches':Tru
 POST_PROGRAM = r'''
 import json,subprocess
 result={}
-for key,args in [('quorum',['pvecm','status']),('qdevice',['corosync-qdevice-tool','-s']),('enabled',['systemctl','is-enabled','corosync-qdevice.service']),('active',['systemctl','is-active','corosync-qdevice.service'])]:
+for key,args in [('quorum',['pvecm','status']),('qdevice',['corosync-qdevice-tool','-s','-v']),('enabled',['systemctl','is-enabled','corosync-qdevice.service']),('active',['systemctl','is-active','corosync-qdevice.service'])]:
     p=subprocess.run(args,capture_output=True,text=True,timeout=15)
     if p.returncode: raise RuntimeError('qdevice verification command failed')
     result[key]=p.stdout
@@ -145,7 +145,8 @@ def service_ready(result):
             and result.get('enabled', '').strip() == 'enabled'
             and result.get('active', '').strip() == 'active'
             and bool(re.search(r'^\s*State:\s+Connected\s*$', result.get('qdevice', ''), re.M))
-            and bool(re.search(r'^\s*TLS:\s+Yes(?:\s|$)', result.get('qdevice', ''), re.M)))
+            and bool(re.search(r'^\s*TLS:\s+Required\s*$', result.get('qdevice', ''), re.M))
+            and bool(re.search(r'^\s*TLS active:\s+Yes\s+\(client certificate sent\)\s*$', result.get('qdevice', ''), re.M)))
 
 
 def remote(ssh, program, args=()):

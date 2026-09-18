@@ -23,6 +23,11 @@ def status(votes=2):
     return f'Nodes:            2\nExpected votes:   {votes}\nTotal votes:      {votes}\nQuorum:           2  \nQuorate:          Yes\nFlags:            Quorate' + (' Qdevice' if votes == 3 else '') + '\n'
 
 
+QDEVICE_VERBOSE_CONNECTED = ('State:\t\t\tConnected\n'
+                             'TLS:\t\t\tRequired\n'
+                             'TLS active:\t\tYes (client certificate sent)\n')
+
+
 class InputAndReadinessTests(unittest.TestCase):
     def test_valid_explicit_mesh_inputs(self):
         activation.validate_inputs('prod-cluster', ['node-a', 'node-b'], '100.64.0.30', 'a' * 64, 'b' * 64)
@@ -51,12 +56,45 @@ class InputAndReadinessTests(unittest.TestCase):
 
     def test_service_health_requires_tls_and_connected_state(self):
         good = {'quorum': status(3), 'active': 'active\n', 'enabled': 'enabled\n',
-                'qdevice': 'State: Connected\nTLS: Yes (Client certificate sent)\n'}
+                'qdevice': QDEVICE_VERBOSE_CONNECTED}
         self.assertTrue(activation.service_ready(good))
-        for key, value in [('active', 'inactive'), ('enabled', 'disabled'), ('qdevice', 'State: Connected\nTLS: No\n'),
-                           ('qdevice', 'State: Disconnected\nTLS: Yes\n'), ('quorum', status(2))]:
+        for key, value in [('active', 'inactive'), ('enabled', 'disabled'),
+                           ('qdevice', QDEVICE_VERBOSE_CONNECTED.replace('TLS:\t\t\tRequired', 'TLS:\t\t\tOptional')),
+                           ('qdevice', QDEVICE_VERBOSE_CONNECTED.replace('TLS active:\t\tYes (client certificate sent)', 'TLS active:\t\tNo')),
+                           ('qdevice', QDEVICE_VERBOSE_CONNECTED.replace('client certificate sent', 'server certificate sent')),
+                           ('qdevice', QDEVICE_VERBOSE_CONNECTED.replace('State:\t\t\tConnected', 'State:\t\t\tDisconnected')),
+                           ('qdevice', 'State:\t\t\tConnected\n'),
+                           ('quorum', status(2))]:
             changed = {**good, key: value}
             self.assertFalse(activation.service_ready(changed))
+
+    def test_post_program_requests_verbose_tls_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bin_dir = Path(directory)
+            (bin_dir / 'corosync-qdevice-tool').write_text(
+                '#!/bin/sh\n'
+                'if [ "$1" = "-s" ] && [ "$2" = "-v" ]; then\n'
+                '  printf "State:\\t\\t\\tConnected\\nTLS:\\t\\t\\tRequired\\nTLS active:\\t\\tYes (client certificate sent)\\n"\n'
+                'else\n'
+                '  printf "State:\\t\\t\\tConnected\\n"\n'
+                'fi\n')
+            (bin_dir / 'pvecm').write_text('#!/bin/sh\nprintf "' + status(3).replace('\n', '\\n') + '"\n')
+            (bin_dir / 'systemctl').write_text(
+                '#!/bin/sh\n'
+                'case "$1 $2" in\n'
+                '  "is-enabled corosync-qdevice.service") printf "enabled\\n";;\n'
+                '  "is-active corosync-qdevice.service") printf "active\\n";;\n'
+                '  *) exit 1;;\n'
+                'esac\n')
+            for command in bin_dir.iterdir():
+                command.chmod(0o700)
+            environment = {**os.environ, 'PATH': directory}
+            result = subprocess.run([sys.executable, '-c', activation.POST_PROGRAM],
+                                    env=environment, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            postflight = json.loads(result.stdout)
+            self.assertEqual(postflight['qdevice'], QDEVICE_VERBOSE_CONNECTED)
+            self.assertTrue(activation.service_ready(postflight))
 
 
 class BootstrapEnvironmentTests(unittest.TestCase):

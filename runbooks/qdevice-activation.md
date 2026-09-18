@@ -64,13 +64,19 @@ python3 scripts/activate-qdevice.py \
 2. 현재 설정의 hash를 고정하고 `corosync.conf` 클러스터 잠금 안에서 최신 설정과 노드,
    quorum을 다시 대조한다. `PVE::Corosync::atomic_write_conf`로 device 절만 추가한다.
    설정은 `net`, `ffsplit`, vote 1, `tls=required`다. TLS 미지원 서버로의 fallback은 없다.
-3. 두 PVE의 qdevice를 enable/start하고 corosync 설정을 reload한다. 두 곳 모두 expected/
-   total votes 3, quorum 2와 Qdevice flag, 연결 상태, TLS, service active/enabled를 확인한다.
+3. 두 PVE의 qdevice를 enable/start하고 corosync 설정을 reload한다. 두 곳 모두
+   `corosync-qdevice-tool -s -v`에서 `State: Connected`, `TLS: Required`,
+   `TLS active: Yes (client certificate sent)`를 확인하고, expected/total votes 3,
+   quorum 2와 Qdevice flag, service active/enabled를 확인한다. 기본 `-s` 출력의
+   Connected만으로 TLS를 판정하지 않는다.
 4. 확인 성공은 `activation.json`의 `stage=verified`와 `verified=true`로 기록한다.
 
 설정 쓰기나 서비스 시작 도중 실패하면 일부 변경이 남을 수 있다. `activation_attempted`는
 쓰기를 시도했다는 뜻이며 결과가 불확실하므로 실제 설정을 조회한다. 스크립트가 종료 코드
-0을 내지 않았으면 witness 검증 완료로 간주하지 않는다. 실패 직후 다른 PVE를 재부팅하지 않는다.
+0을 내지 않았으면 witness 검증 완료로 간주하지 않는다. TLS verbose 출력이 없거나
+`Required`와 client certificate 전송을 증명하지 못해 실패한 경우에도 activation을 반복하지
+말고, 최초 receipt와 현재 설정·서비스·qdevice 상태를 보존한 뒤 별도 상태 확인을 수행한다.
+실패 직후 다른 PVE를 재부팅하지 않는다.
 
 ## 되돌리기와 후속 실측
 
