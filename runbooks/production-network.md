@@ -68,6 +68,18 @@ IP 할당은 플랫폼 DB와 cloud-init이 소유한다. 이 zone에는 DHCP와 
    다른 pending 변경이나 global lock을 강제로 가져오지 않는다. Zone/VNet의 기존 값이
    다르면 덮어쓰지 않는다. Parent UPID뿐 아니라 두 node의 새 `networking` reload UPID가
    모두 OK여야 성공이다. 기존 running reload나 겹치는 reload가 있으면 소유권을 추정하지 않는다.
+   `pvesh set /cluster/sdn`은 설정을 commit한 뒤 node별 reload worker를 시작한다.
+   따라서 스크립트가 task ID 응답을 확인하지 못했다고 적용되지 않았다고 판단하거나
+   owner 기록을 지우지 않는다. 이 불확실 상태에서는 같은 apply를 반복하지 말고 owner
+   기록, zone/VNet의 running 설정, 가장 최근 `reloadnetworkall` parent task와 두 node의
+   `srvreload:networking` child task를 함께 확인한다. 정확한 parent와 두 child가 모두
+   `stopped`/`OK`이고 running 설정이 입력과 일치할 때만 적용 완료로 판정한다.
+
+   task나 설정을 정확히 대응할 수 없으면 node rollback을 먼저 완료하고 owner 기록을
+   보존한 채 중단한다. 운영망을 회수하기로 결정한 경우 아래 `--rollback --apply` 절차로
+   running zone/VNet을 제거한다. pending 설정만 남았음이 확인된 경우에만 별도 SDN lock을
+   얻어 `/cluster/sdn/rollback`으로 pending 설정을 되돌린다. running 설정과 task 결과를
+   확인하기 전에는 owner 파일을 수동 삭제하거나 pending rollback을 실행하지 않는다.
 5. 두 node에서 `activate --apply`를 실행한다. Kernel의 VNI와 master, FDB peer, 실제
    route의 `wt0`/source, 두 MTU를 확인한 뒤에만 L3를 활성화한다.
 

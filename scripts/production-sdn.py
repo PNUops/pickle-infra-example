@@ -15,6 +15,9 @@ sys.dont_write_bytecode = True
 from production_network import validate_config, validate_sdn_inventory
 
 OWNER_FILE = Path("/etc/pve/priv/example-production-network-owner.json")
+APPLY_UPID = re.compile(
+    r"^UPID:(?P<node>[^:]+):[0-9A-F]{8}:[0-9A-F]{8}:[0-9A-F]{8}:reloadnetworkall::root@pam:$"
+)
 
 
 def api(method, path, *arguments):
@@ -23,6 +26,30 @@ def api(method, path, *arguments):
     if process.returncode:
         raise RuntimeError(f"PVE {method} {path}: {process.stderr.strip()}")
     return json.loads(process.stdout) if process.stdout.strip() else None
+
+
+def submit_sdn_apply(config, token):
+    process = subprocess.run(
+        ["pvesh", "set", "/cluster/sdn", "--lock-token", token, "--release-lock", "0", "--output-format", "json"],
+        capture_output=True, text=True, timeout=45,
+    )
+    if process.returncode:
+        raise RuntimeError(f"PVE set /cluster/sdn: {process.stderr.strip()}")
+    lines = [line.strip() for line in process.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError("PVE set /cluster/sdn returned no task identifier")
+    try:
+        upid = json.loads(lines[-1])
+    except json.JSONDecodeError as error:
+        raise RuntimeError("PVE set /cluster/sdn returned an invalid task identifier") from error
+    match = APPLY_UPID.fullmatch(upid) if isinstance(upid, str) else None
+    if not match or match.group("node") != config["gateway_owner"]:
+        raise RuntimeError("PVE set /cluster/sdn returned an unexpected task identifier")
+    progress = lines[:-1]
+    expected = {f"{node}: reloading network config" for node in config["nodes"]}
+    if progress and (len(progress) != len(set(progress)) or set(progress) != expected):
+        raise RuntimeError("PVE set /cluster/sdn returned unexpected progress output")
+    return upid
 
 
 def check_cluster(config, require_witness=True):
@@ -100,7 +127,7 @@ def main():
         return
     # This rejects pending changes; it never steals or force-releases another lock.
     token = api("create", "/cluster/sdn/lock")
-    committed = False
+    submission_started = False
     claimed = False
     try:
         zones, vnets = check_cluster(config, require_witness=not args.rollback)
@@ -125,8 +152,8 @@ def main():
         assert all(not active_network_tasks(node) for node in config["nodes"]), "a networking reload is already running"
         baseline = {node: set(network_tasks(node)) for node in config["nodes"]}
         assert all(not active_network_tasks(node) for node in config["nodes"]), "networking reload raced with the baseline"
-        upid = api("set", "/cluster/sdn", "--lock-token", token, "--release-lock", "0")
-        committed = True
+        submission_started = True
+        upid = submit_sdn_apply(config, token)
         wait_apply(config, upid, baseline)
         if args.rollback:
             OWNER_FILE.unlink()
@@ -136,13 +163,20 @@ def main():
             temporary.write_text(json.dumps(record) + "\n")
             temporary.replace(OWNER_FILE)
     except Exception:
-        if not committed:
+        if not submission_started:
             api("create", "/cluster/sdn/rollback", "--lock-token", token, "--release-lock", "0")
             if claimed:
                 OWNER_FILE.unlink()
         raise
     finally:
-        api("delete", "/cluster/sdn/lock", "--lock-token", token)
+        active_error = sys.exc_info()[0] is not None
+        try:
+            api("delete", "/cluster/sdn/lock", "--lock-token", token)
+        except Exception as release_error:
+            if active_error:
+                print(f"production-sdn: additionally failed to release its lock: {release_error}", file=sys.stderr)
+            else:
+                raise
 
 
 if __name__ == "__main__":

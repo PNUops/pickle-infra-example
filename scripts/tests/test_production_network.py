@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Safety properties for owned network policy and lock failure handling."""
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
@@ -312,6 +314,97 @@ class ProductionNetworkTests(unittest.TestCase):
         self.assertIn(('create', '/cluster/sdn/rollback', ('--lock-token', 'test-lock', '--release-lock', '0')), calls)
         self.assertIn(('delete', '/cluster/sdn/lock', ('--lock-token', 'test-lock')), calls)
         self.assertFalse(any('--force' in call[2] for call in calls))
+
+    def test_sdn_submit_accepts_json_and_exact_node_progress(self):
+        module = load_script('production-sdn')
+        upid = 'UPID:pve-a:00000001:00000002:00000003:reloadnetworkall::root@pam:'
+        outputs = [json.dumps(upid) + '\n',
+                   'pve-b: reloading network config\npve-a: reloading network config\n' + json.dumps(upid) + '\n']
+        for output in outputs:
+            result = subprocess.CompletedProcess([], 0, stdout=output, stderr='')
+            with self.subTest(output=output), patch.object(module.subprocess, 'run', return_value=result):
+                self.assertEqual(module.submit_sdn_apply(CONFIG, 'test-lock'), upid)
+
+    def test_sdn_submit_rejects_unknown_or_partial_progress(self):
+        module = load_script('production-sdn')
+        upid = json.dumps('UPID:pve-a:00000001:00000002:00000003:reloadnetworkall::root@pam:')
+        for progress in ('pve-c: reloading network config\n', 'pve-a: reloading network config\n'):
+            result = subprocess.CompletedProcess([], 0, stdout=progress + upid + '\n', stderr='')
+            with self.subTest(progress=progress), patch.object(module.subprocess, 'run', return_value=result):
+                with self.assertRaisesRegex(RuntimeError, 'unexpected progress'):
+                    module.submit_sdn_apply(CONFIG, 'test-lock')
+
+    def test_sdn_submit_rejects_all_other_unexpected_results(self):
+        module = load_script('production-sdn')
+        valid = 'UPID:pve-a:00000001:00000002:00000003:reloadnetworkall::root@pam:'
+        cases = [
+            (subprocess.CompletedProcess([], 1, stdout='', stderr='permission denied'), 'PVE set'),
+            (subprocess.CompletedProcess([], 0, stdout='', stderr=''), 'no task identifier'),
+            (subprocess.CompletedProcess([], 0, stdout='not-json\n', stderr=''), 'invalid task identifier'),
+            (subprocess.CompletedProcess([], 0, stdout='{}\n', stderr=''), 'unexpected task identifier'),
+            (subprocess.CompletedProcess([], 0, stdout=json.dumps(valid.replace('pve-a', 'pve-b', 1)) + '\n', stderr=''),
+             'unexpected task identifier'),
+            (subprocess.CompletedProcess([], 0, stdout=json.dumps(valid.replace('reloadnetworkall', 'srvreload')) + '\n', stderr=''),
+             'unexpected task identifier'),
+            (subprocess.CompletedProcess([], 0,
+                                         stdout=('pve-a: reloading network config\npve-b: reloading network config\n'
+                                                 'pve-a: reloading network config\n' + json.dumps(valid) + '\n'), stderr=''),
+             'unexpected progress'),
+        ]
+        for result, message in cases:
+            with self.subTest(stdout=result.stdout, returncode=result.returncode), \
+                 patch.object(module.subprocess, 'run', return_value=result):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    module.submit_sdn_apply(CONFIG, 'test-lock')
+
+    def test_sdn_submit_failure_preserves_owner_and_pending_state(self):
+        module = load_script('production-sdn')
+        calls = []
+        def fake_api(method, path, *args):
+            calls.append((method, path, args))
+            if (method, path) == ('create', '/cluster/sdn/lock'):
+                return 'test-lock'
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'network.json'
+            config.write_text(json.dumps(CONFIG))
+            owner = Path(directory) / 'owner.json'
+            with patch.object(module, 'OWNER_FILE', owner), patch.object(module, 'api', side_effect=fake_api), \
+                 patch.object(module, 'submit_sdn_apply', side_effect=RuntimeError('uncertain submit')), \
+                 patch.object(module, 'check_cluster', return_value=([], [])), \
+                 patch.object(module, 'active_network_tasks', return_value=set()), \
+                 patch.object(module, 'network_tasks', return_value={}), \
+                 patch.object(module.os, 'geteuid', return_value=0), patch.object(module.socket, 'gethostname', return_value='pve-a'), \
+                 patch.object(sys, 'argv', ['production-sdn.py', '--config', str(config), '--apply']):
+                with self.assertRaisesRegex(RuntimeError, 'uncertain submit'):
+                    module.main()
+            self.assertTrue(owner.exists())
+        self.assertNotIn(('create', '/cluster/sdn/rollback', ('--lock-token', 'test-lock', '--release-lock', '0')), calls)
+        self.assertIn(('delete', '/cluster/sdn/lock', ('--lock-token', 'test-lock')), calls)
+
+    def test_lock_release_failure_does_not_hide_uncertain_submit(self):
+        module = load_script('production-sdn')
+        def fake_api(method, path, *args):
+            if (method, path) == ('create', '/cluster/sdn/lock'):
+                return 'test-lock'
+            if (method, path) == ('delete', '/cluster/sdn/lock'):
+                raise RuntimeError('release evidence')
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'network.json'
+            config.write_text(json.dumps(CONFIG))
+            owner = Path(directory) / 'owner.json'
+            errors = io.StringIO()
+            with patch.object(module, 'OWNER_FILE', owner), patch.object(module, 'api', side_effect=fake_api), \
+                 patch.object(module, 'submit_sdn_apply', side_effect=RuntimeError('primary evidence')), \
+                 patch.object(module, 'check_cluster', return_value=([], [])), \
+                 patch.object(module, 'active_network_tasks', return_value=set()), \
+                 patch.object(module, 'network_tasks', return_value={}), \
+                 patch.object(module.os, 'geteuid', return_value=0), patch.object(module.socket, 'gethostname', return_value='pve-a'), \
+                 patch.object(sys, 'argv', ['production-sdn.py', '--config', str(config), '--apply']), \
+                 contextlib.redirect_stderr(errors):
+                with self.assertRaisesRegex(RuntimeError, 'primary evidence'):
+                    module.main()
+            self.assertTrue(owner.exists())
+            self.assertIn('release evidence', errors.getvalue())
 
 
 if __name__ == '__main__':
