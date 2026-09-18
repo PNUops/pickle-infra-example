@@ -196,11 +196,11 @@ token을 사용한다. Encryption key는 PBS VM 밖에도 복구 가능한 형�
 
 | 대상 | 보존할 내용과 제외 경계 |
 |---|---|
-| dept-node/backup-vm NetBird 0.78.2 | 서비스가 사용하는 `/var/lib/netbird/default.json`, 존재하면 `/var/lib/netbird/active_profile.json`, `netbird.service`와 drop-in. root 전용 CLI profile을 실제로 사용했다면 `/root/.config/netbird/`도 별도 보존. `/var/lib/netbird/state.json` 같은 동적 runtime state는 identity 사본에서 제외 |
+| dept-node/backup-vm NetBird 0.78.2 | 실측된 `/var/lib/netbird/default.json`, `/var/lib/netbird/service.json`, `/var/lib/netbird/root/`, `netbird.service`와 drop-in. 다른 profile 경로는 `netbird profile list`와 service ExecStart/Environment에서 실제 사용을 확인한 것만 추가. `/var/lib/netbird/state.json` 같은 동적 runtime state는 identity 사본에서 제외 |
 | backup-vm 영구 네트워크 | `/etc/netplan/`과 적용 전후 renderer 결과. DHCP lease나 일시적인 interface state는 대체 자료가 아님 |
 | PBS | `/etc/proxmox-backup/datastore.cfg`, `user.cfg`, `token.shadow`, `acl.cfg`, `authkey.key`, `csrf.key`, `proxy.key`/`proxy.pem`과 별도 보관한 backup encryption key. secret 원문은 manifest나 작업 로그에 넣지 않음 |
 | dept-node qnetd와 PVE qdevice | host의 `/etc/corosync/qnetd/nssdb/`와 config/unit, 각 PVE의 `/etc/corosync/qdevice/net/nssdb/`와 Corosync 설정. 실행 중인 qnetd NSS의 0640·service group 권한은 정상 동작 조건일 수 있으므로 일괄 0600으로 바꾸지 않음 |
-| PBS VM | `virsh dumpxml backup-vm` 결과, XML이 가리키는 guest NVRAM, boot/data/seed 경로와 hash, data filesystem UUID와 `/etc/fstab`. 원본 cloud image는 별도 immutable source로 보존 |
+| PBS VM | `virsh dumpxml backup-vm` 결과와 XML이 가리키는 guest NVRAM, boot/data/seed의 경로·format·virtual/logical size, data filesystem UUID·mount와 `/etc/fstab`. XML, NVRAM, immutable cloud source와 seed는 SHA-256을 보존하고, 1 TiB data disk 전체 hash를 요구하지 않음 |
 
 NetBird profile 이름은 추정하지 않는다. `netbird profile list`, service의 ExecStart/Environment와
 실제 identity 파일을 함께 대조해 service active profile과 root CLI profile을 구분한다. 복구 후에는
@@ -244,7 +244,7 @@ Result JSON에서 UPID를 읽고 URL path로 안전하게 encode한 뒤, root의
 확인한다. 완료 뒤 config, filesystem UUID, index와 snapshot owner를 대조하고 server-side
 verify를 수행한다. 실제 restore와 SHA-256 비교는 설정 판정과 별도의 마지막 단계다.
 
-### 최소 권한 file-shaped 검증
+### 최소 권한 파일 백업·복원 검증
 
 검증은 전용 namespace, 임시 user와 그 user의 token 하나만 사용한다. Namespace 생성 CLI의
 text renderer가 응답을 그리지 못하고 panic할 수 있으므로 root에서 API debug CLI의 JSON
@@ -280,23 +280,23 @@ test -f "$token_result" && test ! -L "$token_result" && test -s "$token_result"
 test "$(stat -c '%u:%a' "$token_result")" = '0:600'
 proxmox-backup-manager acl update \
   /datastore/<store>/<validation-namespace> DatastoreBackup \
-  --auth-id <validation-user>@pbs
+  --auth-id <validation-user>@pbs --propagate false
 proxmox-backup-manager acl update \
   /datastore/<store>/<validation-namespace> DatastoreBackup \
-  --auth-id '<validation-user>@pbs!<validation-token>'
+  --auth-id '<validation-user>@pbs!<validation-token>' --propagate false
 ```
 
-1. 새 8 MiB synthetic 파일과 note를 client-side encryption key로 암호화해 backup한다.
-2. pve-node-2와 pve-node-3에서 각각 restore하고 원본 SHA-256과 비교한다.
-3. Namespace 밖 backup이 `Datastore.Backup` 부족으로 거부되는지 확인한다.
-4. PBS server-side verify가 성공하는지 확인한다.
-5. 위 절차로 datastore 설정을 분리·재연결한 뒤 다시 restore하고 SHA-256과 snapshot owner를 확인한다.
-6. Result JSON의 secret을 필요한 client의 별도 0600 payload로 한 번만 옮기고 server의 Result JSON을 즉시 삭제한다.
+1. Result JSON의 secret을 필요한 client의 별도 0600 payload로 한 번만 옮기고 server의 Result JSON을 즉시 삭제한다. Client payload의 owner/mode와 nonempty를 확인한 뒤에만 다음 단계로 간다.
+2. 새 8 MiB synthetic 파일과 note를 client-side encryption key로 암호화해 backup한다.
+3. pve-node-2와 pve-node-3에서 각각 restore하고 원본 SHA-256과 비교한다.
+4. Namespace 밖 backup이 `Datastore.Backup` 부족으로 거부되는지 확인한다.
+5. PBS server-side verify가 성공하는지 확인한다.
+6. 위 절차로 datastore 설정을 분리·재연결한 뒤 다시 restore하고 SHA-256과 snapshot owner를 확인한다.
 7. Snapshot과 namespace, 두 ACL(`--delete true`), token(`user delete-token`), user(`user remove`), client payload, 임시 key와 복원 파일 및 `protected_token_dir`을 소유 관계대로 정리하고 목록에서 사라졌는지 확인한다.
 
 Snapshot을 forget해도 참조가 사라진 chunk는 PBS의 기본 GC grace를 거친 뒤 정상 GC가 회수한다.
 `.chunks` 아래 파일을 수동 삭제하거나 검증을 빠르게 끝내려고 grace를 우회하지 않는다.
-이 시험은 암호화된 file-shaped backup/restore와 권한 경계만 증명한다. VM backup/restore,
+이 시험은 암호화된 파일 백업·복원과 권한 경계만 증명한다. VM backup/restore,
 database RPO/RTO, dept-node 물리 host 장애와 offsite 사본은 별도 완료 조건이다.
 
 PBS VM 재부팅 중 host qnetd를 확인하고, 두 PVE 정상 상태에서 qnetd 정지와 복귀를 확인한다.
