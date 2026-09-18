@@ -143,6 +143,27 @@ Gateway owner 기록은 `/etc/pve/priv/example-production-network-owner.json`이
 Standby에서는 IPv6 link-local도 host 관리 경로로 노출되지 않는다. 이 기록은 자동
 장애 감지나 fencing, conntrack 복제를 구현하지 않는다.
 
+## PVE 방화벽 API getter 진단
+
+PVE 9.2.11의 `pvesh get /cluster/firewall/options`가 `unknown schema type`으로
+실패하더라도 이를 전체 PVE API 장애나 방화벽 정책 적용 성공으로 해석하지 않는다.
+이 조합에서는 `pve-manager 9.2.11`, `pve-firewall 6.0.5`,
+`libpve-common-perl 9.2.1`의 CLI schema compiler가 `get_options`의
+parameters schema에 `properties`가 없는 경우를 처리하지 못한 것으로 확인됐다.
+Node options GET은 정상이다.
+
+root가 직접 읽기 전용으로 다음 getter를 실행해 실제 옵션 읽기 경로를 확인할 수 있다.
+
+```bash
+perl -MPVE::API2::Firewall::Cluster -MPVE::RPCEnvironment -MJSON \
+  -e 'PVE::RPCEnvironment->setup_default_cli_env(); print encode_json(PVE::API2::Firewall::Cluster->get_options({}));'
+```
+
+이 Perl 명령은 CLI 경로만 분리해 진단한다. HTTPS API 호출, VM firewall policy
+write/live 차단 또는 정책 집행을 증명하지 않는다. 일반 API 오류를 무시하는 범용
+fallback을 추가하지 않는다. `pve-firewall status`가 disabled/running이면 정책
+집행 완료로 표시하지 않는다. vendor 파일이나 설정은 변경하지 않는다.
+
 ## Rollback과 수동 gateway 전환
 
 확정 전에는 timer 또는 같은 operation ID의 `rollback --apply`가 node 변경을 되돌린다.

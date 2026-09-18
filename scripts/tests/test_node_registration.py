@@ -40,7 +40,7 @@ def snapshot(config=CONFIG, *, existing=False):
             'labels': {'gpu': config.gpu_node, 'operator-label': 'keep'}} if existing else None
     return {'identity': {'database': config.database, 'user': 'postgres', 'local_socket': True,
                          'primary': True, 'system_identifier': config.database_system_identifier},
-            'pool': pool, 'node': node, 'allocated_memory_mb': 0}
+            'pool': pool, 'node': node, 'allocated_memory_mb': 0, 'allocated_vcpu': 0, 'allocated_disk_gb': 0}
 
 
 class CollectionRunner(Runner):
@@ -110,6 +110,7 @@ class NodeRegistrationTests(unittest.TestCase):
         self.assertEqual(desired['cpu_threads'], 32)
         self.assertEqual(desired['memory_mb'], 57344)
         self.assertEqual(desired['disk_capacity_gb'], 1024)
+        self.assertEqual(desired['labels']['vm_nic_requirements'], {'schema_version': 1, 'mtu': 1370, 'firewall': True})
         for change in ({'pool': None}, {'pool': {**snapshot()['pool'], 'cidr': '198.18.0.0/16'}}):
             with self.assertRaises(RegistrationError):
                 preview(report(), {**snapshot(), **change})
@@ -123,6 +124,7 @@ class NodeRegistrationTests(unittest.TestCase):
         self.assertEqual(desired['public_id'], PUBLIC_ID)
         self.assertTrue(desired['labels']['gpu'])
         self.assertEqual(desired['labels']['operator-label'], 'keep')
+        self.assertNotIn('vm_nic_requirements', desired['labels'])
         before['node']['storage'] = 'other-storage'
         with self.assertRaises(RegistrationError):
             preview(report(config), before)
@@ -147,6 +149,20 @@ class NodeRegistrationTests(unittest.TestCase):
         config = replace(CONFIG, existing_public_id=PUBLIC_ID, gpu_node=True)
         with self.assertRaises(RegistrationError):
             preview(report(config), snapshot(CONFIG, existing=True))
+
+    def test_existing_nic_requirements_are_preserved_or_refused_without_reconfiguration(self):
+        config = replace(CONFIG, existing_public_id=PUBLIC_ID)
+        for value in [None, {'schema_version': 2, 'mtu': 1370, 'firewall': True},
+                      {'schema_version': 1, 'mtu': 1500, 'firewall': True},
+                      {'schema_version': 1, 'mtu': 1370, 'firewall': False}]:
+            before = snapshot(config, existing=True)
+            before['node']['labels']['vm_nic_requirements'] = value
+            with self.assertRaises(RegistrationError):
+                preview(report(config), before)
+        before = snapshot(config, existing=True)
+        before['node']['labels']['vm_nic_requirements'] = {'schema_version': 1, 'mtu': 1370, 'firewall': True}
+        self.assertEqual(preview(report(config), before)['labels']['vm_nic_requirements'],
+                         before['node']['labels']['vm_nic_requirements'])
 
     def test_existing_uuid_and_maintenance_are_required_for_a_capacity_change(self):
         with self.assertRaises(RegistrationError):
@@ -175,6 +191,11 @@ class NodeRegistrationTests(unittest.TestCase):
         before['allocated_memory_mb'] = 60000
         with self.assertRaises(RegistrationError):
             preview(report(config), before)
+        for field, amount in [('allocated_vcpu', 29), ('allocated_disk_gb', 897)]:
+            before = snapshot(config, existing=True)
+            before[field] = amount
+            with self.assertRaises(RegistrationError):
+                preview(report(config), before)
 
     def test_default_registration_executes_only_read_only_sql(self):
         statements = []
@@ -236,7 +257,7 @@ CREATE TABLE ip_pools(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,name te
 CREATE TABLE nodes(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,public_id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
  name text UNIQUE NOT NULL,api_host text,status node_status DEFAULT 'ACTIVE',cpu_threads integer,memory_mb integer,
  disk_capacity_gb bigint,vm_bridge text,storage text,ip_pool_id bigint REFERENCES ip_pools(id),labels jsonb DEFAULT '{}',updated_at timestamptz DEFAULT now());
-CREATE TABLE vms(node_id bigint REFERENCES nodes(id),memory_mb integer,status text,deleted_at timestamptz);
+CREATE TABLE vms(node_id bigint REFERENCES nodes(id),vcpu integer,memory_mb integer,disk_gb integer,status text,deleted_at timestamptz);
 CREATE TABLE relays(note text); INSERT INTO relays VALUES ('keep');
 INSERT INTO ip_pools(name,cidr,gateway) VALUES ('guest-private','100.66.0.0/16','100.66.0.1');
 ''', parse=False)

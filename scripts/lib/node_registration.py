@@ -233,6 +233,12 @@ SELECT jsonb_build_object('identity', {identity_sql()},
  'node', (SELECT to_jsonb(n) FROM public.nodes n WHERE name = {literal(config.node)}),
  'allocated_memory_mb', (SELECT coalesce(sum(v.memory_mb), 0) FROM public.vms v
     JOIN public.nodes n ON n.id = v.node_id WHERE n.name = {literal(config.node)}
+    AND v.deleted_at IS NULL AND v.status <> 'DELETED'),
+ 'allocated_vcpu', (SELECT coalesce(sum(v.vcpu), 0) FROM public.vms v
+    JOIN public.nodes n ON n.id = v.node_id WHERE n.name = {literal(config.node)}
+    AND v.deleted_at IS NULL AND v.status <> 'DELETED'),
+ 'allocated_disk_gb', (SELECT coalesce(sum(v.disk_gb), 0) FROM public.vms v
+    JOIN public.nodes n ON n.id = v.node_id WHERE n.name = {literal(config.node)}
     AND v.deleted_at IS NULL AND v.status <> 'DELETED'));
 COMMIT;
 """
@@ -253,6 +259,7 @@ def preview(report: dict, snapshot: dict) -> dict:
             'The existing pool name, CIDR and gateway must match; this tool never creates or edits pools')
     cap = report['placement_capacity']
     labels = {'gpu': config.gpu_node, 'placement_capacity': cap, 'node_registration': {'cluster': config.cluster}}
+    nic_requirements = {'schema_version': 1, 'mtu': config.bridge_mtu, 'firewall': True}
     if old is not None:
         require(config.existing_public_id == old['public_id'], 'Supply the exact existing public UUID before re-registering a node')
         require((old['api_host'], old['vm_bridge'], old['storage'], old['ip_pool_id']) ==
@@ -265,6 +272,12 @@ def preview(report: dict, snapshot: dict) -> dict:
         old_capacity = old['labels'].get('placement_capacity', {})
         if 'placement_capacity' in old['labels']:
             validate_capacity_document(old_capacity)
+        if 'vm_nic_requirements' in old['labels']:
+            require(old['labels']['vm_nic_requirements'] == nic_requirements and
+                    type(old['labels']['vm_nic_requirements'].get('schema_version')) is int and
+                    type(old['labels']['vm_nic_requirements'].get('mtu')) is int and
+                    old['labels']['vm_nic_requirements'].get('firewall') is True,
+                    'Existing VM NIC requirements differ; re-registration does not change them')
         old_gpu = old['labels'].get('gpu', False)
         require(type(old_gpu) is bool and old_gpu == config.gpu_node,
                 'The declared GPU node role differs; re-registration does not change an existing role')
@@ -275,10 +288,16 @@ def preview(report: dict, snapshot: dict) -> dict:
         require(old['status'] != 'ACTIVE' or unchanged, 'Park the node in MAINTENANCE before changing placement reserves or capacity')
         require(snapshot['allocated_memory_mb'] <= cap['allocatable']['memory_mb'],
                 'Registered VM memory exceeds the proposed allocatable memory')
+        require(snapshot['allocated_vcpu'] <= cap['allocatable']['cpu_threads'],
+                'Registered VM CPU exceeds the proposed allocatable CPU')
+        require(snapshot['allocated_disk_gb'] <= cap['allocatable']['disk_gb'],
+                'Registered VM disks exceed the proposed allocatable disk budget')
         labels['node_registration'] = {**origin, 'cluster': config.cluster}
         labels = {**old['labels'], **labels}
     else:
         require(config.existing_public_id is None, 'The explicitly identified existing node is absent')
+        # Only new nodes receive the new preparation requirement; old labels are never silently enabled.
+        labels['vm_nic_requirements'] = nic_requirements
     return {'name': config.node, 'api_host': config.api_url, 'status': old['status'] if old else 'MAINTENANCE',
             'cpu_threads': cap['physical']['cpu_threads'], 'memory_mb': cap['allocatable']['memory_mb'],
             'disk_capacity_gb': cap['physical']['disk_gb'], 'vm_bridge': config.bridge, 'storage': config.storage,
@@ -331,6 +350,14 @@ BEGIN
        WHERE node_id=n.id AND deleted_at IS NULL AND status <> 'DELETED') > {desired['memory_mb']} THEN
     RAISE EXCEPTION 'VM memory changed beyond the reserved capacity';
   END IF;
+  IF n.id IS NOT NULL AND (SELECT coalesce(sum(vcpu),0) FROM public.vms
+       WHERE node_id=n.id AND deleted_at IS NULL AND status <> 'DELETED') > {desired['labels']['placement_capacity']['allocatable']['cpu_threads']} THEN
+    RAISE EXCEPTION 'VM CPU changed beyond the reserved capacity';
+  END IF;
+  IF n.id IS NOT NULL AND (SELECT coalesce(sum(disk_gb),0) FROM public.vms
+       WHERE node_id=n.id AND deleted_at IS NULL AND status <> 'DELETED') > {desired['labels']['placement_capacity']['allocatable']['disk_gb']} THEN
+    RAISE EXCEPTION 'VM disks changed beyond the reserved capacity';
+  END IF;
   IF n.id IS NULL THEN
     INSERT INTO public.nodes(name,api_host,status,cpu_threads,memory_mb,disk_capacity_gb,vm_bridge,storage,ip_pool_id,labels)
     VALUES ({literal(config.node)},{literal(config.api_url)},'MAINTENANCE',{desired['cpu_threads']},
@@ -364,6 +391,7 @@ def register(report: dict, report_digest: str, runner: Runner, *, apply: bool = 
     summary = {key: desired[key] for key in ('name', 'public_id', 'status', 'cpu_threads', 'memory_mb', 'disk_capacity_gb')}
     summary.update({'mode': 'apply' if apply else 'dry-run', 'gpu_node': config.gpu_node,
                     'placement_capacity': desired['labels']['placement_capacity'],
+                    'vm_nic_requirements': desired['labels'].get('vm_nic_requirements'),
                     'image_registration': False, 'automatic_activation': False,
                     'boundary': 'CPU and disk reservations require the placement consumer to honor allocatable labels before activation. Disk capacity remains a physical advisory total.'})
     if not apply:

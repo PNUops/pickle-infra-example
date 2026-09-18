@@ -1,0 +1,23 @@
+{
+  "node": "node-example",
+  "node_public_id": "ea9b79b8-cb30-4ee0-b3c2-b05a1a65b8c0",
+  "cluster": "example-prod",
+  "api_url": "https://node-example.example.com:8006",
+  "storage": "local-lvm",
+  "bridge_mtu": 1370,
+  "template_vmid": 1101,
+  "name": "ubuntu-26.04",
+  "version": 1,
+  "display_name": "Ubuntu 26.04 LTS",
+  "os_family": "ubuntu",
+  "os_version": "26.04",
+  "ssh_username": "ubuntu",
+  "min_disk_gb": 10,
+  "notes": null,
+  "build_manifest_file": null,
+  "database": "pickle_example",
+  "database_hostname": "db-example",
+  "database_system_identifier": "7600000000000000001",
+  "database_socket_dir": "/var/run/postgresql",
+  "existing_public_id": null
+}

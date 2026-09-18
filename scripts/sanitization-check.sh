@@ -35,6 +35,17 @@ ipv4_candidates() {
     | grep -EoI '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' || [ "$?" -eq 1 ]
 }
 
+# ipv6_candidates TEXT → the IPv6-shaped tokens after masking the one official
+# Perl namespace that contains the punctuation `2::F`. The namespace is an
+# identifier, not an address; the token boundaries keep similarly prefixed
+# identifiers in the scan.
+ipv6_candidates() {
+  sed -E -e ':again' \
+    -e 's/(^|[^[:alnum:]_:]|-M)PVE::API2::Firewall::Cluster([^[:alnum:]_:]|$)/\1PVE_FIREWALL_MODULE\2/g' \
+    -e 't again' \
+    | grep -EoI '([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}' || [ "$?" -eq 1 ]
+}
+
 # is_ipv6 CANDIDATE → 0 when a colon-separated token is an address at all.
 # Colons are common punctuation: 22:30:15 is a time and 2c:54:91:ab:cd:ef is a
 # hardware address, and both begin with the hex digits that the global-unicast
@@ -150,8 +161,13 @@ sanitization_check() {
     is_ipv6 "$addr" || continue
     addr6_allowed "$addr" && continue
     sfail "$file carries $addr, which is a global IPv6 address rather than a documentation range"
-  done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$' \
-    | xargs -0 grep -EoI '([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}' 2>/dev/null | sort -u)
+  done < <(
+    while IFS= read -r -d '' file; do
+      while IFS= read -r addr; do
+        printf '%s:%s\n' "$file" "$addr"
+      done < <(ipv6_candidates < "$file")
+    done < <(git ls-files -z | grep -zv '^scripts/sanitization-check\.sh$') | sort -u
+  )
 
   # 2. Every placeholder the README promises has to be somewhere in the tree.
   # A substitution that quietly stopped happening leaves its promise standing in
@@ -288,6 +304,28 @@ sanitization_selftest() {
   for probe in 2001:db8::1 fe80::1 fd00::1 ::1; do
     if ! addr6_allowed "$probe"; then
       echo "sanitization selftest: $probe would be rejected" >&2
+      return 1
+    fi
+  done
+  for probe in 'PVE::API2::Firewall::Cluster' 'perl -MPVE::API2::Firewall::Cluster -MJSON'; do
+    candidates=$(printf '%s\n' "$probe" | ipv6_candidates)
+    if [ -n "$candidates" ]; then
+      echo 'sanitization selftest: the official PVE module token was read as IPv6' >&2
+      return 1
+    fi
+  done
+  for probe in 'PVE::API2::Firewall::ClusterExtra' \
+    'PVE::API2::Firewall::Cluster::Child' 'Other::PVE::API2::Firewall::Cluster'; do
+    candidates=$(printf '%s\n' "$probe" | ipv6_candidates)
+    if ! printf '%s\n' "$candidates" | grep -qx '2::F'; then
+      echo 'sanitization selftest: a different module identifier was incorrectly exempted' >&2
+      return 1
+    fi
+  done
+  candidates=$(printf '%s\n' 'PVE::API2::Firewall::Cluster 2001:db8::1 [2001:db8::2] ::1' | ipv6_candidates)
+  for probe in 2001:db8::1 2001:db8::2 ::1; do
+    if ! printf '%s\n' "$candidates" | grep -qx "$probe"; then
+      echo "sanitization selftest: $probe was hidden beside the module token" >&2
       return 1
     fi
   done

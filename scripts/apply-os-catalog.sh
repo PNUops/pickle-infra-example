@@ -69,6 +69,55 @@ psqlshow() {
 
 sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
 
+catalog_schema_mode() {
+  psqlq "
+    with unique_keys as (
+      select array_agg(a.attname::text order by a.attname)::text[] as columns
+        from pg_constraint c
+        cross join lateral unnest(c.conkey) as key(attnum)
+        join pg_attribute a on a.attrelid = c.conrelid and a.attnum = key.attnum
+       where c.conrelid = 'public.os_images'::regclass
+         and c.contype = 'u'
+       group by c.oid
+    )
+    select case
+      when count(*) filter (where columns = array['name','version']::text[]) > 0
+       and count(*) filter (where columns = array['name','node_id','version']::text[]) = 0
+        then 'legacy-global'
+      when count(*) filter (where columns = array['name','version']::text[]) = 0
+       and count(*) filter (where columns = array['name','node_id','version']::text[]) > 0
+        then 'node-scoped'
+      when count(*) filter (where columns = array['name','version']::text[]) > 0
+       and count(*) filter (where columns = array['name','node_id','version']::text[]) > 0
+        then 'both'
+      else 'neither'
+    end
+    from unique_keys;"
+}
+
+schema_mode=$(catalog_schema_mode)
+case "$schema_mode" in
+  legacy-global)
+    echo "== legacy global catalog schema detected; continuing this host catalog writer"
+    ;;
+  node-scoped)
+    echo "거부: node-scoped 이미지 스키마에서는 이 전역 catalog writer를 사용할 수 없습니다. scripts/register-image.py를 사용하세요." >&2
+    exit 1
+    ;;
+  both)
+    echo "거부: os_images에 legacy global과 node-scoped unique가 함께 있어 catalog writer를 안전하게 선택할 수 없습니다. 마이그레이션 상태를 정리한 뒤 scripts/register-image.py를 검토하세요." >&2
+    exit 1
+    ;;
+  neither)
+    echo "거부: os_images에 지원되는 이미지 unique가 없습니다. 스키마를 확인한 뒤 scripts/register-image.py를 검토하세요." >&2
+    exit 1
+    ;;
+  *)
+    echo "거부: os_images unique schema 판정 결과가 예상 밖입니다: $schema_mode" >&2
+    exit 1
+    ;;
+esac
+
 echo "== check the templates exist on this host"
 missing=0
 for row in "${CATALOG[@]}"; do
