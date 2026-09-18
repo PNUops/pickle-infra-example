@@ -155,6 +155,9 @@ bash scripts/bootstrap-isolated-core.sh --config /root/isolated-core/config.json
 1. 기존 CTID, guest config, target volume, 기록 디렉터리를 발견하면 첫 생성 전에 거부한다.
 2. 새 LXC에 `isolated-core:<run UUID>` description을 달고 작업 단계마다 소유권을 확인한다.
    CT의 onboot는 0으로 유지한다. 실패 뒤 자동 재실행이나 자동 삭제는 하지 않는다.
+   `pct config`는 description의 `:`와 마지막 줄바꿈을 `%3A`, `%0A`로 표시할 수 있다.
+   확인기는 이 값을 정확히 한 번만 decode하고 마지막 줄바꿈 하나만 정규화한다. 이중 인코딩,
+   중간 줄바꿈, 다른 hostname이나 run UUID는 소유권 불일치로 거부한다.
 3. 새 게스트의 패키지 자동 서비스 시작을 임시로 억제한다. DB를 열기 전에 TLS와
    SCRAM HBA를 설치하고 app `/32`만 허용한다. localhost 관리 접속은 postgres peer다.
 4. 게스트마다 전용 nft table을 적용한다. DB는 app의 TCP 5432, 앱은 전용 proxy의

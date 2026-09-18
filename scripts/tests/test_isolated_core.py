@@ -72,9 +72,9 @@ def admin_responses(c, run_id):
         'cluster status': json.dumps([
             {'type': 'cluster', 'name': c.expected_cluster, 'quorate': 1}]),
         'application container identity':
-            f'hostname: {c.app_hostname}\ndescription: isolated-core:{run_id}\n',
+            f'hostname: {c.app_hostname}\ndescription: isolated-core%3A{run_id}%0A\n',
         'database container identity':
-            f'hostname: {c.db_hostname}\ndescription: isolated-core:{run_id}\n',
+            f'hostname: {c.db_hostname}\ndescription: isolated-core%3A{run_id}%0A\n',
         'application machine identity': 'b' * 32 + '\n',
         'database machine identity': 'a' * 32 + '\n',
         'inactive API guard': 'ActiveState=inactive\nUnitFileState=disabled\n',
@@ -99,6 +99,38 @@ class FakeRunner(core.Runner):
 
 
 class IsolatedCoreSafetyTest(unittest.TestCase):
+    def test_pct_identity_accepts_plain_and_single_encoded_owner(self):
+        run_id = '11111111-2222-3333-4444-555555555555'
+        for description in (f'isolated-core:{run_id}',
+                            f'isolated-core%3A{run_id}%0A'):
+            with self.subTest(description=description):
+                runner = FakeRunner({'owned container identity':
+                                     f'hostname: pickle-app\ndescription: {description}\n'})
+                bootstrap = core.Bootstrap(config(), runner)
+                bootstrap.run_id = run_id
+                bootstrap.owned(201, 'pickle-app')
+
+    def test_pct_identity_rejects_wrong_ambiguous_or_partially_decoded_owner(self):
+        run_id = '11111111-2222-3333-4444-555555555555'
+        descriptions = (
+            f'isolated-core%253A{run_id}%250A',
+            f'isolated-core%3A{run_id}%0Aunexpected',
+            f'isolated-core%3A{run_id}%0D',
+            'isolated-core%3A00000000-0000-0000-0000-000000000000',
+        )
+        for description in descriptions:
+            with self.subTest(description=description):
+                runner = FakeRunner({'owned container identity':
+                                     f'hostname: pickle-app\ndescription: {description}\n'})
+                bootstrap = core.Bootstrap(config(), runner)
+                bootstrap.run_id = run_id
+                with self.assertRaises(core.BootstrapError):
+                    bootstrap.owned(201, 'pickle-app')
+        duplicate = (f'hostname: pickle-app\ndescription: isolated-core:{run_id}\n'
+                     f'description: isolated-core:{run_id}\n')
+        with self.assertRaisesRegex(core.BootstrapError, 'ambiguous'):
+            core.pct_container_identity(duplicate)
+
     def test_guest_secrets_receive_private_permissions_during_copy(self):
         for mode in ('0600', '0640'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as td:

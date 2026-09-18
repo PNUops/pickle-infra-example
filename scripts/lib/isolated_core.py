@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from urllib.parse import unquote_to_bytes
 import uuid
 
 NGINX_SIGNING_FINGERPRINT = '573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62'
@@ -42,6 +43,30 @@ os.execvpe(sys.argv[2],sys.argv[2:],environment)
 
 class BootstrapError(RuntimeError):
     pass
+
+
+def pct_container_identity(text: str) -> tuple[str, str]:
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        if ': ' not in line:
+            continue
+        key, value = line.split(': ', 1)
+        if key not in ('hostname', 'description'):
+            continue
+        if key in values:
+            raise BootstrapError('Container identity output is ambiguous')
+        values[key] = value
+    if set(values) != {'hostname', 'description'}:
+        raise BootstrapError('Container identity output is incomplete')
+    try:
+        description = unquote_to_bytes(values['description']).decode('utf-8')
+    except UnicodeDecodeError as error:
+        raise BootstrapError('Container description encoding is invalid') from error
+    if description.endswith('\n'):
+        description = description[:-1]
+    if '\n' in description or '\r' in description:
+        raise BootstrapError('Container description contains unexpected line breaks')
+    return values['hostname'], description
 
 
 @dataclass(frozen=True)
@@ -398,8 +423,11 @@ class Bootstrap:
 
     def owned(self, ctid: int, hostname: str) -> None:
         text = self.r.run(['pct', 'config', str(ctid)], label='owned container identity')
-        values = dict(line.split(': ', 1) for line in text.splitlines() if ': ' in line)
-        if values.get('hostname') != hostname or values.get('description') != 'isolated-core:' + self.run_id:
+        try:
+            actual_hostname, description = pct_container_identity(text)
+        except BootstrapError as error:
+            raise BootstrapError('Container ownership changed; refusing further writes') from error
+        if actual_hostname != hostname or description != 'isolated-core:' + self.run_id:
             raise BootstrapError('Container ownership changed; refusing further writes')
 
     def put(self, ctid: int, path: str, content: bytes | str, mode: str = '0644', owner: str = 'root:root') -> None:
@@ -645,8 +673,11 @@ class AdminBootstrap:
         ctid = self.c.app_ctid if role == 'application' else self.c.db_ctid
         hostname = self.c.app_hostname if role == 'application' else self.c.db_hostname
         text = self.r.run(['pct', 'config', str(ctid)], label=f'{role} container identity')
-        values = dict(line.split(': ', 1) for line in text.splitlines() if ': ' in line)
-        if values.get('hostname') != hostname or values.get('description') != 'isolated-core:' + self.run_id:
+        try:
+            actual_hostname, description = pct_container_identity(text)
+        except BootstrapError as error:
+            raise BootstrapError(f'{role} container ownership changed') from error
+        if actual_hostname != hostname or description != 'isolated-core:' + self.run_id:
             raise BootstrapError(f'{role} container ownership changed')
         machine_id = self.r.guest(ctid, ['cat', '/etc/machine-id'],
                                   label=f'{role} machine identity').strip()
