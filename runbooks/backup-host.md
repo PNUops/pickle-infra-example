@@ -112,18 +112,29 @@ qnetd는 NetBird 서비스 이후 시작하고 bind 실패를 재시도한다. �
 ```bash
 sudo bash scripts/create-pbs-vm.sh --expected-host dept-node \
   --boot-image /path/to/debian-13-genericcloud-amd64.qcow2 \
-  --sha256 <verified-sha256> --ssh-public-key /path/to/operator.pub
+  --sha256 <verified-sha256> --ssh-public-key /path/to/operator.pub \
+  --uefi-loader /path/from/virsh-domcapabilities/CODE.fd \
+  --uefi-vars-template /path/from/qemu-firmware-descriptor/VARS.fd
 ```
 
 사전 검사 후 `--apply`를 더하면 다음만 생성한다.
 
 - `backup-vm`: 4 vCPU, 8 GiB RAM, 자동 시작, MAC `52:54:00:9e:01:10`.
-- `/var/lib/libvirt/images/backup-vm/boot.qcow2`: 새 64 GiB boot disk와 cloud-init seed.
+- `/var/lib/libvirt/images/backup-vm/boot.qcow2`: 새 64 GiB UEFI boot disk와 cloud-init seed.
 - `/home/libvirt/backup-vm/datastore.raw`: 사전 할당한 새 1 TiB raw disk.
+- Libvirt 관리 경로의 guest별 UEFI NVRAM. 정확한 경로는 생성 뒤 `domain.xml`에 기록한다.
 - 기존 libvirt default NAT의 DHCP reservation `198.19.122.10`, gateway/DNS `198.19.122.1`.
 
 Libvirt capabilities의 실제 KVM DAC uid/gid로 디스크와 seed 소유권을 지정하고,
 동일 uid/gid에서 read/write 접근을 검사한 뒤 VM을 시작한다. 자동 ownership 변경에 의존하지 않는다.
+Firmware 경로는 호출자가 명시한다. 생성기는 loader를 `virsh domcapabilities`의 현재
+machine/architecture 지원 목록과 대조하고, loader와 vars template이 같은 QEMU firmware
+descriptor의 pair인지 확인한다. 이어 explicit UEFI dry-run XML이 두 경로를 그대로 쓰고
+TPM을 추가하지 않는지와 QEMU 계정의 read 권한을 검사한다. cloud-init seed는 IDE CD-ROM이
+아니라 read-only virtio block으로 연결한다. Debian 13 genericcloud source, UEFI와 이 연결의
+조합만 실측한 것이며 특정 커널 모듈 유무를 원인으로 단정하지 않는다.
+Libvirt가 만드는 guest별 NVRAM 경로는 생성 뒤 `domain.xml`에 기록된다. VM 정의와 함께
+보존하고 복구 대상으로 취급하며, 실패 정리 때 경로를 확인하지 않고 지우지 않는다.
 
 Guest는 `PBS_DATA` serial과 정확한 1 TiB 크기, 기존 filesystem 부재를 검사한 뒤에만
 ext4를 생성한다. Datastore는 UUID로 mount하며 PBS service는 mount와 guest firewall을

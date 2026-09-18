@@ -4,20 +4,22 @@ set -euo pipefail
 umask 077
 usage() {
   cat <<'EOF'
-Usage: create-pbs-vm.sh --expected-host NAME --boot-image FILE --sha256 HASH --ssh-public-key FILE [--apply]
+Usage: create-pbs-vm.sh --expected-host NAME --boot-image FILE --sha256 HASH --ssh-public-key FILE --uefi-loader FILE --uefi-vars-template FILE [--apply]
 The boot image must be a checksum-verified Debian 13 amd64 generic cloud image.
 Creates backup-vm (4 vCPU/8 GiB), a new 64 GiB boot disk and a new 1 TiB data disk.
 It refuses an existing domain or target file. No existing disk is reformatted.
 EOF
 }
 fail() { echo "create-pbs-vm: $*" >&2; exit 1; }
-expected_host='' boot_image='' expected_hash='' public_key='' apply=0
+expected_host='' boot_image='' expected_hash='' public_key='' uefi_loader='' uefi_vars_template='' apply=0
 while (($#)); do
   case "$1" in
     --expected-host) expected_host=${2:?}; shift 2 ;;
     --boot-image) boot_image=${2:?}; shift 2 ;;
     --sha256) expected_hash=${2:?}; shift 2 ;;
     --ssh-public-key) public_key=${2:?}; shift 2 ;;
+    --uefi-loader) uefi_loader=${2:?}; shift 2 ;;
+    --uefi-vars-template) uefi_vars_template=${2:?}; shift 2 ;;
     --apply) apply=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
@@ -38,6 +40,8 @@ PY
 [[ $(wc -l < "$public_key") -eq 1 ]] || fail 'SSH 공개키는 한 줄이어야 합니다.'
 ssh-keygen -l -f "$public_key" >/dev/null || fail 'SSH 공개키를 읽지 못했습니다.'
 grep -Eq '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[^ ]+) ' "$public_key" || fail '공개키 형식이 아닙니다.'
+[[ $uefi_loader == /* && -f $uefi_loader ]] || fail 'UEFI loader 절대 경로가 필요합니다.'
+[[ $uefi_vars_template == /* && -f $uefi_vars_template ]] || fail 'UEFI vars template 절대 경로가 필요합니다.'
 for binary in virsh virt-install qemu-img cloud-localds python3 setpriv; do command -v "$binary" >/dev/null || fail "$binary 누락"; done
 if virsh -c qemu:///system dominfo backup-vm >/dev/null 2>&1; then fail 'backup-vm domain이 이미 있습니다.'; fi
 boot_dir=/var/lib/libvirt/images/backup-vm
@@ -73,6 +77,30 @@ PY
 )
 read -r qemu_uid qemu_gid <<< "$qemu_identity"
 [[ $qemu_uid =~ ^[0-9]+$ && $qemu_gid =~ ^[0-9]+$ ]] || fail 'QEMU DAC identity가 올바르지 않습니다.'
+firmware_check=$script_dir/lib/pbs_firmware.py
+[[ -f $firmware_check ]] || fail '같은 scripts/lib 디렉터리에 firmware 검사기가 필요합니다.'
+firmware_caps=$(mktemp)
+firmware_xml=$(mktemp)
+firmware_paths=$(mktemp)
+cleanup() { rm -f -- "$firmware_caps" "$firmware_xml" "$firmware_paths"; }
+trap cleanup EXIT
+virsh -c qemu:///system domcapabilities --virttype kvm --arch x86_64 > "$firmware_caps" ||
+  fail 'libvirt domain capabilities를 읽지 못했습니다.'
+python3 -I "$firmware_check" preflight "$firmware_caps" "$uefi_loader" "$uefi_vars_template" > "$firmware_paths" ||
+  fail 'UEFI firmware/vars 지원 검사가 실패했습니다.'
+mapfile -t uefi_files < "$firmware_paths"
+[[ ${#uefi_files[@]} -eq 2 ]] || fail 'UEFI loader와 vars template을 모두 확인해야 합니다.'
+for firmware in "${uefi_files[@]}"; do
+  setpriv --reuid "$qemu_uid" --regid "$qemu_gid" --clear-groups -- test -r "$firmware" ||
+    fail "QEMU가 UEFI firmware 파일을 읽을 수 없습니다: $firmware"
+done
+boot_spec="loader=$uefi_loader,loader.readonly=yes,loader.type=pflash,nvram.template=$uefi_vars_template"
+virt-install --connect qemu:///system --name backup-vm --memory 8192 --vcpus 4 --cpu host-model \
+  --import --os-variant generic --graphics none --noautoconsole --network none \
+  --disk "path=$boot_image,format=qcow2,readonly=on" --boot "$boot_spec" --tpm none \
+  --dry-run --print-xml > "$firmware_xml" || fail '사용 가능한 UEFI firmware를 선택하지 못했습니다.'
+python3 -I "$firmware_check" domain "$firmware_xml" "$uefi_loader" "$uefi_vars_template" ||
+  fail 'virt-install UEFI XML 검사가 실패했습니다.'
 echo 'backup-vm: 4 vCPU/8 GiB, boot 64 GiB, data 1 TiB, NAT 198.19.122.10을 구성합니다.'
 ((apply)) || exit 0
 boot_disk=$boot_dir/boot.qcow2
@@ -110,11 +138,11 @@ setpriv --reuid "$qemu_uid" --regid "$qemu_gid" --clear-groups -- test -r "$boot
 virsh -c qemu:///system net-update default add ip-dhcp-host \
   "<host mac='52:54:00:9e:01:10' name='backup-vm' ip='198.19.122.10'/>" --live --config
 virt-install --connect qemu:///system --name backup-vm --memory 8192 --vcpus 4 --cpu host-model \
-  --import --os-variant generic --graphics none --noautoconsole \
+  --import --os-variant generic --graphics none --noautoconsole --boot "$boot_spec" --tpm none \
   --network network=default,model=virtio,mac=52:54:00:9e:01:10 \
   --disk "path=$boot_disk,format=qcow2,bus=virtio,cache=none,serial=PBS_BOOT" \
   --disk "path=$data_disk,format=raw,bus=virtio,cache=none,io=native,serial=PBS_DATA" \
-  --disk "path=$boot_dir/seed.iso,device=cdrom" \
+  --disk "path=$boot_dir/seed.iso,format=raw,bus=virtio,readonly=on,serial=PBS_SEED" \
   --channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
   --console pty,target.type=serial
 virsh -c qemu:///system autostart backup-vm

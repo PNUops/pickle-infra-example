@@ -107,6 +107,9 @@ runbooks/         운영 절차                                    // 이 예시
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
 
+`create-pbs-vm.sh`는 명시한 UEFI loader와 vars template을 host capability 및 firmware
+descriptor와 대조합니다. cloud-init seed는 read-only virtio block으로 연결합니다.
+
 `apply-settings.sh`는 누락된 런타임 설정 키를 추가하고 기존 값은 유지합니다. GPU 미연결
 검토 시간과 저사용 판단 기간, 유지 결정 후 재검토 유예의 초기값은 12시간입니다.
 관리자 콘솔의 플랫폼 설정에서 변경하면 이후 판정이 변경값을 읽습니다. GPU 임대 기간은
