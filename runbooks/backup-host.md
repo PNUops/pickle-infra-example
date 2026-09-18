@@ -1,7 +1,7 @@
 # Ubuntu 호스트의 PBS VM과 qnetd
 
-대상은 Ubuntu 22.04와 libvirt를 유지하는 dept-node이다. 아직 설치하지 않은 PBS와 qnetd를
-준비하는 절차다. PBS는 Debian 13 전용 VM, qnetd는 Ubuntu 호스트에 설치한다. 기존 Docker, 관리 IP, 기본 경로와 SSH
+대상은 Ubuntu 22.04와 libvirt를 유지하는 dept-node이다. PBS와 qnetd의 신규 설치, 신원 보관과
+복구 검증을 다룬다. PBS는 Debian 13 전용 VM, qnetd는 Ubuntu 호스트에 설치한다. 기존 Docker, 관리 IP, 기본 경로와 SSH
 정책은 유지한다. 초기 디스크는 boot 64 GiB와 datastore 1 TiB이며 기존 파티션은 변경하지 않는다.
 
 ## 실행 파일과 준비물
@@ -187,12 +187,125 @@ token을 사용한다. Encryption key는 PBS VM 밖에도 복구 가능한 형�
 
 ## 복구와 완료 확인
 
+### 복구 신원과 설정 보관
+
+복구 사본은 root 소유 0700 디렉터리에 두고 archive 파일은 0600으로 만든다. 원본 파일의
+소유자·그룹·mode를 manifest에 별도로 기록한다. 보호 archive의 mode와 live 서비스가 요구하는
+원본 mode는 다른 값일 수 있다. Mac으로 가져온 archive도 0600, 추출 디렉터리는 0700으로
+두며, 추출 파일을 다시 서비스 위치에 놓을 때는 manifest의 원본 권한을 복원한다.
+
+| 대상 | 보존할 내용과 제외 경계 |
+|---|---|
+| dept-node/backup-vm NetBird 0.78.2 | 서비스가 사용하는 `/var/lib/netbird/default.json`, 존재하면 `/var/lib/netbird/active_profile.json`, `netbird.service`와 drop-in. root 전용 CLI profile을 실제로 사용했다면 `/root/.config/netbird/`도 별도 보존. `/var/lib/netbird/state.json` 같은 동적 runtime state는 identity 사본에서 제외 |
+| backup-vm 영구 네트워크 | `/etc/netplan/`과 적용 전후 renderer 결과. DHCP lease나 일시적인 interface state는 대체 자료가 아님 |
+| PBS | `/etc/proxmox-backup/datastore.cfg`, `user.cfg`, `token.shadow`, `acl.cfg`, `authkey.key`, `csrf.key`, `proxy.key`/`proxy.pem`과 별도 보관한 backup encryption key. secret 원문은 manifest나 작업 로그에 넣지 않음 |
+| dept-node qnetd와 PVE qdevice | host의 `/etc/corosync/qnetd/nssdb/`와 config/unit, 각 PVE의 `/etc/corosync/qdevice/net/nssdb/`와 Corosync 설정. 실행 중인 qnetd NSS의 0640·service group 권한은 정상 동작 조건일 수 있으므로 일괄 0600으로 바꾸지 않음 |
+| PBS VM | `virsh dumpxml backup-vm` 결과, XML이 가리키는 guest NVRAM, boot/data/seed 경로와 hash, data filesystem UUID와 `/etc/fstab`. 원본 cloud image는 별도 immutable source로 보존 |
+
+NetBird profile 이름은 추정하지 않는다. `netbird profile list`, service의 ExecStart/Environment와
+실제 identity 파일을 함께 대조해 service active profile과 root CLI profile을 구분한다. 복구 후에는
+peer ID, 관리 그룹, policy와 route/DNS 비활성 상태를 확인하며 새 peer를 조용히 만드는 것을
+원복으로 간주하지 않는다. 같은 `default.json` identity를 복원할 때는 기존 peer instance가
+정지·폐기됐거나 다시 기동되지 않음을 먼저 확인한다. 한 identity를 두 VM에서 동시에 실행하지 않는다.
+
+### Datastore 설정 분리와 재연결
+
+Datastore 설정을 분리하기 전에 같은 filesystem을 쓰는 다른 PBS writer가 없고 backup,
+restore, verify, prune, GC job이 실행 중이 아님을 확인한다. `/etc/proxmox-backup/datastore.cfg`,
+datastore 경로, 정확한 filesystem UUID, namespace와 snapshot owner, index hash를 보호 사본에
+남긴다. 경로만 같거나 mount가 성공한 것은 같은 datastore라는 증거가 아니다. 보존할
+backup/verify/prune/GC/sync job의 schedule과 enabled 상태를 기록하고 분리 창에는 실행되지 않게
+중지한다. 재연결 검증 뒤에만 원래 상태로 복구한다.
+
+Data를 보존한 채 설정만 분리할 때는 다음 두 옵션을 모두 명시한다.
+
+```bash
+proxmox-backup-manager datastore remove <store> \
+  --destroy-data false --keep-job-configs true
+```
+
+`proxmox-backup-manager datastore remove`는 내부 worker가 끝날 때까지 기다리는 CLI이므로
+background나 pipeline으로 분리하지 않고 exit 0을 확인한 뒤 다음 단계로 간다. 같은 delete API를
+직접 호출했다면 반환 UPID를 아래와 같은 task status 기준으로 별도 대기해야 한다.
+
+Filesystem UUID와 mount를 다시 확인한 뒤 기존 datastore를 재연결한다. `create` 결과는 설정
+완료가 아니라 비동기 worker의 UPID다.
+
+```bash
+umask 077
+proxmox-backup-manager datastore create <store> <exact-path> \
+  --reuse-datastore true --output-format json > <protected-result.json>
+```
+
+Result JSON에서 UPID를 읽고 URL path로 안전하게 encode한 뒤, root의 local API wrapper로
+`/nodes/localhost/tasks/<UPID>/status`를 JSON 조회한다. `status=stopped`와
+`exitstatus=OK`가 함께 나올 때까지 기다린다. 완료 전에 예전 `datastore.cfg`를 덮어써서
+원복하지 않는다. task가 실패하면 현재 config와 filesystem을 그대로 보존하고 task log를
+확인한다. 완료 뒤 config, filesystem UUID, index와 snapshot owner를 대조하고 server-side
+verify를 수행한다. 실제 restore와 SHA-256 비교는 설정 판정과 별도의 마지막 단계다.
+
+### 최소 권한 file-shaped 검증
+
+검증은 전용 namespace, 임시 user와 그 user의 token 하나만 사용한다. Namespace 생성 CLI의
+text renderer가 응답을 그리지 못하고 panic할 수 있으므로 root에서 API debug CLI의 JSON
+출력을 사용한다.
+
+```bash
+proxmox-backup-debug api create /admin/datastore/<store>/namespace \
+  --name <validation-namespace> --output-format json
+```
+
+하위 namespace라면 `--parent <existing-parent>`를 함께 지정한다. `name`에는 마지막 component만
+넣고 전체 경로를 넣지 않는다.
+
+명령이 오류를 냈더라도 실제 namespace 목록을 먼저 JSON으로 읽는다. 이미 생성됐다면 재시도해
+중복 상태를 만들지 않는다. `proxmox-backup-manager user generate-token`은
+`--output-format`을 지원하지 않는다. `Result` JSON에 secret을 한 번만 반환하므로 stdout 전체를
+root 소유 0600 파일로 직접 받아야 한다. 기존 경로나 symlink에 redirect하지 않는다. token 값은
+터미널, worklog, Git이나 명령 이력에 출력하지 않는다.
+
+User와 token은 같은 `/datastore/<store>/<validation-namespace>` 경로에 각각
+`DatastoreBackup` ACL을 받는다. Token 권한은 user 권한과 교집합이므로 둘 중 하나만 주면
+검증이 성립하지 않는다. 다음 순서로 범위를 확인한다.
+
+```bash
+proxmox-backup-manager user create <validation-user>@pbs --expire <unix-expiry>
+umask 077
+protected_token_dir=$(mktemp -d /root/pbs-validation.XXXXXXXX)
+test "$(stat -c '%u:%a' "$protected_token_dir")" = '0:700'
+token_result=$(mktemp "$protected_token_dir/token-result.XXXXXXXX")
+proxmox-backup-manager user generate-token <validation-user>@pbs <validation-token> \
+  --expire <unix-expiry> > "$token_result"
+test -f "$token_result" && test ! -L "$token_result" && test -s "$token_result"
+test "$(stat -c '%u:%a' "$token_result")" = '0:600'
+proxmox-backup-manager acl update \
+  /datastore/<store>/<validation-namespace> DatastoreBackup \
+  --auth-id <validation-user>@pbs
+proxmox-backup-manager acl update \
+  /datastore/<store>/<validation-namespace> DatastoreBackup \
+  --auth-id '<validation-user>@pbs!<validation-token>'
+```
+
+1. 새 8 MiB synthetic 파일과 note를 client-side encryption key로 암호화해 backup한다.
+2. pve-node-2와 pve-node-3에서 각각 restore하고 원본 SHA-256과 비교한다.
+3. Namespace 밖 backup이 `Datastore.Backup` 부족으로 거부되는지 확인한다.
+4. PBS server-side verify가 성공하는지 확인한다.
+5. 위 절차로 datastore 설정을 분리·재연결한 뒤 다시 restore하고 SHA-256과 snapshot owner를 확인한다.
+6. Result JSON의 secret을 필요한 client의 별도 0600 payload로 한 번만 옮기고 server의 Result JSON을 즉시 삭제한다.
+7. Snapshot과 namespace, 두 ACL(`--delete true`), token(`user delete-token`), user(`user remove`), client payload, 임시 key와 복원 파일 및 `protected_token_dir`을 소유 관계대로 정리하고 목록에서 사라졌는지 확인한다.
+
+Snapshot을 forget해도 참조가 사라진 chunk는 PBS의 기본 GC grace를 거친 뒤 정상 GC가 회수한다.
+`.chunks` 아래 파일을 수동 삭제하거나 검증을 빠르게 끝내려고 grace를 우회하지 않는다.
+이 시험은 암호화된 file-shaped backup/restore와 권한 경계만 증명한다. VM backup/restore,
+database RPO/RTO, dept-node 물리 host 장애와 offsite 사본은 별도 완료 조건이다.
+
 PBS VM 재부팅 중 host qnetd를 확인하고, 두 PVE 정상 상태에서 qnetd 정지와 복귀를 확인한다.
 한 PVE씩 재부팅할 때는 생존 노드+qdevice quorum을 검증한다. qnetd가 없는 동안 추가 PVE를
 정지하지 않는다. 이 검증은 dept-node 물리 host 장애나 자동 HA가 아니다.
 
 PBS boot를 잃으면 새 boot VM을 만들고 기존 data disk를 재연결한다. UUID mount를 확인해
-`reuse-datastore`로 기존 datastore를 등록한다. 기존 data disk에는 mkfs를 실행하지 않는다.
+위 비동기 완료 절차와 `reuse-datastore`로 기존 datastore를 등록한다. 기존 data disk에는
+mkfs를 실행하지 않는다.
 VM XML, filesystem UUID, PBS 설정과 암호화 키가 같은 dept-node만의 사본이 되지 않도록 보관한다.
 같은 datastore에 두 PBS writer를 동시에 붙이지 않는다.
 
@@ -200,7 +313,8 @@ VM XML, filesystem UUID, PBS 설정과 암호화 키가 같은 dept-node만의 �
 대상이 아니다. 소유한 시험 VM만 별도 namespace에서 백업과 복원을 검증한다. DB는 5분
 dump 후 PBS 저장 완료를 기준으로 freshness를 계산한다. 최근 하루와 일7/주4 보존을 적용하며
 실제 restore에서 데이터 시점과 서비스 복귀 시간을 기록한다. Task OK만으로 복원 완료라고
-판정하지 않는다. Prune/GC는 승인한 namespace와 retention에만 적용한다.
+판정하지 않고 복원 데이터의 서비스 검증을 별도로 수행한다. Prune/GC는 승인한 namespace와
+retention에만 적용한다.
 
 qdevice rollback은 두 PVE가 online/quorate일 때 `pvecm qdevice remove`를 먼저 실행한다.
 이 명령은 PVE의 qdevice NSS도 제거하므로 필요한 복구 사본을 먼저 확인한다. 이후 dept-node qnetd를
