@@ -54,7 +54,10 @@ IP 할당은 플랫폼 DB와 cloud-init이 소유한다. 이 zone에는 DHCP와 
    복구 timer 기본값은 300초이며 `--rollback-seconds`로 60–900초 안에서 정한다.
    스크립트는 먼저 `/bin/bash` 경유 1초 시험 timer가 실제로 nonce proof를 쓰고
    정상 종료하는지 확인한다. 그 뒤 실제 rollback timer를 arm하고 BMC guard를 설치한
-   다음 NetBird MTU를 변경한다. `/run`의 스크립트를 직접 실행하지 않는다.
+   다음 NetBird MTU를 변경한다. 재시작 직후 mark rule이 아직 비어 있으면 최대 15초 동안
+   0.25초 간격으로 기다리되, IPv4/IPv6에서 원래 확인한 tuple이 연속 두 번 같아야 준비로
+   판정한다. 다른 mark/mask나 잘못된 rule은 즉시 중단하며 attempts와 elapsed를 state에
+   남긴다. `/run`의 스크립트를 직접 실행하지 않는다.
 4. 두 node 준비가 성공하면 pve-node-2에서 SDN을 적용한다.
 
    ```bash
@@ -170,6 +173,8 @@ fallback을 추가하지 않는다. `pve-firewall status`가 disabled/running이
 먼저 routing과 두 gateway 주소를 내리고, guard가 남아 있는 동안 NetBird MTU를 복원한다.
 Forwarding 0을 다시 확인한 뒤 owned rule/table만 회수한다. Native 설정과 Corosync hash,
 HTTPS 및 BMC를 다시 확인한다. Runtime 파일만 정리하고 baseline/rollback 기록은 보존한다.
+수동 rollback은 이 확인이 모두 성공한 뒤 owned rollback timer만 정리한다. 확인이 실패하면
+timer를 보존하고, timer가 실행한 service 안에서도 자기 service는 중지하지 않는다.
 Guest가 생긴 경우 bridge netfilter를 임의로 끄지 않는다.
 
 Node rollback 뒤 두 PVE가 online/quorate이고 guest가 없는 상태에서만 다음으로

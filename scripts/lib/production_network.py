@@ -15,6 +15,10 @@ CHAINS = {
 }
 
 
+class NetBirdMarkNotReady(AssertionError):
+    """NetBird has not recreated one of the two required mark rules yet."""
+
+
 def validate_config(config):
     assert config["schema"] == 1 and len(config["nodes"]) == 2
     assert config["gateway_owner"] in config["nodes"]
@@ -51,11 +55,16 @@ def validate_config(config):
 def parse_netbird_accept_mark(filter_rules, mangle_rules, pve_source):
     """Refuse unknown mark layouts rather than clearing unrelated skb bits."""
     accepted = set()
+    mark_accept_lines = []
     for line in filter_rules.splitlines():
         tokens = shlex.split(line)
+        if (tokens[:2] == ["-A", "FORWARD"] and tokens[-2:] == ["-j", "ACCEPT"]
+                and ("mark" in tokens or "--mark" in tokens)):
+            mark_accept_lines.append(tokens)
         if len(tokens) == 8 and tokens[:5] == ["-A", "FORWARD", "-m", "mark", "--mark"] and tokens[-2:] == ["-j", "ACCEPT"]:
             value, _, mask = tokens[5].partition("/")
             accepted.add((int(value, 0), int(mask or "0xffffffff", 0)))
+    assert len(mark_accept_lines) == len(accepted), "unknown global accept mark layout"
     setters = set()
     for line in mangle_rules.splitlines():
         tokens = shlex.split(line)
@@ -65,13 +74,21 @@ def parse_netbird_accept_mark(filter_rules, mangle_rules, pve_source):
         assert "--dst-type" in tokens and tokens[tokens.index("--dst-type") + 1] == "LOCAL", "NetBird routing marks are not permitted"
         value, _, mask = tokens[tokens.index("--set-xmark") + 1].partition("/")
         setters.add((int(value, 0), int(mask or "0xffffffff", 0)))
-    assert len(accepted) == 1, "ambiguous global accept mark"
-    candidate = next(iter(accepted))
-    assert setters == {candidate} and candidate[1] == 0xffffffff and candidate[0] != 0, "unknown NetBird mark setter/mask"
+    assert len(accepted) <= 1, "ambiguous global accept mark"
+    assert len(setters) <= 1, "ambiguous NetBird mark setter"
+    for value, mask in accepted | setters:
+        assert mask == 0xffffffff and value != 0, "unknown NetBird mark setter/mask"
     match = re.search(r'\$FWACCEPTMARK_ON\s*=\s*"(0x[0-9a-fA-F]+)/(0x[0-9a-fA-F]+)"', pve_source)
     assert match, "unknown PVE acceptance mark"
     pve_mask = int(match.group(2), 0)
-    assert candidate[0] & pve_mask == 0, "NetBird and PVE mark bits overlap"
+    for value, _mask in accepted | setters:
+        assert value & pve_mask == 0, "NetBird and PVE mark bits overlap"
+    if not accepted:
+        raise NetBirdMarkNotReady("NetBird global accept mark is not ready")
+    if not setters:
+        raise NetBirdMarkNotReady("NetBird mark setter is not ready")
+    candidate = next(iter(accepted))
+    assert setters == {candidate}, "unknown NetBird mark setter/mask"
     return candidate[0], candidate[1], pve_mask
 
 

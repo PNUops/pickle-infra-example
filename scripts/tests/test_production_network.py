@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS / "lib"))
-from production_network import firewall_plan, nft_guard_text, parse_netbird_accept_mark, validate_config, validate_sdn_inventory
+from production_network import NetBirdMarkNotReady, firewall_plan, nft_guard_text, parse_netbird_accept_mark, validate_config, validate_sdn_inventory
 
 CONFIG = {
     "schema": 1, "cluster": "example-prod", "zone": "prodvx", "gateway_owner": "pve-a",
@@ -36,6 +36,101 @@ def load_script(name):
 
 
 class ProductionNetworkTests(unittest.TestCase):
+    def test_mark_parser_distinguishes_only_transient_empty_rules(self):
+        with self.assertRaises(NetBirdMarkNotReady):
+            parse_netbird_accept_mark('', MANGLE, PVE_SOURCE)
+        with self.assertRaises(NetBirdMarkNotReady):
+            parse_netbird_accept_mark(FILTER, '', PVE_SOURCE)
+        with self.assertRaises(AssertionError):
+            parse_netbird_accept_mark(FILTER + FILTER, MANGLE, PVE_SOURCE)
+        with self.assertRaisesRegex(AssertionError, 'ambiguous global accept mark'):
+            parse_netbird_accept_mark(FILTER + FILTER.replace('0x1bd20', '0x42'), '', PVE_SOURCE)
+        with self.assertRaisesRegex(AssertionError, 'setter/mask'):
+            parse_netbird_accept_mark(FILTER.replace('0x1bd20', '0x1bd20/0xffff'), '', PVE_SOURCE)
+        with self.assertRaisesRegex(AssertionError, 'unknown NetBird ingress'):
+            parse_netbird_accept_mark(FILTER, MANGLE.replace('-i wt0', '-i wt1'), PVE_SOURCE)
+        with self.assertRaisesRegex(AssertionError, 'unknown NetBird ingress'):
+            parse_netbird_accept_mark('', MANGLE.replace('-i wt0', '-i wt1'), PVE_SOURCE)
+        with self.assertRaisesRegex(AssertionError, 'not permitted'):
+            parse_netbird_accept_mark('', MANGLE.replace('LOCAL', 'UNICAST'), PVE_SOURCE)
+        with self.assertRaisesRegex(AssertionError, 'setter/mask'):
+            parse_netbird_accept_mark('', MANGLE.replace('0xffffffff', '0xffff'), PVE_SOURCE)
+
+    def test_mark_readiness_retries_empty_rules_until_two_strict_successes(self):
+        module = load_script('production-network')
+        expected = (0x1bd20, 0xffffffff, 0x80000000)
+        now = [0.0]
+        state = {}
+        with patch.object(module, 'accept_mark', side_effect=[
+                NetBirdMarkNotReady('not ready'), expected, expected]), \
+             patch.object(module.time, 'monotonic', side_effect=lambda: now[0]), \
+             patch.object(module.time, 'sleep', side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)), \
+             patch.object(module, 'write_json'):
+            self.assertEqual(module.wait_for_accept_mark(expected, state), expected)
+        self.assertEqual(state['accept_mark_readiness']['attempts'], 3)
+        self.assertEqual(state['accept_mark_readiness']['consecutive_successes'], 2)
+        self.assertTrue(state['accept_mark_readiness']['ready'])
+        self.assertEqual(state['accept_mark_readiness']['elapsed_seconds'], 0.5)
+
+    def test_mark_readiness_times_out_without_real_sleep(self):
+        module = load_script('production-network')
+        now = [0.0]
+        state = {}
+        with patch.object(module, 'MARK_READY_TIMEOUT', 0.5), \
+             patch.object(module, 'accept_mark', side_effect=NetBirdMarkNotReady('not ready')), \
+             patch.object(module.time, 'monotonic', side_effect=lambda: now[0]), \
+             patch.object(module.time, 'sleep', side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)), \
+             patch.object(module, 'write_json'):
+            with self.assertRaisesRegex(RuntimeError, 'after 2 attempts in 0.500s'):
+                module.wait_for_accept_mark((0x1bd20, 0xffffffff, 0x80000000), state)
+        self.assertEqual(state['accept_mark_readiness']['attempts'], 2)
+        self.assertFalse(state['accept_mark_readiness']['ready'])
+
+    def test_mark_readiness_rejects_changed_layout_and_command_errors_immediately(self):
+        module = load_script('production-network')
+        expected = (0x1bd20, 0xffffffff, 0x80000000)
+        for failure in ((0x1bd20, 0xffff, 0x80000000), RuntimeError('iptables failed')):
+            effect = failure if isinstance(failure, Exception) else None
+            with self.subTest(failure=failure), \
+                 patch.object(module, 'accept_mark', side_effect=effect, return_value=failure), \
+                 patch.object(module.time, 'sleep') as sleep, patch.object(module, 'write_json'):
+                with self.assertRaises((AssertionError, RuntimeError)):
+                    module.wait_for_accept_mark(expected, {})
+                sleep.assert_not_called()
+
+    def test_mark_readiness_does_not_accept_success_at_the_deadline(self):
+        module = load_script('production-network')
+        expected = (0x1bd20, 0xffffffff, 0x80000000)
+        now = [0.0]
+
+        def late_success():
+            now[0] = 0.5
+            return expected
+
+        with patch.object(module, 'MARK_READY_TIMEOUT', 0.5), \
+             patch.object(module, 'accept_mark', side_effect=late_success), \
+             patch.object(module.time, 'monotonic', side_effect=lambda: now[0]), \
+             patch.object(module.time, 'sleep') as sleep, patch.object(module, 'write_json'):
+            with self.assertRaisesRegex(RuntimeError, 'after 1 attempts in 0.500s'):
+                module.wait_for_accept_mark(expected, {})
+        sleep.assert_not_called()
+
+    def test_successful_rollback_disarms_only_its_timer_after_verification(self):
+        module = load_script('production-network')
+        calls = []
+        with patch.object(module, 'local_checks', side_effect=lambda *_: calls.append('checked')), \
+             patch.object(module, 'stop_transient_unit', side_effect=lambda unit: calls.append(unit)):
+            module.finish_successful_rollback(CONFIG, 'pve-a', {})
+        self.assertEqual(calls, ['checked', module.TIMER + '.timer'])
+
+    def test_failed_rollback_verification_preserves_the_timer(self):
+        module = load_script('production-network')
+        with patch.object(module, 'local_checks', side_effect=AssertionError('verification failed')), \
+             patch.object(module, 'stop_transient_unit') as stop:
+            with self.assertRaisesRegex(AssertionError, 'verification failed'):
+                module.finish_successful_rollback(CONFIG, 'pve-a', {})
+        stop.assert_not_called()
+
     def test_transient_selfcheck_cleanup_accepts_units_collected_after_success(self):
         module = load_script('production-network')
         calls = []

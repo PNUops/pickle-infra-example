@@ -19,7 +19,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 sys.dont_write_bytecode = True
-from production_network import CHAINS, firewall_plan, nft_guard_text, parse_netbird_accept_mark, validate_config
+from production_network import CHAINS, NetBirdMarkNotReady, firewall_plan, nft_guard_text, parse_netbird_accept_mark, validate_config
 
 BASE = Path("/var/lib/example-production-network")
 STATE = BASE / "state.json"
@@ -31,6 +31,8 @@ TIMER = "example-production-network-rollback"
 COMMENT = "example-production-network"
 TABLE = "pickle_production_l2"
 INET_TABLE = "pickle_production_guard"
+MARK_READY_TIMEOUT = 15.0
+MARK_READY_INTERVAL = 0.25
 HOOKS = {"raw": ("raw", "PREROUTING"), "mangle": ("mangle", "PREROUTING"),
          "input": ("filter", "INPUT"), "forward": ("filter", "FORWARD"), "nat": ("nat", "POSTROUTING")}
 BASELINE_FILES = ["/etc/network/interfaces", "/etc/hosts", "/etc/resolv.conf", "/etc/ssh/sshd_config",
@@ -113,6 +115,54 @@ def accept_mark():
                                                run([binary, "-t", "mangle", "-S"]).stdout, source))
     assert found[0] == found[1], "IPv4 and IPv6 NetBird mark layouts differ"
     return found[0]
+
+
+def wait_for_accept_mark(expected, state):
+    """Wait only for NetBird's transient empty rule state, never a changed layout."""
+    started = time.monotonic()
+    deadline = started + MARK_READY_TIMEOUT
+    attempts = 0
+    consecutive = 0
+    last_not_ready = None
+
+    def record(now, ready):
+        state["accept_mark_readiness"] = {
+            "attempts": attempts,
+            "elapsed_seconds": round(max(0.0, now - started), 3),
+            "consecutive_successes": consecutive,
+            "ready": ready,
+        }
+        if last_not_ready is not None:
+            state["accept_mark_readiness"]["last_not_ready"] = last_not_ready
+        write_json(STATE, state)
+
+    while time.monotonic() < deadline:
+        attempts += 1
+        try:
+            observed = accept_mark()
+        except NetBirdMarkNotReady as error:
+            consecutive = 0
+            last_not_ready = str(error)
+        else:
+            assert observed == expected, "NetBird changed its mark layout while restarting"
+            completed = time.monotonic()
+            if completed >= deadline:
+                record(completed, False)
+                break
+            consecutive += 1
+            last_not_ready = None
+            record(completed, consecutive == 2)
+            if consecutive == 2:
+                return observed
+        completed = time.monotonic()
+        record(completed, False)
+        remaining = deadline - completed
+        if remaining <= 0:
+            break
+        time.sleep(min(MARK_READY_INTERVAL, remaining))
+    finished = time.monotonic()
+    record(finished, False)
+    raise RuntimeError(f"NetBird mark rules were not ready after {attempts} attempts in {finished - started:.3f}s")
 
 
 def check_links(config, node):
@@ -393,6 +443,12 @@ def local_checks(config, node, state):
                     "https://" + config["nodes"][node]["bmc_address"] + "/"]).stdout == "200", "BMC path failed"
 
 
+def finish_successful_rollback(config, node, state):
+    """Disarm the owned timer only after rollback verification has succeeded."""
+    local_checks(config, node, state)
+    stop_transient_unit(TIMER + ".timer")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", nargs="?", default="check", choices=("check", "prepare", "activate", "reconcile", "status", "selfcheck", "commit", "rollback"))
@@ -494,7 +550,7 @@ def main():
         install_chains(plan)
         install_priority_guard(config, node, mark, False)
         set_mesh_mtu(config, node, config["host_mtu"])
-        assert accept_mark() == mark, "NetBird changed its mark layout while restarting"
+        wait_for_accept_mark(mark, state)
         install_chains(plan)
         assert sysctl("net.ipv4.ip_forward") == sysctl("net.ipv6.conf.all.forwarding") == "0"
         local_checks(config, node, state)
@@ -547,11 +603,11 @@ def main():
                      Path("/etc/systemd/system/pve-guests.service.d/example-production-network.conf")):
             path.unlink(missing_ok=True)
         run(["systemctl", "daemon-reload"])
+        finish_successful_rollback(config, node, state)
         state["phase"] = "rolled_back"
         state["pending"] = False
         write_json(STATE, state)
         write_json(Path(state["backup_dir"]) / "production-network-rollback.json", state)
-        local_checks(config, node, state)
         CONFIG.unlink()
         for path in (RUNTIME / "production-network.py", RUNTIME / "apply-production-network.sh", RUNTIME / "lib/production_network.py"):
             path.unlink()
