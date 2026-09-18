@@ -346,6 +346,42 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
         self.assertNotIn('trust', hba)
         self.assertEqual(sum('hostssl ' in line for line in hba.splitlines()), 1)
 
+    def test_database_boot_network_preflight_requires_exact_address_and_mtu(self):
+        helper = core.render_db_network_preflight('100.65.1.21', 1370)
+        self.assertIn("['/usr/sbin/ip', '-j', 'address', 'show', 'dev', 'eth0']", helper)
+        valid = json.dumps([{'ifname': 'eth0', 'mtu': 1370,
+                             'addr_info': [{'family': 'inet', 'local': '100.65.1.21'}]}])
+
+        def execute(raw, *argv):
+            with patch('subprocess.run', return_value=subprocess.CompletedProcess(
+                    [], 0, raw, '')) as run, patch.object(sys, 'argv', ['preflight', *argv]):
+                exec(compile(helper, '<generated-preflight>', 'exec'), {'__name__': '__main__'})
+            return run
+
+        run = execute(valid, '100.65.1.21', '1370')
+        run.assert_called_once_with(['/usr/sbin/ip', '-j', 'address', 'show', 'dev', 'eth0'],
+                                    check=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, timeout=5)
+        for value in (
+                json.dumps([{'ifname': 'eth0', 'mtu': 1500,
+                             'addr_info': [{'family': 'inet', 'local': '100.65.1.21'}]}]),
+                json.dumps([{'ifname': 'eth0', 'mtu': 1370,
+                             'addr_info': [{'family': 'inet', 'local': '100.65.1.22'}]}]),
+                json.dumps([{'ifname': 'eth1', 'mtu': 1370,
+                             'addr_info': [{'family': 'inet', 'local': '100.65.1.21'}]}]),
+                'not-json'):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                execute(value, '100.65.1.21', '1370')
+        with patch('subprocess.run', side_effect=subprocess.CalledProcessError(1, ['/usr/sbin/ip'])):
+            with patch.object(sys, 'argv', ['preflight', '100.65.1.21', '1370']), \
+                    self.assertRaises(subprocess.CalledProcessError):
+                exec(compile(helper, '<generated-preflight>', 'exec'), {'__name__': '__main__'})
+        self.assertIn('/usr/local/sbin/isolated-core-db-network-preflight 100.65.1.21 1370',
+                      core.postgresql_dropin(config()))
+        self.assertIn('Requires=isolated-core-firewall.service', core.NETWORKING_DROPIN)
+        self.assertIn('After=isolated-core-firewall.service networking.service',
+                      core.postgresql_dropin(config()))
+
     def test_nginx_uses_official_stable_signed_repository_and_explicit_pin(self):
         self.assertEqual(core.NGINX_SIGNING_FINGERPRINT,
                          '573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62')
@@ -379,23 +415,71 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
             self.assertEqual(result.stderr, '')
 
     def test_guest_mtu_apply_requires_exact_json_readback(self):
-        runner = FakeRunner({'guest MTU readback': json.dumps([{'ifname': 'eth0', 'mtu': 1370}])})
+        runner = FakeRunner({'guest network manager': 'ifupdown',
+                             'guest hook parent state': 'missing',
+                             'guest hook parent readback': '0:0 755',
+                             'guest MTU readback': json.dumps([{'ifname': 'eth0', 'mtu': 1370}])})
         bootstrap = core.Bootstrap(config(), runner)
         with patch.object(bootstrap, 'owned'), patch.object(bootstrap, 'put'):
             bootstrap.ensure_guest_mtu(201, 'pickle-app')
         apply = next(args for args, kwargs in runner.calls if kwargs.get('label') == 'guest MTU apply')
         self.assertEqual(apply[-5:], ['set', 'dev', 'eth0', 'mtu', '1370'])
         self.assertIn('1370', apply)
+        labels = [kwargs.get('label') for _, kwargs in runner.calls]
+        self.assertLess(labels.index('create guest hook parent'), labels.index('guest MTU apply'))
 
     def test_guest_mtu_apply_rejects_wrong_json_readback(self):
         for value in ([{'ifname': 'eth0', 'mtu': 1500}],
                       [{'ifname': 'eth1', 'mtu': 1370}],
                       ['not-an-interface-record']):
             with self.subTest(value=value):
-                runner = FakeRunner({'guest MTU readback': json.dumps(value)})
+                runner = FakeRunner({'guest network manager': 'ifupdown',
+                                     'guest hook parent state': '0:0 755',
+                                     'guest MTU readback': json.dumps(value)})
                 bootstrap = core.Bootstrap(config(), runner)
                 with patch.object(bootstrap, 'owned'), patch.object(bootstrap, 'put'), \
                         self.assertRaisesRegex(core.BootstrapError, 'MTU readback'):
+                    bootstrap.ensure_guest_mtu(201, 'pickle-app')
+
+    def test_guest_mtu_rejects_disabled_or_unknown_network_manager(self):
+        for manager in ('unknown', 'ifupdown2'):
+            with self.subTest(manager=manager):
+                runner = FakeRunner({'guest network manager': manager})
+                bootstrap = core.Bootstrap(config(), runner)
+                with patch.object(bootstrap, 'owned'), patch.object(bootstrap, 'put'), \
+                        self.assertRaises(core.BootstrapError):
+                    bootstrap.ensure_guest_mtu(201, 'pickle-app')
+
+    def test_ifupdown2_addon_support_parser_requires_exact_assignment(self):
+        self.assertTrue(core.ifupdown2_addon_scripts_enabled(
+            '# comment\n\naddon_scripts_support=1\n'))
+        for value in ('addon_scripts_support: 1\n', 'addon_scripts_support=0\n',
+                      'addon_scripts_support=1\naddon_scripts_support=0\n'):
+            with self.subTest(value=value):
+                self.assertFalse(core.ifupdown2_addon_scripts_enabled(value))
+
+    def test_guest_mtu_accepts_enabled_ifupdown2_and_safe_existing_parent(self):
+        runner = FakeRunner({'guest network manager': 'ifupdown2',
+                             'ifupdown2 addon support': 'addon_scripts_support=1\n',
+                             'guest hook parent state': '0:0 750',
+                             'guest MTU readback': json.dumps([{'ifname': 'eth0', 'mtu': 1370}])})
+        bootstrap = core.Bootstrap(config(), runner)
+        with patch.object(bootstrap, 'owned'), patch.object(bootstrap, 'put'):
+            bootstrap.ensure_guest_mtu(201, 'pickle-app')
+        self.assertFalse(any(kwargs.get('label') == 'create guest hook parent'
+                             for _, kwargs in runner.calls))
+        addon_call = next(args for args, kwargs in runner.calls
+                          if kwargs.get('label') == 'ifupdown2 addon support')
+        self.assertEqual(addon_call[-1], '/etc/network/ifupdown2/ifupdown2.conf')
+
+    def test_guest_mtu_rejects_unsafe_hook_parent(self):
+        for state in ('symlink', 'non-directory', '1000:0 755', '0:0 777', 'malformed'):
+            with self.subTest(state=state):
+                runner = FakeRunner({'guest network manager': 'ifupdown',
+                                     'guest hook parent state': state})
+                bootstrap = core.Bootstrap(config(), runner)
+                with patch.object(bootstrap, 'owned'), patch.object(bootstrap, 'put'), \
+                        self.assertRaises(core.BootstrapError):
                     bootstrap.ensure_guest_mtu(201, 'pickle-app')
 
     def test_api_cannot_start_or_process_jobs_until_a_later_explicit_step(self):
@@ -405,6 +489,7 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
         self.assertIn('--spring.profiles.active=isolated', core.API_UNIT)
         self.assertIn('--pickle.vm-firewall.enabled=false', core.API_UNIT)
         self.assertIn('--pickle.dns.provider=none', core.API_UNIT)
+        self.assertIn('SuccessExitStatus=143', core.API_UNIT)
         self.assertNotIn('postgresql.service', core.API_UNIT)
         content = core.api_environment(config(), b'x' * 48).decode()
         self.assertIn('sslmode=verify-full', content)

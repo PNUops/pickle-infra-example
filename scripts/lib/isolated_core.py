@@ -45,6 +45,21 @@ class BootstrapError(RuntimeError):
     pass
 
 
+def ifupdown2_addon_scripts_enabled(text: str) -> bool:
+    value = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        key, separator, candidate = line.partition('=')
+        if not separator or key.strip() != 'addon_scripts_support':
+            continue
+        if value is not None:
+            return False
+        value = candidate.strip()
+    return value == '1'
+
+
 def pct_container_identity(text: str) -> tuple[str, str]:
     values: dict[str, str] = {}
     for line in text.splitlines():
@@ -329,6 +344,45 @@ host all all ::/0 reject
     return config, hba
 
 
+NETWORKING_DROPIN = '[Unit]\nRequires=isolated-core-firewall.service\nAfter=isolated-core-firewall.service\n'
+def postgresql_dropin(c: Config) -> str:
+    return ('[Unit]\nRequires=isolated-core-firewall.service networking.service\n'
+            'After=isolated-core-firewall.service networking.service\n'
+            '[Service]\nExecStartPre=/usr/local/sbin/isolated-core-db-network-preflight '
+            f'{c.db_ip} {c.mtu}\n')
+
+
+def render_db_network_preflight(expected_ip: str, mtu: int) -> str:
+    ipaddress.IPv4Address(expected_ip)
+    if type(mtu) is not int or not 1280 <= mtu <= 1500:
+        raise BootstrapError('Database network preflight MTU is invalid')
+    return f'''#!/usr/bin/python3
+import ipaddress
+import json
+import subprocess
+import sys
+
+expected_ip = ipaddress.IPv4Address(sys.argv[1])
+expected_mtu = int(sys.argv[2])
+raw = subprocess.run(['/usr/sbin/ip', '-j', 'address', 'show', 'dev', 'eth0'],
+                     check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                     text=True, timeout=5).stdout
+try:
+    data = json.loads(raw)
+except (TypeError, ValueError):
+    raise SystemExit('database network preflight JSON mismatch')
+if (not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict)
+        or data[0].get('ifname') != 'eth0' or type(data[0].get('mtu')) is not int
+        or data[0].get('mtu') != expected_mtu):
+    raise SystemExit('database network preflight interface or MTU mismatch')
+addresses = data[0].get('addr_info')
+if not isinstance(addresses, list) or not any(
+        isinstance(address, dict) and address.get('family') == 'inet'
+        and address.get('local') == str(expected_ip) for address in addresses):
+    raise SystemExit('database network preflight address mismatch')
+'''
+
+
 def firewall(c: Config, role: str) -> str:
     address, port = (c.app_ip, 5432) if role == 'database' else (c.proxy_ip, 80)
     return f"""add table inet isolated_core
@@ -376,6 +430,7 @@ WorkingDirectory=/opt/pickle/api
 ExecStart=/usr/bin/java -Xmx2g -jar /opt/pickle/api/current.jar --spring.profiles.active=isolated --server.address=127.0.0.1 --jobrunr.background-job-server.enabled=false --jobrunr.dashboard.enabled=false --pickle.network-policy.enabled=false --pickle.vm-firewall.enabled=false --pickle.dns.provider=none
 Restart=on-failure
 RestartSec=5
+SuccessExitStatus=143
 MemoryMax=3G
 NoNewPrivileges=true
 ProtectSystem=full
@@ -441,9 +496,43 @@ class Bootstrap:
         if actual_hostname != hostname or description != 'isolated-core:' + self.run_id:
             raise BootstrapError('Container ownership changed; refusing further writes')
 
+    def ensure_guest_hook_parent(self, ctid: int, hostname: str) -> None:
+        self.owned(ctid, hostname)
+        manager = self.r.guest(
+            ctid,
+            ['sh', '-c', "if dpkg-query -W -f='${Status}' ifupdown2 2>/dev/null | grep -Fqx 'install ok installed'; then printf ifupdown2; elif dpkg-query -W -f='${Status}' ifupdown 2>/dev/null | grep -Fqx 'install ok installed'; then printf ifupdown; else printf unknown; fi"],
+            label='guest network manager')
+        if manager == 'ifupdown2':
+            addon_support = self.r.guest(
+                ctid, ['cat', '/etc/network/ifupdown2/ifupdown2.conf'], label='ifupdown2 addon support')
+            if not ifupdown2_addon_scripts_enabled(addon_support):
+                raise BootstrapError('ifupdown2 addon script support is not explicitly enabled')
+        elif manager == 'ifupdown':
+            self.r.guest(ctid, ['sh', '-c', 'command -v ifup >/dev/null 2>&1'],
+                         label='ifupdown hook support')
+        else:
+            raise BootstrapError('Guest network manager is unsupported or not installed')
+        parent_state = self.r.guest(
+            ctid,
+            ['sh', '-c', "parent=/etc/network/if-pre-up.d; if [ -L \"$parent\" ]; then printf symlink; elif [ -e \"$parent\" ] && [ ! -d \"$parent\" ]; then printf non-directory; elif [ ! -e \"$parent\" ]; then printf missing; else stat -c '%u:%g %a' -- \"$parent\"; fi"],
+            label='guest hook parent state').strip()
+        if parent_state == 'missing':
+            self.owned(ctid, hostname)
+            self.r.guest(
+                ctid, ['install', '-d', '-o', 'root', '-g', 'root', '-m', '0755', '--',
+                       '/etc/network/if-pre-up.d'], label='create guest hook parent')
+            parent_state = self.r.guest(
+                ctid, ['stat', '-c', '%u:%g %a', '--', '/etc/network/if-pre-up.d'],
+                label='guest hook parent readback').strip()
+        if parent_state in ('symlink', 'non-directory'):
+            raise BootstrapError('Guest hook parent is not a directory')
+        match = re.fullmatch(r'(\d+):(\d+) ([0-7]{3,4})', parent_state)
+        if not match or match.group(1) != '0' or match.group(2) != '0' or (int(match.group(3), 8) & 0o022):
+            raise BootstrapError('Guest hook parent ownership or permissions are unsafe')
+
     def ensure_guest_mtu(self, ctid: int, hostname: str) -> None:
         c = self.c
-        self.owned(ctid, hostname)
+        self.ensure_guest_hook_parent(ctid, hostname)
         self.put(ctid, '/etc/network/if-pre-up.d/isolated-core-mtu',
                  render_guest_mtu_hook(c.mtu), '0755')
         self.owned(ctid, hostname)
@@ -563,6 +652,8 @@ class Bootstrap:
                  'Before=network-pre.target shutdown.target\nWants=network-pre.target\nConflicts=shutdown.target\n'
                  '[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/nft -f /etc/isolated-core.nft\n'
                  '[Install]\nWantedBy=multi-user.target\n')
+        r.guest(ctid, ['install', '-d', '/etc/systemd/system/networking.service.d'], label='network dependency directory')
+        self.put(ctid, '/etc/systemd/system/networking.service.d/10-isolated-core.conf', NETWORKING_DROPIN)
         r.guest(ctid, ['nft', '-c', '-f', '/etc/isolated-core.nft'], label='guest firewall syntax')
         r.guest(ctid, ['systemctl', 'daemon-reload'], label='guest unit reload')
         r.guest(ctid, ['systemctl', 'enable', '--now', 'isolated-core-firewall.service'], label='guest private input policy')
@@ -582,7 +673,9 @@ class Bootstrap:
         self.put(ctid, '/etc/postgresql/18/main/conf.d/90-isolated-core.conf', config, '0644', 'postgres:postgres')
         r.guest(ctid, ['install', '-d', '/etc/systemd/system/postgresql@18-main.service.d'], label='database dependency directory')
         self.put(ctid, '/etc/systemd/system/postgresql@18-main.service.d/10-isolated-core.conf',
-                 '[Unit]\nRequires=isolated-core-firewall.service\nAfter=isolated-core-firewall.service\n')
+                 postgresql_dropin(c))
+        self.put(ctid, '/usr/local/sbin/isolated-core-db-network-preflight',
+                 render_db_network_preflight(c.db_ip, c.mtu), '0755')
         r.guest(ctid, ['systemctl', 'daemon-reload'], label='database dependency reload')
         r.guest(ctid, ['systemctl', 'unmask', 'postgresql.service', 'postgresql@18-main.service'], label='database startup preparation')
         r.guest(ctid, ['systemctl', 'enable', '--now', 'postgresql@18-main.service'], label='private TLS database start')

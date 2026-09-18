@@ -26,11 +26,26 @@ JobRunr와 정책 producer는 꺼진 상태이며 정상 기동은 개발 시더
   volume ID와 SHA-256을 입력한다. 스크립트는 템플릿을 내려받거나 원본을 변경하지 않는다.
 - API와 DB용 새 자격증명 및 DB TLS 자료를 외부 보호 파일로 준비한다. 기존 서비스의
   env 파일, DB dump나 archive는 이 도구의 입력이 아니다.
-- 새 게스트를 시작한 직후 소유권을 다시 확인하고 `/etc/network/if-pre-up.d/isolated-core-mtu`
-  를 root 소유 실행 파일로 설치한다. 이 hook은 `IFACE=eth0`일 때만 검증된 guest MTU를
-  적용하고 다른 인터페이스에서는 아무 작업도 하지 않는다. 부트스트랩은 hook 설치 뒤
-  `/usr/sbin/ip -j link show dev eth0`로 실제 MTU를 즉시 확인한 뒤에만 APT/package 단계로
-  진행한다. 이 방식은 Debian ifupdown hook 규약에 따른다: [interfaces(5) hook scripts](https://manpages.debian.org/trixie/ifupdown/interfaces.5.en.html#HOOK_SCRIPTS).
+- 새 게스트를 시작한 직후 소유권을 다시 확인하고 네트워크 manager를 확인한다. `ifupdown2`가
+  설치된 경우 `/etc/network/ifupdown2/ifupdown2.conf`에 `addon_scripts_support=1`이 정확히 있어야
+  하며, 기존 `ifupdown`이 설치된 경우에도 hook 지원을 확인한다. 알 수 없는 manager나
+  비활성 addon 지원이면 중단한다. `/etc/network/if-pre-up.d`가 없을 때만 root:root
+  `0755`로 `install -d`하고, 이미 있으면 symlink/non-directory이거나 group/other 쓰기
+  권한이 있는지와 소유자를 확인한다. 기존 directory의 권한은 넓히거나 임의로 고치지 않는다.
+  그 뒤 `/etc/network/if-pre-up.d/isolated-core-mtu`를 root 소유 실행 파일로 설치한다.
+  이 hook은 `IFACE=eth0`일 때만 검증된 guest MTU를 적용하고 다른 인터페이스에서는 아무
+  작업도 하지 않는다. 부트스트랩은 hook 설치 뒤 `/usr/sbin/ip -j link show dev eth0`로
+  실제 MTU를 즉시 확인한 뒤에만 APT/package 단계로 진행한다. 이 방식은 Debian ifupdown
+  hook 규약에 따른다: [interfaces(5) hook scripts](https://manpages.debian.org/trixie/ifupdown/interfaces.5.en.html#HOOK_SCRIPTS).
+- 실패 시 자동으로 기존 네트워크 directory를 삭제하거나 chmod하지 않는다. 소유권과 실행
+  기록을 확인한 뒤 이번 실행에서 새로 만든 hook만 제거하고, 이번 실행에서 만든 parent가
+  비어 있을 때만 함께 제거한다. 사전에 존재한 directory와 다른 파일은 보존한다.
+- DB 게스트에는 `networking.service.d/10-isolated-core.conf`를 설치해 private firewall이
+  먼저 완료되도록 하고, PostgreSQL drop-in은 `networking.service`를 `Requires`/`After`로
+  요구한다. root 소유 `isolated-core-db-network-preflight`가 `/usr/sbin/ip -j address
+  show dev eth0` 결과에서 설정된 IPv4와 MTU를 정확히 확인하며, 불일치하면 네트워크를
+  고치지 않고 PostgreSQL 시작을 실패시킨다. 부팅 검증은 `systemctl is-active`만으로
+  끝내지 말고 private `5432` 연결과 App의 `verify-full` query까지 확인한다.
 
 ## 버전 기준
 
@@ -213,6 +228,8 @@ Postcheck가 exact 1/1/1 account/workspace/member와 나머지 0행, one-shot �
 유닛의 inactive/disabled 상태를 다시 확인한 뒤에만 `/etc/pickle/allow-api-start`를 만든다.
 정상 API 서비스는 시작하지 않는다. 재실행은 schema-empty 검사에서 거부되며, 실패 뒤에는
 행이나 marker를 임의로 지우지 말고 manifest와 DB를 먼저 조사한다.
+운영자가 `systemctl stop pickle-api.service`로 정상 종료하면 JVM의 SIGTERM 종료 코드
+143은 `SuccessExitStatus`로 정상 처리되며, 수동 중지 뒤 inactive가 되는 것은 오류가 아니다.
 
 ## 실패 보존과 되돌리기
 
