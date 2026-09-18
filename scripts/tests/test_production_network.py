@@ -36,6 +36,49 @@ def load_script(name):
 
 
 class ProductionNetworkTests(unittest.TestCase):
+    def test_transient_selfcheck_cleanup_accepts_units_collected_after_success(self):
+        module = load_script('production-network')
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            if argv[1] == 'stop':
+                return subprocess.CompletedProcess(argv, 5, '', f'Unit {argv[2]} not loaded.')
+            return subprocess.CompletedProcess(argv, 0, 'not-found\n', '')
+
+        with patch.object(module, 'run', side_effect=fake_run):
+            module.stop_transient_unit('example-selfcheck.timer')
+            module.stop_transient_unit('example-selfcheck.service')
+        self.assertEqual([call[0][2] for call in calls if call[0][1] == 'stop'],
+                         ['example-selfcheck.timer', 'example-selfcheck.service'])
+
+    def test_transient_selfcheck_cleanup_stops_loaded_units_without_state_probe(self):
+        module = load_script('production-network')
+        with patch.object(module, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+            module.stop_transient_unit('example-selfcheck.timer')
+        run.assert_called_once_with(['systemctl', 'stop', 'example-selfcheck.timer'], check=False)
+
+    def test_transient_selfcheck_cleanup_does_not_hide_stop_errors_or_loaded_units(self):
+        module = load_script('production-network')
+        failures = [
+            [subprocess.CompletedProcess([], 1, '', 'Access denied'),
+             subprocess.CompletedProcess([], 0, 'not-found\n', '')],
+            [subprocess.CompletedProcess([], 5, '', 'stop failed'),
+             subprocess.CompletedProcess([], 0, 'loaded\n', '')],
+        ]
+        for results in failures:
+            with self.subTest(results=results), patch.object(module, 'run', side_effect=results):
+                with self.assertRaisesRegex(RuntimeError, 'systemctl stop'):
+                    module.stop_transient_unit('example-selfcheck.timer')
+
+    def test_transient_selfcheck_cleanup_does_not_hide_state_query_failure(self):
+        module = load_script('production-network')
+        with patch.object(module, 'run', side_effect=[
+                subprocess.CompletedProcess([], 5, '', 'Unit not loaded'),
+                RuntimeError('systemctl show failed')]):
+            with self.assertRaisesRegex(RuntimeError, 'systemctl show failed'):
+                module.stop_transient_unit('example-selfcheck.service')
+
     def test_commit_refuses_disabled_bridge_filtering_without_writing(self):
         module = load_script('production-network')
         for disabled in ('net.bridge.bridge-nf-call-iptables', 'net.bridge.bridge-nf-call-ip6tables'):

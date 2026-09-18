@@ -44,6 +44,17 @@ def run(argv, *, stdin=None, check=True, timeout=40):
     return result
 
 
+def stop_transient_unit(unit):
+    """Stop one transient unit, accepting only systemd's already-collected state."""
+    stopped = run(["systemctl", "stop", unit], check=False)
+    if stopped.returncode == 0:
+        return
+    load_state = run(["systemctl", "show", unit, "-p", "LoadState", "--value"]).stdout.strip()
+    if stopped.returncode == 5 and load_state == "not-found":
+        return
+    raise RuntimeError(f"systemctl stop {unit} failed: {stopped.stderr.strip()} (LoadState={load_state})")
+
+
 def api(path, *arguments):
     return json.loads(run(["pvesh", "get", path, *arguments, "--output-format", "json"]).stdout)
 
@@ -473,7 +484,8 @@ def main():
             time.sleep(0.2)
         else:
             raise RuntimeError("the rollback interpreter did not execute through its test timer")
-        run(["systemctl", "stop", TIMER + "-selfcheck.timer", TIMER + "-selfcheck.service"])
+        stop_transient_unit(TIMER + "-selfcheck.timer")
+        stop_transient_unit(TIMER + "-selfcheck.service")
         run(["systemd-run", "--unit", TIMER, "--on-active", str(args.rollback_seconds) + "s", "--timer-property", "AccuracySec=1s",
              "/bin/bash", wrapper, "rollback", "--config", CONFIG, "--operation-id", state["operation_id"], "--apply"])
         plan = firewall_plan(config, node, mark, False)
