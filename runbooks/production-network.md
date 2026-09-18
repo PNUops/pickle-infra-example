@@ -68,6 +68,9 @@ IP 할당은 플랫폼 DB와 cloud-init이 소유한다. 이 zone에는 DHCP와 
    다른 pending 변경이나 global lock을 강제로 가져오지 않는다. Zone/VNet의 기존 값이
    다르면 덮어쓰지 않는다. Parent UPID뿐 아니라 두 node의 새 `networking` reload UPID가
    모두 OK여야 성공이다. 기존 running reload나 겹치는 reload가 있으면 소유권을 추정하지 않는다.
+   설치된 `pvesh`는 node reload 진행 문구와 package 조회 진단을 JSON task ID 앞의 stdout에
+   함께 쓸 수 있다. 스크립트는 마지막 nonempty 줄의 엄격한 parent UPID와 이후 task 상태만
+   성공 근거로 삼고, 그 앞의 vendor 출력은 형식을 추정하지 않고 stderr 진단으로 보존한다.
    `pvesh set /cluster/sdn`은 설정을 commit한 뒤 node별 reload worker를 시작한다.
    따라서 스크립트가 task ID 응답을 확인하지 못했다고 적용되지 않았다고 판단하거나
    owner 기록을 지우지 않는다. 이 불확실 상태에서는 같은 apply를 반복하지 말고 owner

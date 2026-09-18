@@ -315,24 +315,27 @@ class ProductionNetworkTests(unittest.TestCase):
         self.assertIn(('delete', '/cluster/sdn/lock', ('--lock-token', 'test-lock')), calls)
         self.assertFalse(any('--force' in call[2] for call in calls))
 
-    def test_sdn_submit_accepts_json_and_exact_node_progress(self):
+    def test_sdn_submit_accepts_json_and_preserves_vendor_diagnostics(self):
         module = load_script('production-sdn')
         upid = 'UPID:pve-a:00000001:00000002:00000003:reloadnetworkall::root@pam:'
-        outputs = [json.dumps(upid) + '\n',
-                   'pve-b: reloading network config\npve-a: reloading network config\n' + json.dumps(upid) + '\n']
-        for output in outputs:
+        outputs = [(json.dumps(upid) + '\n', ''),
+                   ('pve-b: reloading network config\ninfo: executing /usr/bin/dpkg -l ifupdown2\n'
+                    'pve-a: reloading network config\ninfo: executing /usr/bin/dpkg -l ifupdown2\n'
+                    + json.dumps(upid) + '\n',
+                    'pve-b: reloading network config\ninfo: executing /usr/bin/dpkg -l ifupdown2\n'
+                    'pve-a: reloading network config\ninfo: executing /usr/bin/dpkg -l ifupdown2\n'),
+                   ('vendor notice with no stable format\n' + json.dumps(upid) + '\n',
+                    'vendor notice with no stable format\n')]
+        for output, diagnostics in outputs:
             result = subprocess.CompletedProcess([], 0, stdout=output, stderr='')
-            with self.subTest(output=output), patch.object(module.subprocess, 'run', return_value=result):
+            errors = io.StringIO()
+            with self.subTest(output=output), patch.object(module.subprocess, 'run', return_value=result), \
+                 contextlib.redirect_stderr(errors):
                 self.assertEqual(module.submit_sdn_apply(CONFIG, 'test-lock'), upid)
-
-    def test_sdn_submit_rejects_unknown_or_partial_progress(self):
-        module = load_script('production-sdn')
-        upid = json.dumps('UPID:pve-a:00000001:00000002:00000003:reloadnetworkall::root@pam:')
-        for progress in ('pve-c: reloading network config\n', 'pve-a: reloading network config\n'):
-            result = subprocess.CompletedProcess([], 0, stdout=progress + upid + '\n', stderr='')
-            with self.subTest(progress=progress), patch.object(module.subprocess, 'run', return_value=result):
-                with self.assertRaisesRegex(RuntimeError, 'unexpected progress'):
-                    module.submit_sdn_apply(CONFIG, 'test-lock')
+            if diagnostics:
+                self.assertIn(diagnostics, errors.getvalue())
+            else:
+                self.assertEqual(errors.getvalue(), '')
 
     def test_sdn_submit_rejects_all_other_unexpected_results(self):
         module = load_script('production-sdn')
@@ -346,10 +349,8 @@ class ProductionNetworkTests(unittest.TestCase):
              'unexpected task identifier'),
             (subprocess.CompletedProcess([], 0, stdout=json.dumps(valid.replace('reloadnetworkall', 'srvreload')) + '\n', stderr=''),
              'unexpected task identifier'),
-            (subprocess.CompletedProcess([], 0,
-                                         stdout=('pve-a: reloading network config\npve-b: reloading network config\n'
-                                                 'pve-a: reloading network config\n' + json.dumps(valid) + '\n'), stderr=''),
-             'unexpected progress'),
+            (subprocess.CompletedProcess([], 0, stdout=json.dumps(valid) + '\ntrailing vendor output\n', stderr=''),
+             'invalid task identifier'),
         ]
         for result, message in cases:
             with self.subTest(stdout=result.stdout, returncode=result.returncode), \

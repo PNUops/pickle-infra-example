@@ -35,20 +35,23 @@ def submit_sdn_apply(config, token):
     )
     if process.returncode:
         raise RuntimeError(f"PVE set /cluster/sdn: {process.stderr.strip()}")
-    lines = [line.strip() for line in process.stdout.splitlines() if line.strip()]
-    if not lines:
+    lines = process.stdout.splitlines(keepends=True)
+    task_line = next((index for index in range(len(lines) - 1, -1, -1) if lines[index].strip()), None)
+    if task_line is None:
         raise RuntimeError("PVE set /cluster/sdn returned no task identifier")
+    diagnostics = ''.join(lines[:task_line])
+    if diagnostics:
+        print("production-sdn: pvesh apply diagnostics:", file=sys.stderr)
+        sys.stderr.write(diagnostics)
+        if not diagnostics.endswith('\n'):
+            print(file=sys.stderr)
     try:
-        upid = json.loads(lines[-1])
+        upid = json.loads(lines[task_line].strip())
     except json.JSONDecodeError as error:
         raise RuntimeError("PVE set /cluster/sdn returned an invalid task identifier") from error
     match = APPLY_UPID.fullmatch(upid) if isinstance(upid, str) else None
     if not match or match.group("node") != config["gateway_owner"]:
         raise RuntimeError("PVE set /cluster/sdn returned an unexpected task identifier")
-    progress = lines[:-1]
-    expected = {f"{node}: reloading network config" for node in config["nodes"]}
-    if progress and (len(progress) != len(set(progress)) or set(progress) != expected):
-        raise RuntimeError("PVE set /cluster/sdn returned unexpected progress output")
     return upid
 
 
