@@ -139,8 +139,10 @@ PVE와 NetBird의 기존 firewall을 유지하며, guest 정책을 우회하는 
 
 격리 core 도구는 Debian 13 템플릿으로 PostgreSQL 18과 Java 25 실행 환경을 준비합니다.
 대상 노드와 CTID, private 주소, 검증한 패키지 버전 및 새 자격증명 파일을 명시합니다.
-API는 시작을 막는 marker와 비활성 job 설정을 적용한 상태로 남습니다. 스키마, 카탈로그,
-기존 데이터 이관과 공개 진입은 후속 작업입니다. 실제 설치와 전체 서비스 복구 검증은
+API는 `isolated` profile, 시작을 막는 marker와 비활성 job/정책/vendor 설정을 적용한 상태로
+남습니다. 별도 `--bootstrap-admin` one-shot은 host/CT/machine/DB identity와 빈 DB를 확인한
+뒤 SYS_ADMIN과 PERSONAL workspace만 만들며, postcheck 뒤 marker를 만들고 서비스를
+disabled 상태로 둡니다. 카탈로그, 기존 데이터 이관과 공개 진입은 후속 작업입니다. 실제 설치와 전체 서비스 복구 검증은
 [격리 core 런북](runbooks/isolated-core-bootstrap.md)의 순서와 소유권 확인을 따릅니다.
 
 DB/PBS 도구는 Python 3와 `proxmox-backup-client`, source의 PostgreSQL 18 client를

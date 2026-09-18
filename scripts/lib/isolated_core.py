@@ -18,6 +18,27 @@ import sys
 import tempfile
 import uuid
 
+NGINX_SIGNING_FINGERPRINT = '573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62'
+NGINX_KEY_URL = 'https://nginx.org/keys/nginx_signing.key'
+NGINX_REPOSITORY = ('deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] '
+                    'https://nginx.org/packages/debian trixie nginx\n')
+ENV_FILE_EXEC = r'''import os,re,sys
+values={}
+for line in open(sys.argv[1], encoding="utf-8"):
+    line=line.rstrip("\n")
+    if not line or line.lstrip().startswith("#"):
+        continue
+    key,separator,value=line.partition("=")
+    if not separator or not re.fullmatch(r"[A-Z][A-Z0-9_]*",key) or key in values or "\x00" in value:
+        raise SystemExit("invalid protected environment file")
+    values[key]=value
+environment=os.environ.copy()
+environment.update(values)
+if "PICKLE_DB_PASSWORD" in values:
+    environment["PGPASSWORD"]=values["PICKLE_DB_PASSWORD"]
+os.execvpe(sys.argv[2],sys.argv[2:],environment)
+'''
+
 
 class BootstrapError(RuntimeError):
     pass
@@ -51,6 +72,7 @@ class Config:
     template_sha256: str
     postgresql_version: str
     jre_version: str
+    nginx_version: str
     db_name: str
     db_role: str
     api_env_file: str
@@ -102,6 +124,8 @@ class Config:
             raise BootstrapError('Pin a stable PostgreSQL 18 package version')
         if not re.fullmatch(r'25\.[A-Za-z0-9.+~:-]+', self.jre_version):
             raise BootstrapError('Pin the Java 25 package version used by the application')
+        if not re.fullmatch(r'1\.[0-9]+\.[0-9]+-1~trixie', self.nginx_version):
+            raise BootstrapError('Pin one stable nginx.org Debian 13 package version')
         for name in ('db_name', 'db_role'):
             if not re.fullmatch(r'[a-z][a-z0-9_]{0,62}', getattr(self, name)):
                 raise BootstrapError(f'Invalid {name}')
@@ -121,7 +145,7 @@ def plan(c: Config) -> dict:
              'disk_gib': c.app_disk_gb, 'memory_mib': c.app_memory_mb, 'cores': c.app_cores}],
         'network': {'bridge': c.bridge, 'subnet': c.subnet, 'gateway': c.gateway, 'mtu': c.mtu},
         'packages': {'postgresql-18': c.postgresql_version, 'postgresql-client-18': c.postgresql_version,
-                     'openjdk-25-jre-headless': c.jre_version},
+                     'openjdk-25-jre-headless': c.jre_version, 'nginx': c.nginx_version},
         'credential_paths': {name: getattr(c, name) for name in
                              ('api_env_file', 'db_password_file', 'db_ca_file', 'db_cert_file', 'db_key_file')},
         'database': {'name': c.db_name, 'role': c.db_role, 'tls': 'verify-full', 'allowed_client': c.app_ip + '/32'},
@@ -159,15 +183,14 @@ def protected_file(path: str, *, private: bool) -> bytes:
 
 
 def validate_fresh_api_env(raw: bytes) -> None:
-    required = {'PICKLE_JWT_SECRET', 'PICKLE_CREDENTIALS_KEY', 'PICKLE_SEED_SYSADMIN_EMAIL',
-                'PICKLE_SEED_SYSADMIN_PASSWORD', 'PICKLE_SEED_ORGADMIN_EMAIL', 'PICKLE_SEED_ORGADMIN_PASSWORD'}
+    required = {'PICKLE_JWT_SECRET', 'PICKLE_CREDENTIALS_KEY'}
     values = {}
     for line in raw.decode().splitlines():
         if not line.strip() or line.lstrip().startswith('#'):
             continue
         key, separator, value = line.partition('=')
         if not separator or key not in required or key in values or not value or re.search(r'[\s\x00"\'`$\\]', value):
-            raise BootstrapError('API input must contain only the six documented fresh credential assignments')
+            raise BootstrapError('API input must contain only the two documented fresh credential assignments')
         values[key] = value
     if set(values) != required or len(values['PICKLE_JWT_SECRET']) < 32:
         raise BootstrapError('Required fresh API credentials are missing or too short')
@@ -176,8 +199,21 @@ def validate_fresh_api_env(raw: bytes) -> None:
             raise ValueError()
     except ValueError as error:
         raise BootstrapError('Credential encryption key must decode to 32 bytes') from error
-    if any(len(values[name]) < 16 for name in ('PICKLE_SEED_SYSADMIN_PASSWORD', 'PICKLE_SEED_ORGADMIN_PASSWORD')):
-        raise BootstrapError('Fresh bootstrap account passwords must be at least 16 characters')
+
+
+def validate_admin_env(raw: bytes) -> None:
+    required = {'PICKLE_BOOTSTRAP_ADMIN_EMAIL', 'PICKLE_BOOTSTRAP_ADMIN_PASSWORD'}
+    values = {}
+    for line in raw.decode().splitlines():
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        key, separator, value = line.partition('=')
+        if (not separator or key not in required or key in values or not value
+                or re.search(r'[\s\x00"\'`$\\]', value)):
+            raise BootstrapError('Admin input must contain only the two documented assignments')
+        values[key] = value
+    if set(values) != required or len(values['PICKLE_BOOTSTRAP_ADMIN_PASSWORD']) < 16:
+        raise BootstrapError('Protected admin credentials are missing or the password is too short')
 
 
 def preflight(c: Config, r: Runner) -> dict[str, bytes]:
@@ -297,7 +333,7 @@ Group=pickle
 EnvironmentFile=/etc/pickle/api.env
 EnvironmentFile=/etc/pickle/core.env
 WorkingDirectory=/opt/pickle/api
-ExecStart=/usr/bin/java -Xmx2g -jar /opt/pickle/api/current.jar --spring.profiles.active=dev --server.address=127.0.0.1 --jobrunr.background-job-server.enabled=false --jobrunr.dashboard.enabled=false --pickle.network-policy.enabled=false
+ExecStart=/usr/bin/java -Xmx2g -jar /opt/pickle/api/current.jar --spring.profiles.active=isolated --server.address=127.0.0.1 --jobrunr.background-job-server.enabled=false --jobrunr.dashboard.enabled=false --pickle.network-policy.enabled=false --pickle.vm-firewall.enabled=false --pickle.dns.provider=none
 Restart=on-failure
 RestartSec=5
 MemoryMax=3G
@@ -311,11 +347,12 @@ WantedBy=multi-user.target
 
 
 def api_environment(c: Config, password: bytes) -> bytes:
-    return (f"SPRING_PROFILES_ACTIVE=dev\nSERVER_ADDRESS=127.0.0.1\n"
+    return (f"SPRING_PROFILES_ACTIVE=isolated\nSERVER_ADDRESS=127.0.0.1\n"
             f"PICKLE_DB_URL=jdbc:postgresql://{c.db_hostname}:5432/{c.db_name}?sslmode=verify-full&sslrootcert=/etc/pickle/db-ca.crt\n"
             f"PICKLE_DB_USER={c.db_role}\nPICKLE_DB_PASSWORD={password.decode()}\n"
             "JOBRUNR_BACKGROUND_JOB_SERVER_ENABLED=false\nPICKLE_JOBRUNR_DASH_ENABLED=false\n"
-            "PICKLE_NETWORK_POLICY_ENABLED=false\n").encode()
+            "PICKLE_NETWORK_POLICY_ENABLED=false\nPICKLE_VM_FIREWALL_ENABLED=false\n"
+            "PICKLE_DNS_PROVIDER=none\n").encode()
 
 
 def nginx(c: Config) -> str:
@@ -398,6 +435,12 @@ class Bootstrap:
         os_release = self.r.guest(ctid, ['cat', '/etc/os-release'], label='guest OS identity')
         if not re.search(r'^VERSION_ID="?13"?$', os_release, re.MULTILINE):
             raise BootstrapError('New guest is not Debian 13')
+        machine_id = self.r.guest(ctid, ['cat', '/etc/machine-id'],
+                                  label='guest machine identity').strip()
+        if not re.fullmatch(r'[0-9a-f]{32}', machine_id):
+            raise BootstrapError('New guest has no valid machine identity')
+        self.manifest['created'][-1]['machine_id'] = machine_id
+        self.save()
         return ctid
 
     def packages(self, ctid: int, role: str) -> None:
@@ -408,7 +451,8 @@ class Bootstrap:
         r.guest(ctid, ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'upgrade', '--with-new-pkgs', '-y'],
                 label='new guest security updates', timeout=900)
         r.guest(ctid, ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install', '-y', '--no-install-recommends',
-                       'ca-certificates', 'curl', 'postgresql-common', 'nftables', 'python3'], label='guest bootstrap packages', timeout=600)
+                       'ca-certificates', 'curl', 'gnupg', 'postgresql-common', 'nftables', 'python3'],
+                label='guest bootstrap packages', timeout=600)
         # The Debian-signed postgresql-common package supplies the official PGDG installer.
         r.guest(ctid, ['bash', '/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh', '-y'],
                 label='official signed PGDG repository', timeout=300)
@@ -418,14 +462,34 @@ class Bootstrap:
             package_versions['postgresql-18'] = c.postgresql_version
         else:
             package_versions['openjdk-25-jre-headless'] = c.jre_version
+            key = '/run/nginx_signing.key'
+            keyring = '/usr/share/keyrings/nginx-archive-keyring.gpg'
+            repository = '/etc/apt/sources.list.d/nginx-stable.list'
+            for path in (keyring, repository):
+                r.guest(ctid, ['test', '!', '-e', path], label='new nginx apt file guard')
+            r.guest(ctid, ['curl', '--proto', '=https', '--tlsv1.2', '-fsSLo', key,
+                           NGINX_KEY_URL], label='official nginx signing key')
+            key_details = r.guest(
+                ctid, ['gpg', '--batch', '--with-colons', '--show-keys', key],
+                label='nginx signing key fingerprint')
+            if f'fpr:::::::::{NGINX_SIGNING_FINGERPRINT}:' not in key_details:
+                raise BootstrapError('Official nginx signing fingerprint is absent')
+            r.guest(ctid, ['gpg', '--batch', '--yes', '--dearmor', '--output', keyring, key],
+                    label='isolated nginx apt keyring')
+            r.guest(ctid, ['chmod', '0644', keyring], label='nginx apt keyring permissions')
+            self.put(ctid, repository, NGINX_REPOSITORY)
+            r.guest(ctid, ['rm', '-f', key], label='remove downloaded nginx signing key')
+            r.guest(ctid, ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'update'],
+                    label='signed nginx stable index', timeout=300)
+            package_versions['nginx'] = c.nginx_version
         for package, expected in package_versions.items():
             policy = r.guest(ctid, ['apt-cache', 'policy', package], label='signed package candidate')
             candidate = re.search(r'^\s*Candidate:\s*(\S+)', policy, re.MULTILINE)
             if candidate is None or candidate.group(1) != expected:
                 raise BootstrapError('Signed package candidate changed; review versions before continuing')
+            if package == 'nginx' and 'https://nginx.org/packages/debian' not in policy:
+                raise BootstrapError('nginx candidate did not come from the official stable repository')
         install = [f'{package}={version}' for package, version in package_versions.items()]
-        if role == 'application':
-            install.append('nginx')
         r.guest(ctid, ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install', '-y', '--no-install-recommends', *install],
                 label='pinned guest packages', timeout=900)
         r.guest(ctid, ['systemctl', 'mask', '--now', 'nftables.service'], label='prevent a second guest firewall owner')
@@ -468,13 +532,22 @@ class Bootstrap:
                f"CREATE DATABASE \"{c.db_name}\" OWNER \"{c.db_role}\";\n")
         r.guest(ctid, ['runuser', '-u', 'postgres', '--', 'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1'],
                 data=sql.encode(), label='fresh role and empty database creation')
+        system_identifier = r.guest(
+            ctid, ['runuser', '-u', 'postgres', '--', 'psql', '-X', '-qAt',
+                   '-v', 'ON_ERROR_STOP=1', '-d', c.db_name, '-c',
+                   "select system_identifier::text from pg_control_system()"],
+            label='new database system identity').strip()
+        if not re.fullmatch(r'[0-9]{1,24}', system_identifier):
+            raise BootstrapError('New database has no valid PostgreSQL system identifier')
+        self.manifest['database_system_identifier'] = system_identifier
+        self.save()
 
     def application(self, ctid: int, inputs: dict[str, bytes]) -> None:
         c, r = self.c, self.r
         self.owned(ctid, c.app_hostname)
         r.guest(ctid, ['useradd', '--system', '--user-group', '--home-dir', '/opt/pickle', '--shell', '/usr/sbin/nologin', 'pickle'], label='new application account')
         r.guest(ctid, ['install', '-d', '-o', 'pickle', '-g', 'pickle', '/opt/pickle/api/releases', '/var/lib/pickle'], label='application directories')
-        r.guest(ctid, ['chmod', '0700', '/var/lib/pickle'], label='private mock-mail directory')
+        r.guest(ctid, ['chmod', '0700', '/var/lib/pickle'], label='private application state directory')
         r.guest(ctid, ['install', '-d', '-o', 'root', '-g', 'pickle', '-m', '0750', '/etc/pickle'], label='new application config directory')
         r.guest(ctid, ['install', '-d', '/var/www/pickle-console'], label='console directory')
         self.put(ctid, '/etc/pickle/api.env', inputs['api_env_file'], '0640', 'root:pickle')
@@ -517,6 +590,9 @@ class Bootstrap:
             app = self.create('application')
             self.packages(app, 'application')
             self.application(app, inputs)
+            machine_ids = {row['machine_id'] for row in self.manifest['created']}
+            if len(machine_ids) != 2:
+                raise BootstrapError('New application and database guests share a machine identity')
             self.manifest['completed'] = True
             self.manifest['boundary'] = 'Bootstrap only: API not started, no application schema, inventory, imported data or public routing'
             self.save()
@@ -526,15 +602,225 @@ class Bootstrap:
             raise
 
 
+class AdminBootstrap:
+    """Read-only identity/freshness proof followed by one explicit one-shot seed."""
+
+    def __init__(self, config: Config, runner: Runner):
+        self.c, self.r = config, runner
+        self.manifest = self.load_manifest()
+        self.run_id = self.manifest['run_id']
+
+    def load_manifest(self) -> dict:
+        state = Path(self.c.state_dir)
+        state_info = state.stat()
+        if (state.resolve() != state or state_info.st_uid != os.getuid()
+                or stat.S_IMODE(state_info.st_mode) != 0o700):
+            raise BootstrapError('Bootstrap state directory identity or permissions changed')
+        path = state / 'manifest.json'
+        info = path.lstat()
+        if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() \
+                or stat.S_IMODE(info.st_mode) != 0o600:
+            raise BootstrapError('Bootstrap manifest must be a root-owned 0600 regular file')
+        manifest = json.loads(path.read_text())
+        if (not manifest.get('completed') or manifest.get('plan') != plan(self.c)
+                or not re.fullmatch(r'[0-9a-f-]{36}', str(manifest.get('run_id', '')))
+                or not re.fullmatch(r'[0-9]{1,24}', str(manifest.get('database_system_identifier', '')))):
+            raise BootstrapError('Bootstrap manifest is incomplete or belongs to a different plan')
+        created = {row.get('role'): row for row in manifest.get('created', [])}
+        expected = {'application': self.c.app_ctid, 'database': self.c.db_ctid}
+        if set(created) != set(expected) or any(created[role].get('id') != ctid
+                or not re.fullmatch(r'[0-9a-f]{32}', str(created[role].get('machine_id', '')))
+                for role, ctid in expected.items()):
+            raise BootstrapError('Bootstrap manifest does not identify both expected containers')
+        if len({created[role]['machine_id'] for role in expected}) != 2:
+            raise BootstrapError('Bootstrap manifest reuses one machine identity')
+        return manifest
+
+    def owned(self, role: str) -> None:
+        ctid = self.c.app_ctid if role == 'application' else self.c.db_ctid
+        hostname = self.c.app_hostname if role == 'application' else self.c.db_hostname
+        text = self.r.run(['pct', 'config', str(ctid)], label=f'{role} container identity')
+        values = dict(line.split(': ', 1) for line in text.splitlines() if ': ' in line)
+        if values.get('hostname') != hostname or values.get('description') != 'isolated-core:' + self.run_id:
+            raise BootstrapError(f'{role} container ownership changed')
+        machine_id = self.r.guest(ctid, ['cat', '/etc/machine-id'],
+                                  label=f'{role} machine identity').strip()
+        expected = next(row['machine_id'] for row in self.manifest['created']
+                        if row['role'] == role)
+        if machine_id != expected:
+            raise BootstrapError(f'{role} machine identity changed')
+
+    def preflight(self) -> dict:
+        c, r = self.c, self.r
+        if os.geteuid() != 0 or socket.gethostname().split('.')[0] != c.expected_node:
+            raise BootstrapError('Admin bootstrap requires root on the exact expected node')
+        status = json.loads(r.run(['pvesh', 'get', '/cluster/status', '--output-format', 'json'],
+                                  label='cluster status'))
+        cluster = next((row for row in status if row.get('type') == 'cluster'), {})
+        if cluster.get('name') != c.expected_cluster or not cluster.get('quorate'):
+            raise BootstrapError('The expected cluster must have quorum')
+        self.owned('application')
+        self.owned('database')
+        service = r.guest(c.app_ctid, ['systemctl', 'show', 'pickle-api.service',
+                          '-p', 'ActiveState', '-p', 'UnitFileState'], label='inactive API guard')
+        if 'ActiveState=inactive' not in service or 'UnitFileState=disabled' not in service:
+            raise BootstrapError('Normal API service must be inactive and disabled')
+        r.guest(c.app_ctid, ['test', '!', '-e', '/etc/pickle/allow-api-start'],
+                label='absent API start marker')
+        r.guest(c.app_ctid, ['test', '-f', '/opt/pickle/api/current.jar'],
+                label='isolated API jar')
+
+        identity_sql = ("select json_build_object('database',current_database(),'system_identifier',"
+                        "(select system_identifier::text from pg_control_system()),'recovery',"
+                        "pg_is_in_recovery())")
+        identity = json.loads(r.guest(
+            c.db_ctid, ['runuser', '-u', 'postgres', '--', 'psql', '-X', '-qAt',
+                        '-v', 'ON_ERROR_STOP=1', '-d', c.db_name, '-c', identity_sql],
+            label='privileged database identity'))
+        if (identity != {'database': c.db_name,
+                         'system_identifier': self.manifest['database_system_identifier'],
+                         'recovery': False}):
+            raise BootstrapError('Database identity, system identifier or recovery state changed')
+        tables = json.loads(r.guest(
+            c.db_ctid, ['runuser', '-u', 'postgres', '--', 'psql', '-X', '-qAt',
+                        '-v', 'ON_ERROR_STOP=1', '-d', c.db_name, '-c',
+                        "select coalesce(json_agg(tablename order by tablename),'[]'::json)"
+                        " from pg_tables where schemaname=current_schema()"],
+            label='fresh database table guard'))
+        if tables:
+            raise BootstrapError('Database is no longer schema-empty; do not repeat isolated bootstrap')
+
+        connection = (f'host={c.db_hostname} hostaddr={c.db_ip} port=5432 dbname={c.db_name} '
+                      f'user={c.db_role} sslmode=verify-full '
+                      'sslrootcert=/etc/pickle/db-ca.crt connect_timeout=10')
+        app_identity = r.guest(
+            c.app_ctid, ['runuser', '-u', 'pickle', '--', 'python3', '-c', ENV_FILE_EXEC,
+                         '/etc/pickle/core.env', 'psql', connection, '-X', '-qAt',
+                         '-v', 'ON_ERROR_STOP=1', '-c',
+                         "select current_database()||'|'||current_user||'|'||"
+                         "(select ssl from pg_stat_ssl where pid=pg_backend_pid())"],
+            label='application TLS database identity')
+        if app_identity.strip() != f'{c.db_name}|{c.db_role}|t':
+            raise BootstrapError('Application DB path did not confirm expected role and TLS')
+        return {'run_id': self.run_id, 'app_ctid': c.app_ctid, 'db_ctid': c.db_ctid,
+                'database_system_identifier': identity['system_identifier'], 'would_seed': ['SYS_ADMIN']}
+
+    def apply(self, admin_file: Path) -> None:
+        self.preflight()
+        raw = protected_file(str(admin_file), private=True)
+        validate_admin_env(raw)
+        c, r = self.c, self.r
+        remote = '/etc/pickle/isolated-bootstrap-admin.env'
+        r.guest(c.app_ctid, ['test', '!', '-e', remote], label='new admin credential guard')
+        with tempfile.NamedTemporaryFile(prefix='isolated-admin-', dir=c.state_dir) as source:
+            source.write(raw)
+            source.flush()
+            r.run(['pct', 'push', str(c.app_ctid), source.name, remote, '--perms', '0600'],
+                  label='protected admin credential install')
+        r.guest(c.app_ctid, ['chown', 'root:root', remote], label='admin credential owner')
+        r.guest(c.app_ctid, ['chmod', '0600', remote], label='admin credential permissions')
+        command = [
+            'systemd-run', '--wait', '--collect', '--quiet',
+            '--unit=pickle-isolated-bootstrap', '--property=Type=exec',
+            '--property=User=pickle', '--property=Group=pickle',
+            '--property=WorkingDirectory=/opt/pickle/api',
+            '--property=EnvironmentFile=/etc/pickle/api.env',
+            '--property=EnvironmentFile=/etc/pickle/core.env',
+            '--property=EnvironmentFile=' + remote,
+            '--property=NoNewPrivileges=yes', '--property=ProtectSystem=full',
+            '--property=PrivateTmp=yes', '--property=UMask=0077',
+            '/usr/bin/java', '-Xmx2g', '-jar', '/opt/pickle/api/current.jar',
+            '--spring.profiles.active=isolated,isolated-bootstrap',
+            '--spring.main.web-application-type=none',
+            '--jobrunr.background-job-server.enabled=false',
+            '--jobrunr.dashboard.enabled=false', '--pickle.network-policy.enabled=false',
+            '--pickle.vm-firewall.enabled=false', '--pickle.dns.provider=none',
+            '--pickle.isolated-bootstrap.enabled=true']
+        try:
+            r.guest(c.app_ctid, command, label='isolated admin one-shot', timeout=300)
+        finally:
+            r.guest(c.app_ctid, ['rm', '-f', remote], label='admin credential removal')
+        self.postcheck()
+        self.manifest['admin_bootstrap'] = {'completed': True, 'accounts': ['SYS_ADMIN']}
+        path = Path(c.state_dir) / 'manifest.json'
+        temporary = path.with_suffix('.json.new')
+        temporary.write_text(json.dumps(self.manifest, indent=2) + '\n')
+        temporary.chmod(0o600)
+        temporary.replace(path)
+        r.guest(c.app_ctid, ['install', '-o', 'root', '-g', 'root', '-m', '0600',
+                             '/dev/null', '/etc/pickle/allow-api-start'],
+                label='API start marker after bootstrap')
+
+    def postcheck(self) -> None:
+        c, r = self.c, self.r
+        sql = r'''do $$
+declare t record; n bigint;
+begin
+  for t in select tablename from pg_tables
+             where schemaname=current_schema()
+               and tablename <> 'flyway_schema_history'
+               and tablename not like 'jobrunr\_%' escape '\'
+  loop
+    execute format('select count(*) from %I', t.tablename) into n;
+    if (t.tablename in ('users','workspaces','workspace_members') and n <> 1)
+       or (t.tablename = 'llm_upstreams' and n <> 3)
+       or (t.tablename not in ('users','workspaces','workspace_members','llm_upstreams') and n <> 0) then
+      raise exception 'unexpected row count in %', t.tablename;
+    end if;
+  end loop;
+  if (select count(*) filter (where
+        (ref='openai' and kind='EXTERNAL_API' and display_name='OpenAI'
+          and org_id is null and not dedicated and enabled and not passthrough
+          and note='자체 서빙이 서기 전까지 pnu- 모델을 임시로 받치는 외부 업스트림')
+        or (ref='openrouter' and kind='EXTERNAL_API' and display_name='OpenRouter'
+          and org_id is null and not dedicated and enabled and passthrough
+          and note='상용 모델 경로. 키별 자격증명으로 호출되며 금액 한도는 OpenRouter가 강제한다')
+        or (ref='dgx' and kind='ON_PREM' and display_name='DGX Spark'
+          and org_id is null and not dedicated and not enabled and not passthrough
+          and note='자체 서빙 하드웨어 자리. vLLM 서빙이 서면 활성화한다'))
+      from llm_upstreams) <> 3 then
+    raise exception 'schema-defined LLM upstream rows changed';
+  end if;
+end $$;
+select count(*) from users u
+ where u.role='SYS_ADMIN' and u.status='ACTIVE' and u.email_verified_at is not null
+   and u.position='STAFF' and u.department_other='플랫폼 운영'
+   and exists (select 1 from workspace_members m join workspaces w on w.id=m.workspace_id
+                where m.user_id=u.id and m.role='OWNER' and w.kind='PERSONAL');'''
+        result = r.guest(c.db_ctid, ['runuser', '-u', 'postgres', '--', 'psql', '-X', '-qAt',
+                         '-v', 'ON_ERROR_STOP=1', '-d', c.db_name, '-c', sql],
+                         label='isolated admin postcheck').strip()
+        if result != '1':
+            raise BootstrapError('Isolated bootstrap did not create the exact guarded admin shape')
+        service = r.guest(c.app_ctid, ['systemctl', 'show', 'pickle-api.service',
+                          '-p', 'ActiveState', '-p', 'UnitFileState'], label='API remains stopped')
+        if 'ActiveState=inactive' not in service or 'UnitFileState=disabled' not in service:
+            raise BootstrapError('Normal API service changed state during one-shot bootstrap')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--dry-run', action='store_true')
     mode.add_argument('--apply', action='store_true')
+    parser.add_argument('--bootstrap-admin', action='store_true')
+    parser.add_argument('--admin-env-file', type=Path)
     args = parser.parse_args()
     try:
         config = Config.load(args.config)
+        if args.admin_env_file is not None and not args.bootstrap_admin:
+            raise BootstrapError('--admin-env-file is valid only with --bootstrap-admin')
+        if args.bootstrap_admin:
+            if args.admin_env_file is None:
+                raise BootstrapError('--bootstrap-admin requires --admin-env-file')
+            bootstrap = AdminBootstrap(config, Runner())
+            if not args.apply:
+                print(json.dumps(bootstrap.preflight(), indent=2))
+                return 0
+            bootstrap.apply(args.admin_env_file)
+            print('Isolated SYS_ADMIN created and verified. API start marker installed; service remains disabled.')
+            return 0
         if not args.apply:
             print(json.dumps(plan(config), indent=2))
             return 0

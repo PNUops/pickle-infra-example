@@ -125,6 +125,7 @@ sanitize_host_allowed() {
     # Public infrastructure these scripts genuinely fetch from.
     github.com | *.github.com | githubusercontent.com | *.githubusercontent.com) return 0 ;;
     *.debian.org | *.ubuntu.com | *.postgresql.org | *.proxmox.com | *.docker.com) return 0 ;;
+    nginx.org) return 0 ;;
     pkgs.netbird.io | docs.netbird.io | www.dell.com) return 0 ;;
     *.letsencrypt.org | *.cloudflare.com | *.npmjs.org | *.golang.org | *.maven.org) return 0 ;;
   esac
@@ -222,6 +223,14 @@ sanitization_check() {
 # only ever passes is indistinguishable from one that does nothing.
 sanitization_selftest() {
   local probe candidates candidate
+  if ! sanitize_host_allowed nginx.org; then
+    echo 'sanitization selftest: the exact official nginx package host was rejected' >&2
+    return 1
+  fi
+  if sanitize_host_allowed packages.nginx.org; then
+    echo 'sanitization selftest: the nginx package-host exception became broader than exact' >&2
+    return 1
+  fi
   for probe in '25.0.4.1+1-1~deb13u1' 'JRE_VERSION="25.0.4.1+1-1~deb13u1"' \
     '25.0.4.1+1-1~deb13u1 25.0.4.1+1-1~deb13u1'; do
     candidates=$(printf '%s\n' "$probe" | ipv4_candidates)

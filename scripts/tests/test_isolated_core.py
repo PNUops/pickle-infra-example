@@ -32,6 +32,7 @@ def config(root=Path('/nonexistent-inputs')):
         app_disk_gb=32, db_disk_gb=64, storage_reserve_gb=16, storage='local-lvm',
         template='local:vztmpl/debian-13-standard_REVIEWED_amd64.tar.zst', template_sha256='a' * 64,
         postgresql_version='18.6-1.pgdg13+2', jre_version='25.0.4.1+1-1~deb13u1',
+        nginx_version='1.30.5-1~trixie',
         db_name='pickle_verify', db_role='pickle_verify',
         api_env_file=str(root / 'api.env'), db_password_file=str(root / 'db-password'),
         db_ca_file=str(root / 'db-ca.crt'), db_cert_file=str(root / 'db-server.crt'),
@@ -40,11 +41,51 @@ def config(root=Path('/nonexistent-inputs')):
 
 def fresh_environment():
     return ('PICKLE_JWT_SECRET=' + 'j' * 48 + '\nPICKLE_CREDENTIALS_KEY='
-            + base64.b64encode(b'c' * 32).decode()
-            + '\nPICKLE_SEED_SYSADMIN_EMAIL=admin@example.test\n'
-              'PICKLE_SEED_SYSADMIN_PASSWORD=fresh-admin-password-example\n'
-              'PICKLE_SEED_ORGADMIN_EMAIL=orgadmin@example.test\n'
-              'PICKLE_SEED_ORGADMIN_PASSWORD=fresh-orgadmin-password-example\n').encode()
+            + base64.b64encode(b'c' * 32).decode() + '\n').encode()
+
+
+def completed_manifest(c, root: Path):
+    run_id = '11111111-2222-3333-4444-555555555555'
+    manifest = {
+        'run_id': run_id,
+        'plan': core.plan(c),
+        'attempted': [],
+        'created': [
+            {'id': c.db_ctid, 'hostname': c.db_hostname, 'role': 'database',
+             'machine_id': 'a' * 32},
+            {'id': c.app_ctid, 'hostname': c.app_hostname, 'role': 'application',
+             'machine_id': 'b' * 32},
+        ],
+        'completed': True,
+        'database_system_identifier': '1234567890123456789',
+    }
+    state = root / 'run'
+    state.mkdir(mode=0o700)
+    path = state / 'manifest.json'
+    path.write_text(json.dumps(manifest))
+    path.chmod(0o600)
+    return run_id
+
+
+def admin_responses(c, run_id):
+    return {
+        'cluster status': json.dumps([
+            {'type': 'cluster', 'name': c.expected_cluster, 'quorate': 1}]),
+        'application container identity':
+            f'hostname: {c.app_hostname}\ndescription: isolated-core:{run_id}\n',
+        'database container identity':
+            f'hostname: {c.db_hostname}\ndescription: isolated-core:{run_id}\n',
+        'application machine identity': 'b' * 32 + '\n',
+        'database machine identity': 'a' * 32 + '\n',
+        'inactive API guard': 'ActiveState=inactive\nUnitFileState=disabled\n',
+        'privileged database identity': json.dumps({
+            'database': c.db_name,
+            'system_identifier': '1234567890123456789',
+            'recovery': False,
+        }),
+        'fresh database table guard': '[]',
+        'application TLS database identity': f'{c.db_name}|{c.db_role}|t\n',
+    }
 
 
 class FakeRunner(core.Runner):
@@ -111,7 +152,8 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
                     replace(config(), app_ip='100.65.1.21'), replace(config(), db_ip='203.0.113.1'),
                     replace(config(), bridge='net;reboot'), replace(config(), db_role="x';DROP ROLE postgres;--"),
                     replace(config(), template='local:vztmpl/../../archive.tar.zst'),
-                    replace(config(), postgresql_version='19beta3-1')]
+                    replace(config(), postgresql_version='19beta3-1'),
+                    replace(config(), nginx_version='latest')]
         for candidate in variants:
             with self.subTest(candidate=candidate):
                 with self.assertRaises((core.BootstrapError, ValueError)):
@@ -135,9 +177,93 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
         core.validate_fresh_api_env(fresh_environment())
         for extra in (b'PICKLE_DB_PASSWORD=existing\n', b'SPRING_PROFILES_ACTIVE=prod\n',
                       b'PICKLE_SMTP_HOST=mail.example.test\n', b'PICKLE_PROXMOX_TOKEN_SECRET=existing\n',
+                      b'PICKLE_SEED_SYSADMIN_PASSWORD=existing\n',
                       b'PICKLE_JWT_SECRET=duplicate\n'):
             with self.assertRaises(core.BootstrapError):
                 core.validate_fresh_api_env(fresh_environment() + extra)
+
+    def test_admin_credentials_are_separate_and_exact(self):
+        valid = (b'PICKLE_BOOTSTRAP_ADMIN_EMAIL=admin@example.test\n'
+                 b'PICKLE_BOOTSTRAP_ADMIN_PASSWORD=fresh-admin-password-example\n')
+        core.validate_admin_env(valid)
+        for invalid in (valid + b'PICKLE_SEED_SYSADMIN_PASSWORD=nope\n',
+                        b'PICKLE_BOOTSTRAP_ADMIN_EMAIL=admin@example.test\n',
+                        valid.replace(b'fresh-admin-password-example', b'short')):
+            with self.subTest(invalid=invalid), self.assertRaises(core.BootstrapError):
+                core.validate_admin_env(invalid)
+
+    def test_admin_bootstrap_preflight_binds_host_containers_and_database_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            c = replace(config(root), state_dir=str(root / 'run'))
+            run_id = completed_manifest(c, root)
+            runner = FakeRunner(admin_responses(c, run_id))
+            with patch.object(core.os, 'geteuid', return_value=0), \
+                    patch.object(core.socket, 'gethostname', return_value=c.expected_node):
+                result = core.AdminBootstrap(c, runner).preflight()
+            self.assertEqual(result['database_system_identifier'], '1234567890123456789')
+            self.assertEqual(result['would_seed'], ['SYS_ADMIN'])
+
+    def test_admin_bootstrap_rejects_identity_freshness_and_service_contradictions(self):
+        cases = {
+            'container ownership': ('application container identity', 'hostname: other\n'),
+            'machine identity': ('application machine identity', 'c' * 32),
+            'system identifier': ('privileged database identity', json.dumps({
+                'database': 'pickle_verify', 'system_identifier': '9', 'recovery': False})),
+            'schema-empty': ('fresh database table guard', '["users"]'),
+            'inactive': ('inactive API guard', 'ActiveState=active\nUnitFileState=disabled\n'),
+        }
+        for expected, (label, value) in cases.items():
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as td:
+                root = Path(td).resolve()
+                c = replace(config(root), state_dir=str(root / 'run'))
+                run_id = completed_manifest(c, root)
+                responses = admin_responses(c, run_id)
+                responses[label] = value
+                with patch.object(core.os, 'geteuid', return_value=0), \
+                        patch.object(core.socket, 'gethostname', return_value=c.expected_node):
+                    with self.assertRaisesRegex(core.BootstrapError, expected):
+                        core.AdminBootstrap(c, FakeRunner(responses)).preflight()
+
+    def test_admin_apply_keeps_secret_out_of_argv_and_installs_marker_last(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            c = replace(config(root), state_dir=str(root / 'run'))
+            completed_manifest(c, root)
+            admin = root / 'admin.env'
+            password = 'fresh-admin-password-example'
+            admin.write_text('PICKLE_BOOTSTRAP_ADMIN_EMAIL=admin@example.test\n'
+                             f'PICKLE_BOOTSTRAP_ADMIN_PASSWORD={password}\n')
+            admin.chmod(0o600)
+            runner = FakeRunner()
+            bootstrap = core.AdminBootstrap(c, runner)
+            with patch.object(bootstrap, 'preflight'), patch.object(bootstrap, 'postcheck'):
+                bootstrap.apply(admin)
+            one_shot = next(args for args, kwargs in runner.calls
+                            if kwargs.get('label') == 'isolated admin one-shot')
+            self.assertIn('--spring.profiles.active=isolated,isolated-bootstrap', one_shot)
+            self.assertIn('--pickle.isolated-bootstrap.enabled=true', one_shot)
+            self.assertIn('--property=User=pickle', one_shot)
+            self.assertIn('--property=EnvironmentFile=/etc/pickle/core.env', one_shot)
+            self.assertNotIn('/bin/bash', one_shot)
+            self.assertNotIn(password, ' '.join(one_shot))
+            labels = [kwargs.get('label') for _, kwargs in runner.calls]
+            self.assertGreater(labels.index('API start marker after bootstrap'),
+                               labels.index('admin credential removal'))
+
+    def test_generated_environment_loader_preserves_ampersand_without_secret_argv(self):
+        with tempfile.TemporaryDirectory() as td:
+            environment = Path(td) / 'core.env'
+            secret = 'db-password-not-for-argv'
+            environment.write_bytes(core.api_environment(config(), secret.encode()))
+            child = 'import os;print(os.environ["PICKLE_DB_URL"])'
+            command = [sys.executable, '-c', core.ENV_FILE_EXEC, str(environment),
+                       sys.executable, '-c', child]
+            self.assertNotIn(secret, ' '.join(command))
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip(),
+                             'jdbc:postgresql://pickle-db:5432/pickle_verify?sslmode=verify-full'
+                             '&sslrootcert=/etc/pickle/db-ca.crt')
 
     def test_database_hba_requires_tls_scram_and_only_the_application_host(self):
         postgres, hba = core.db_config(config())
@@ -146,6 +272,14 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
         self.assertIn('hostnossl all all 0.0.0.0/0 reject', hba)
         self.assertNotIn('trust', hba)
         self.assertEqual(sum('hostssl ' in line for line in hba.splitlines()), 1)
+
+    def test_nginx_uses_official_stable_signed_repository_and_explicit_pin(self):
+        self.assertEqual(core.NGINX_SIGNING_FINGERPRINT,
+                         '573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62')
+        self.assertIn('https://nginx.org/packages/debian trixie nginx', core.NGINX_REPOSITORY)
+        self.assertIn('signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg',
+                      core.NGINX_REPOSITORY)
+        self.assertEqual(core.plan(config())['packages']['nginx'], '1.30.5-1~trixie')
 
     def test_firewall_replaces_only_its_own_table_and_preserves_established_flows(self):
         database = core.firewall(config(), 'database')
@@ -161,11 +295,17 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
         self.assertIn('ConditionPathExists=/etc/pickle/allow-api-start', core.API_UNIT)
         self.assertIn('Requires=isolated-core-firewall.service', core.API_UNIT)
         self.assertIn('--jobrunr.background-job-server.enabled=false', core.API_UNIT)
+        self.assertIn('--spring.profiles.active=isolated', core.API_UNIT)
+        self.assertIn('--pickle.vm-firewall.enabled=false', core.API_UNIT)
+        self.assertIn('--pickle.dns.provider=none', core.API_UNIT)
         self.assertNotIn('postgresql.service', core.API_UNIT)
         content = core.api_environment(config(), b'x' * 48).decode()
         self.assertIn('sslmode=verify-full', content)
         self.assertIn('JOBRUNR_BACKGROUND_JOB_SERVER_ENABLED=false', content)
-        self.assertIn('SPRING_PROFILES_ACTIVE=dev', content)
+        self.assertIn('SPRING_PROFILES_ACTIVE=isolated', content)
+        self.assertIn('PICKLE_VM_FIREWALL_ENABLED=false', content)
+        self.assertIn('PICKLE_DNS_PROVIDER=none', content)
+        self.assertNotIn('PICKLE_SEED_', content)
         self.assertIn('SERVER_ADDRESS=127.0.0.1', content)
 
     def test_proxy_header_trust_is_restricted_even_if_the_kernel_policy_is_missing(self):

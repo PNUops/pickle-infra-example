@@ -7,7 +7,8 @@ LXC 두 개를 새로 만든다. 하나는 PostgreSQL 18, 다른 하나는 Java 
 이 단계에서 API JAR, 콘솔 번들, 애플리케이션 스키마와 노드 인벤토리는 설치하지
 않는다. 데이터 이관, 공개 도메인, NAT, 기존 proxy나 relay 연결도 수행하지 않는다.
 API 유닛은 비활성화되고 `/etc/pickle/allow-api-start`가 없으면 시작할 수 없다.
-JobRunr는 꺼진 상태이며 향후 첫 기동의 프로파일은 메일을 발송하지 않는 `dev`다.
+JobRunr와 정책 producer는 꺼진 상태이며 정상 기동은 개발 시더가 없는 `isolated`
+프로파일을 쓴다. 이 프로파일의 메일 구현은 외부 전송과 로컬 spool을 모두 거부한다.
 
 ## 실행 전 조건
 
@@ -36,17 +37,24 @@ JobRunr는 꺼진 상태이며 향후 첫 기동의 프로파일은 메일을 �
 | PostgreSQL | 최신 stable major 18, minor 18.6. 지원 종료 2030-11-14 |
 | PGDG trixie amd64 | `postgresql-18`, `postgresql-client-18` 모두 `18.6-1.pgdg13+2`. 공식 키로 InRelease 서명을 확인하고 Packages SHA-256과 대조 |
 | Java runtime | Debian security의 `openjdk-25-jre-headless` `25.0.4.1+1-1~deb13u1`. 애플리케이션의 Java 25 빌드 기준과 맞춤 |
+| nginx | nginx.org stable `1.30.5`, trixie package `1.30.5-1~trixie` |
 
 [Debian release](https://www.debian.org/releases/trixie/),
 [PostgreSQL 지원 정책](https://www.postgresql.org/support/versioning/),
 [PGDG 설치 방법](https://www.postgresql.org/download/linux/debian/),
 [PGDG Release](https://apt.postgresql.org/pub/repos/apt/dists/trixie-pgdg/Release),
-[Debian Java 패키지](https://packages.debian.org/trixie/openjdk-25-jre-headless).
+[Debian Java 패키지](https://packages.debian.org/trixie/openjdk-25-jre-headless),
+[nginx Linux packages](https://nginx.org/en/linux_packages.html),
+[nginx stable package index](https://nginx.org/packages/debian/pool/nginx/n/nginx/).
 
 실제 설치 직전 다시 확인한다. 새 게스트는 Debian의 서명된 APT를 갱신하고 보안
 업데이트를 설치한다. Debian 패키지 `postgresql-common`이 제공하는 공식 PGDG 설치기로
 서명된 PGDG APT를 구성한다. PostgreSQL과 Java의 APT candidate가 입력 버전과 다르면
-멈춘다. 새 major로 자동 전환하거나 서명 검사를 끄지 않는다.
+멈춘다. App LXC는 nginx.org stable repo key를 HTTPS로 받아 공식 fingerprint
+`573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62`가 포함됐는지 확인한 뒤 격리 keyring으로
+dearmor하고 `signed-by`가 지정된 새 source file만 만든다. 공식 문서대로 다른 signing
+key가 함께 있는 것은 허용한다. nginx candidate의 버전과 nginx.org origin이 모두 맞아야
+설치하며 package receipt에도 남긴다. 새 major로 자동 전환하거나 서명 검사를 끄지 않는다.
 
 ## 입력 파일
 
@@ -55,21 +63,26 @@ JobRunr는 꺼진 상태이며 향후 첫 기동의 프로파일은 메일을 �
 API env는 root 소유 0600 파일로 준비한다. symlink는 거부한다.
 
 DB 비밀번호 파일은 새로 생성한 base64 문자 32–128자의 한 줄이다. 값은 화면이나
-명령 인수로 출력하지 않는다. `api.env`에는 아래 여섯 키만 실제 새 값으로 채운다.
+명령 인수로 출력하지 않는다. `api.env`에는 아래 두 키만 실제 새 값으로 채운다.
 주석과 빈 줄 외에는 `KEY=VALUE` 한 줄 형식이며 중복이나 다른 키는 거부한다.
 
 ```text
 PICKLE_JWT_SECRET=<32자 이상의 새 값>
 PICKLE_CREDENTIALS_KEY=<32바이트의 새 키를 base64로 인코딩한 값>
-PICKLE_SEED_SYSADMIN_EMAIL=<검증용 관리자 이메일>
-PICKLE_SEED_SYSADMIN_PASSWORD=<16자 이상의 새 비밀번호>
-PICKLE_SEED_ORGADMIN_EMAIL=<검증용 기관 관리자 이메일>
-PICKLE_SEED_ORGADMIN_PASSWORD=<16자 이상의 새 비밀번호>
 ```
 
 자동 생성 값에는 공백, quote, backslash, dollar와 backtick을 사용하지 않는다.
 DB URL과 password, 실행 프로파일은 별도 `core.env`에 작성되며 이 입력으로 덮을 수 없다.
 SMTP나 Proxmox token 등 다른 서비스 자격증명도 이 단계에는 넣지 않는다.
+
+관리자 계정 입력은 별도 root 소유 0600 regular file에 아래 두 키만 둔다. 초기 LXC
+준비에는 읽지 않고, `--bootstrap-admin --apply` 한 번에서만 app LXC에 임시 설치한 뒤
+즉시 삭제한다. 값은 명령 인수와 journal에 넣지 않는다.
+
+```text
+PICKLE_BOOTSTRAP_ADMIN_EMAIL=<검증용 관리자 이메일>
+PICKLE_BOOTSTRAP_ADMIN_PASSWORD=<16자 이상의 새 비밀번호>
+```
 
 DB server certificate는 `db_hostname`에 대한 인증서여야 한다. CA chain, hostname,
 server 목적과 private key 일치를 검사한다. CA private key는 전달하지 않는다.
@@ -107,6 +120,7 @@ CA key와 재발급 절차는 두 LXC 밖에서 보관한다.
   "template_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "postgresql_version": "18.6-1.pgdg13+2",
   "jre_version": "25.0.4.1+1-1~deb13u1",
+  "nginx_version": "1.30.5-1~trixie",
   "db_name": "pickle_verify",
   "db_role": "pickle_verify",
   "api_env_file": "/root/isolated-core/inputs/api.env",
@@ -143,12 +157,46 @@ bash scripts/bootstrap-isolated-core.sh --config /root/isolated-core/config.json
 6. app에서 `sslmode=verify-full`과 SCRAM으로 새 DB에 실제 연결하고 TLS 세션임을 확인한다.
    이 검사는 애플리케이션 테이블을 만들지 않는다.
 7. `manifest.json`에 시도한 CTID, 생성 성공 CTID, run UUID, 입력 계획과 설치 package
-   receipt를 남긴다. credential 값은 넣지 않는다.
+   receipt, 각 LXC machine ID와 PostgreSQL system identifier를 남긴다. DB system
+   identifier는 DB LXC의 postgres operator 경로로 읽으며 app 역할에 추가 권한을 주지
+   않는다. credential 값은 넣지 않는다.
 
 성공은 LXC 기반 준비와 private DB 연결까지만 뜻한다. API/콘솔 배포, schema와
 MAINTENANCE 노드 등록, agent 연결, 사용자 VM, PBS 복구, RPO/RTO 검증은 별도다.
 `allow-api-start`를 만들거나 JobRunr를 켜는 것도 그 다음 실행의 명시적 단계다.
 DB가 별도 LXC이므로 app 컨테이너 안의 PostgreSQL을 가정하는 운영 명령을 재사용하지 않는다.
+
+## 최초 관리자 one-shot
+
+검증할 API jar를 `/opt/pickle/api/current.jar`에 설치한 뒤에도 정상 API 유닛은 disabled이고
+marker는 없어야 한다. 다음 dry-run은 자격증명 내용을 읽거나 행을 쓰지 않고, exact host와
+cluster quorum, manifest run UUID, 두 CTID/hostname/description/machine ID, privileged DB
+system identifier, 빈 public schema와 app 역할의 verify-full TLS 연결을 확인한다.
+
+```bash
+bash scripts/bootstrap-isolated-core.sh --config /root/isolated-core/config.json \
+  --bootstrap-admin --admin-env-file /root/isolated-core/inputs/bootstrap-admin.env
+
+bash scripts/bootstrap-isolated-core.sh --config /root/isolated-core/config.json \
+  --bootstrap-admin --admin-env-file /root/isolated-core/inputs/bootstrap-admin.env --apply
+```
+
+Apply는 root-only 입력을 app LXC에 임시 복사하고, secret이 없는 고정 argv로 transient
+one-shot을 실행한다. Systemd manager가 세 보호 파일을 `EnvironmentFile`로 읽고 pickle
+사용자로 직접 실행하므로 JDBC URL의 `&`나 이후 값이 shell 문법으로 해석되지 않는다.
+App 역할의 TLS preflight도 strict Python loader가 env file을 데이터로 읽은 뒤 `psql`을
+exec하며 비밀번호를 argv나 출력에 넣지 않는다. one-shot은 `isolated,isolated-bootstrap` profile과 명시 opt-in을 함께
+요구하고, 한 transaction의 advisory lock 안에서 Flyway/JobRunr metadata 외 모든 app table이
+비었는지 확인한다. 성공 시 verified ACTIVE SYS_ADMIN 한 명과 그 계정의 PERSONAL workspace,
+OWNER membership만 존재해야 한다. 다른 settings, 기관, node/pool/image, relay, domain/route,
+VM/신청, audit 행은 0이어야 한다. V87이 schema registry로 넣는 `openai`, `openrouter`,
+`dgx` 세 `llm_upstreams` 행만 exact tuple로 허용하며 endpoint나 credential을 담지 않는다.
+현재 bootstrap 계정 경로는 audit을 쓰지 않는다.
+
+Postcheck가 exact 1/1/1 account/workspace/member와 나머지 0행, one-shot 종료 및 정상 API
+유닛의 inactive/disabled 상태를 다시 확인한 뒤에만 `/etc/pickle/allow-api-start`를 만든다.
+정상 API 서비스는 시작하지 않는다. 재실행은 schema-empty 검사에서 거부되며, 실패 뒤에는
+행이나 marker를 임의로 지우지 말고 manifest와 DB를 먼저 조사한다.
 
 ## 실패 보존과 되돌리기
 
@@ -173,7 +221,8 @@ bash scripts/verify.sh
 ```
 
 자체 검사는 잘못된 노드와 quorum, 사용 중인 ID, 자격증명 입력 범위, 기본 dry-run,
-private TLS HBA, 실패 출력의 비밀 비노출과 부분 생성 보존을 검증한다. 실제 LXC 생성이나
+private TLS HBA, host/CT/machine/DB identity와 schema-empty bootstrap guard, 비밀의 argv
+비노출, marker 순서와 부분 생성 보존을 검증한다. 실제 LXC 생성이나
 호스트 재부팅을 수행하는 검사가 아니다.
 
 최종 갱신: 2026-09-16
