@@ -33,10 +33,29 @@ TABLE = "pickle_production_l2"
 INET_TABLE = "pickle_production_guard"
 MARK_READY_TIMEOUT = 15.0
 MARK_READY_INTERVAL = 0.25
+STARTUP_WAIT_INTERVAL = 1.0
+GUEST_START_DELAY_TIMEOUT = 120
+GUEST_STARTALL_TIMEOUT = 600
 HOOKS = {"raw": ("raw", "PREROUTING"), "mangle": ("mangle", "PREROUTING"),
          "input": ("filter", "INPUT"), "forward": ("filter", "FORWARD"), "nat": ("nat", "POSTROUTING")}
 BASELINE_FILES = ["/etc/network/interfaces", "/etc/hosts", "/etc/resolv.conf", "/etc/ssh/sshd_config",
                   "/etc/ssh/sshd_config.d/10-pickle.conf", "/etc/pve/corosync.conf"]
+
+
+class StartupNotReady(AssertionError):
+    """A bounded boot prerequisite is absent, without contradicting the expected identity."""
+
+
+class ClusterQuorumNotReady(StartupNotReady):
+    pass
+
+
+class MeshNotReady(StartupNotReady):
+    pass
+
+
+class GuestFirewallNotReady(StartupNotReady):
+    pass
 
 
 def run(argv, *, stdin=None, check=True, timeout=40):
@@ -81,11 +100,17 @@ def cluster_check(config, empty=False):
     rows = api("/cluster/status")
     cluster = [row for row in rows if row.get("type") == "cluster"]
     nodes = [row for row in rows if row.get("type") == "node"]
-    assert len(cluster) == 1 and cluster[0]["name"] == config["cluster"] and cluster[0]["quorate"] == 1, "cluster is not quorate"
+    assert len(cluster) == 1 and cluster[0]["name"] == config["cluster"], "unexpected cluster identity"
     assert {row["name"] for row in nodes} == set(config["nodes"]), "unexpected cluster membership"
     assert api("/cluster/ha/resources") == [], "HA resources are outside this procedure"
     local = socket.gethostname().split(".")[0]
-    assert not api(f"/nodes/{local}/firewall/options").get("nftables"), "Proxmox nftables backend is outside this procedure"
+    firewall_options = api(f"/nodes/{local}/firewall/options")
+    assert ("nftables" not in firewall_options
+            or (type(firewall_options["nftables"]) in (int, bool)
+                and firewall_options["nftables"] in (0, False))), \
+        "Proxmox nftables backend is outside this procedure"
+    if cluster[0].get("quorate") != 1:
+        raise ClusterQuorumNotReady("cluster is not quorate")
     if empty:
         assert all(row["online"] for row in nodes), "both nodes must be online"
         assert api("/cluster/resources", "--type", "vm") == [], "guests must be absent for initial installation"
@@ -168,6 +193,12 @@ def wait_for_accept_mark(expected, state):
 def check_links(config, node):
     links = json.loads(run(["ip", "-j", "-d", "link"]).stdout)
     by_name = {row["ifname"]: row for row in links}
+    expected_links = {config["mesh_interface"]}
+    expected_links.update(config["vnets"])
+    expected_links.update("vxlan_" + name for name in config["vnets"])
+    missing = expected_links - by_name.keys()
+    if missing:
+        raise MeshNotReady("network links not ready: " + ", ".join(sorted(missing)))
     for name, specification in config["vnets"].items():
         bridge, vxlan = by_name[name], by_name["vxlan_" + name]
         assert bridge.get("linkinfo", {}).get("info_kind") == "bridge"
@@ -178,8 +209,14 @@ def check_links(config, node):
         assert bridge["mtu"] == vxlan["mtu"] == config["guest_mtu"]
         fdb = json.loads(run(["bridge", "-j", "fdb", "show", "dev", "vxlan_" + name]).stdout)
         expected_peer = next(row["mesh"] for other, row in config["nodes"].items() if other != node)
-        assert {row["dst"] for row in fdb if row.get("dst")} == {expected_peer}, "unexpected VXLAN remote peer"
-        route = json.loads(run(["ip", "-j", "route", "get", expected_peer]).stdout)
+        actual_peers = {row["dst"] for row in fdb if row.get("dst")}
+        if not actual_peers:
+            raise MeshNotReady("VXLAN remote peer is not ready")
+        assert actual_peers == {expected_peer}, "unexpected VXLAN remote peer"
+        route_result = run(["ip", "-j", "route", "get", expected_peer])
+        route = json.loads(route_result.stdout)
+        if not route:
+            raise MeshNotReady("mesh route is not ready")
         assert len(route) == 1 and route[0]["dev"] == config["mesh_interface"]
         assert route[0].get("prefsrc") == config["nodes"][node]["mesh"], "VXLAN route uses a different source"
     assert by_name[config["mesh_interface"]]["mtu"] == config["host_mtu"]
@@ -310,17 +347,58 @@ def remove_gateways(config):
                 run(["ip", "address", "del", address, "dev", name])
 
 
-def reconcile(config, node, state):
-    cluster_check(config)
-    mesh_profile(config, node)
-    check_links(config, node)
+def reconcile_readiness(config, node, state):
+    """Validate every boot prerequisite without changing files, rules, addresses or sysctls."""
+    assert state["schema"] == 1 and state["node"] == node
+    assert state["phase"] in ("prepared", "active") and state["config"] == config
+    assert hashes() == state["baseline_hashes"], "native management or Corosync files changed"
     owner = json.loads(OWNER.read_text())
     assert owner["schema"] == 1 and owner["cluster"] == config["cluster"] and owner["zone"] == config["zone"]
     assert owner["owner"] in config["nodes"]
+    cluster_check(config)
+    profile = mesh_profile(config, node)
+    assert profile["mtu"] == config["host_mtu"], "NetBird MTU changed"
+    check_links(config, node)
     active = owner["owner"] == node
     mark = accept_mark()
     assert list(mark) == state["accept_mark"], "NetBird mark layout changed"
     guest_firewall_check()
+    return active, mark
+
+
+def wait_for_startup_readiness(config, node, state, timeout):
+    """Wait for typed boot absences only; never call reconcile or mutate the host."""
+    started = time.monotonic()
+    deadline = started + timeout
+    attempts = 0
+    last_error = None
+    while time.monotonic() < deadline:
+        attempts += 1
+        try:
+            reconcile_readiness(config, node, state)
+        except (ClusterQuorumNotReady, MeshNotReady, NetBirdMarkNotReady,
+                GuestFirewallNotReady) as error:
+            last_error = str(error)
+        else:
+            completed = time.monotonic()
+            if completed < deadline:
+                return {"attempts": attempts,
+                        "elapsed_seconds": round(completed - started, 3)}
+            break
+        completed = time.monotonic()
+        remaining = deadline - completed
+        if remaining <= 0:
+            break
+        time.sleep(min(STARTUP_WAIT_INTERVAL, remaining))
+    finished = time.monotonic()
+    raise RuntimeError(f"network startup prerequisites were not ready after {attempts} attempts in "
+                       f"{finished - started:.3f}s (last: {last_error})")
+
+
+def reconcile(config, node, state):
+    # Re-read every prerequisite immediately before the first mutation. The
+    # bounded wait never passes a cached owner, mark or link snapshot here.
+    active, mark = reconcile_readiness(config, node, state)
     # Install guards before any routing is enabled.
     install_chains(firewall_plan(config, node, mark, active))
     install_priority_guard(config, node, mark, active)
@@ -341,7 +419,6 @@ def reconcile(config, node, state):
     sysctl("net.bridge.bridge-nf-call-ip6tables", 1)
     sysctl("net.ipv6.conf.all.forwarding", 0)
     sysctl("net.ipv4.ip_forward", 1 if active else 0)
-    assert hashes() == state["baseline_hashes"], "native management or Corosync files changed"
 
 
 def guest_firewall_check():
@@ -349,7 +426,10 @@ def guest_firewall_check():
         options = Path("/etc/pve/firewall/cluster.fw").read_text()
         assert re.search(r"(?m)^\s*enable:\s*1\s*$", options), "PVE firewall is not enabled while guests exist"
         for binary in ("iptables", "ip6tables"):
-            assert run([binary, "-S", "PVEFW-FORWARD"], check=False).returncode == 0, "PVE guest firewall chain is absent"
+            rules = [shlex.split(line) for line in
+                     run([binary, "-t", "filter", "-S"]).stdout.splitlines()]
+            if ["-N", "PVEFW-FORWARD"] not in rules:
+                raise GuestFirewallNotReady("PVE guest firewall chain is not ready")
 
 
 def validate_current(config, node, state):
@@ -411,7 +491,7 @@ StartLimitIntervalSec=0
 Type=oneshot
 RemainAfterExit=yes
 TimeoutStartSec=180s
-ExecStart=/bin/bash {RUNTIME}/apply-production-network.sh reconcile --config {CONFIG} --apply
+ExecStart=/bin/bash {RUNTIME}/apply-production-network.sh reconcile --config {CONFIG} --startup-wait-seconds 120 --apply
 Restart=on-failure
 RestartSec=10s
 
@@ -449,9 +529,71 @@ def finish_successful_rollback(config, node, state):
     stop_transient_unit(TIMER + ".timer")
 
 
+def current_boot_id():
+    value = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    uuid.UUID(value)
+    return value
+
+
+def start_guests(config, node, state):
+    """Start on-boot guests only after the committed network passes every current check."""
+    assert state["phase"] == "active" and not state["pending"], \
+        "guest recovery requires a committed active network"
+    boot_id = current_boot_id()
+    previous = state.get("guest_start_recovery")
+    if previous:
+        assert previous.get("boot_id"), \
+            "legacy guest start recovery record needs operator investigation"
+        assert previous.get("status") not in ("STARTING", "UNKNOWN"), \
+            "guest start outcome needs operator investigation before any retry"
+        assert not (previous.get("status") == "COMPLETED"
+                    and previous["boot_id"] == boot_id), \
+            "guest start recovery already completed during this boot"
+        assert previous.get("status") == "COMPLETED", \
+            "unknown guest start recovery status"
+    reconcile_readiness(config, node, state)
+    validate_current(config, node, state)
+    local_checks(config, node, state)
+    run(["/usr/share/pve-manager/helpers/pve-startall-delay"],
+        timeout=GUEST_START_DELAY_TIMEOUT)
+    # The configured vendor delay may consume the whole helper budget. Nothing
+    # from before it is fresh enough to authorize guest start afterwards.
+    reconcile_readiness(config, node, state)
+    validate_current(config, node, state)
+    local_checks(config, node, state)
+    guest_unit = run(["systemctl", "show", "pve-guests.service",
+                      "-p", "ActiveState", "-p", "ExecMainStartTimestampMonotonic"]).stdout
+    assert ("ActiveState=inactive" in guest_unit
+            and "ExecMainStartTimestampMonotonic=0" in guest_unit), \
+        "pve-guests was not skipped during this boot"
+    state["guest_start_recovery"] = {
+        "status": "STARTING", "boot_id": boot_id, "started_at": time.time()}
+    write_json(STATE, state)
+    try:
+        run(["pvesh", "--nooutput", "create", "/nodes/localhost/startall"],
+            timeout=GUEST_STARTALL_TIMEOUT)
+    except (RuntimeError, subprocess.TimeoutExpired) as error:
+        state["guest_start_recovery"] = {
+            "status": "UNKNOWN", "started_at": state["guest_start_recovery"]["started_at"],
+            "boot_id": boot_id, "failed_at": time.time(), "error_type": type(error).__name__}
+        write_json(STATE, state)
+        raise RuntimeError("guest start outcome is unknown; inspect PVE state and do not retry automatically") from error
+    state["guest_start_recovery"] = {
+        "status": "COMPLETED", "started_at": state["guest_start_recovery"]["started_at"],
+        "boot_id": boot_id, "completed_at": time.time()}
+    write_json(STATE, state)
+
+
+def validate_startup_wait(mode, seconds, installed, systemd_invocation):
+    assert seconds >= 0
+    if seconds:
+        assert mode == "reconcile" and seconds <= 120 and installed and systemd_invocation, \
+            "startup wait is only for the installed boot reconcile"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", nargs="?", default="check", choices=("check", "prepare", "activate", "reconcile", "status", "selfcheck", "commit", "rollback"))
+    parser.add_argument("mode", nargs="?", default="check", choices=("check", "prepare", "activate", "reconcile", "start-guests", "status", "selfcheck", "commit", "rollback"))
     default_config = CONFIG if Path(__file__).parent == RUNTIME else Path(__file__).parents[1] / "hosts/production/network.json"
     parser.add_argument("--config", type=Path, default=default_config)
     parser.add_argument("--backup-dir", type=Path)
@@ -459,7 +601,11 @@ def main():
     parser.add_argument("--operation-id")
     parser.add_argument("--proof", type=Path)
     parser.add_argument("--rollback-seconds", type=int, default=300)
+    parser.add_argument("--startup-wait-seconds", type=int, default=0)
     args = parser.parse_args()
+    validate_startup_wait(args.mode, args.startup_wait_seconds,
+                          Path(__file__).resolve().parent == RUNTIME,
+                          bool(os.environ.get("INVOCATION_ID")))
     assert os.geteuid() == 0, "root is required"
     os.umask(0o077)
     lock_file = None
@@ -561,12 +707,23 @@ def main():
         if args.mode == "activate":
             assert state["pending"], "initial activation is already committed"
             assert run(["systemctl", "is-active", TIMER + ".timer"], check=False).returncode == 0, "rollback timer is not armed"
+        startup_readiness = None
+        if args.startup_wait_seconds:
+            assert state["phase"] == "active" and not state["pending"], \
+                "boot reconcile requires a committed active network"
+            startup_readiness = wait_for_startup_readiness(
+                    config, node, state, args.startup_wait_seconds)
         reconcile(config, node, state)
         if args.mode == "activate":
             install_boot_unit()
         state["phase"] = "active"
+        if startup_readiness is not None:
+            state["startup_readiness"] = startup_readiness
         write_json(STATE, state)
         local_checks(config, node, state)
+    elif args.mode == "start-guests":
+        assert state, "node is not prepared"
+        start_guests(config, node, state)
     elif args.mode == "commit":
         assert state and state["phase"] == "active" and args.proof
         proof = json.loads(args.proof.read_text())

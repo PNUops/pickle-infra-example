@@ -10,7 +10,7 @@ import sys
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS / "lib"))
@@ -38,6 +38,255 @@ def load_script(name):
 
 
 class ProductionNetworkTests(unittest.TestCase):
+    def test_boot_readiness_waits_for_typed_absences_without_reconciling(self):
+        module = load_script('production-network')
+        now = [0.0]
+        with patch.object(module, 'reconcile_readiness', side_effect=[
+                module.ClusterQuorumNotReady('quorum'), module.MeshNotReady('mesh'),
+                (False, (0x1bd20, 0xffffffff, 0x80000000))]) as readiness, \
+             patch.object(module, 'reconcile') as reconcile, \
+             patch.object(module.time, 'monotonic', side_effect=lambda: now[0]), \
+             patch.object(module.time, 'sleep', side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)):
+            result = module.wait_for_startup_readiness(CONFIG, 'pve-a', {}, 5)
+        self.assertEqual(result, {'attempts': 3, 'elapsed_seconds': 2.0})
+        self.assertEqual(readiness.call_count, 3)
+        reconcile.assert_not_called()
+
+    def test_boot_readiness_times_out_each_typed_absence(self):
+        module = load_script('production-network')
+        for error in (module.ClusterQuorumNotReady('quorum'), module.MeshNotReady('mesh'),
+                      NetBirdMarkNotReady('marks'), module.GuestFirewallNotReady('firewall')):
+            now = [0.0]
+            with self.subTest(error=error), patch.object(module, 'reconcile_readiness', side_effect=error), \
+                 patch.object(module.time, 'monotonic', side_effect=lambda: now[0]), \
+                 patch.object(module.time, 'sleep', side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)):
+                with self.assertRaisesRegex(RuntimeError, 'after 2 attempts in 2.000s'):
+                    module.wait_for_startup_readiness(CONFIG, 'pve-a', {}, 2)
+
+    def test_boot_readiness_rejects_fatal_layout_and_command_errors_immediately(self):
+        module = load_script('production-network')
+        for error in (AssertionError('unexpected cluster identity'),
+                      AssertionError('unexpected VXLAN remote peer'),
+                      RuntimeError('iptables failed')):
+            with self.subTest(error=error), \
+                 patch.object(module, 'reconcile_readiness', side_effect=error), \
+                 patch.object(module.time, 'sleep') as sleep:
+                with self.assertRaises(type(error)):
+                    module.wait_for_startup_readiness(CONFIG, 'pve-a', {}, 120)
+                sleep.assert_not_called()
+
+    def test_boot_readiness_does_not_accept_completion_at_deadline(self):
+        module = load_script('production-network')
+        now = [0.0]
+
+        def late_success(*_args):
+            now[0] = 2.0
+            return False, (0x1bd20, 0xffffffff, 0x80000000)
+
+        with patch.object(module, 'reconcile_readiness', side_effect=late_success), \
+             patch.object(module.time, 'monotonic', side_effect=lambda: now[0]), \
+             patch.object(module.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError, 'after 1 attempts in 2.000s'):
+                module.wait_for_startup_readiness(CONFIG, 'pve-a', {}, 2)
+        sleep.assert_not_called()
+
+    def test_reconcile_revalidates_before_any_mutation(self):
+        module = load_script('production-network')
+        with patch.object(module, 'reconcile_readiness',
+                          side_effect=AssertionError('baseline changed')), \
+             patch.object(module, 'install_chains') as install, \
+             patch.object(module, 'sysctl') as sysctl:
+            with self.assertRaisesRegex(AssertionError, 'baseline changed'):
+                module.reconcile(CONFIG, 'pve-a', {})
+        install.assert_not_called()
+        sysctl.assert_not_called()
+
+    def test_guest_firewall_absence_retries_only_after_explicit_legacy_enable(self):
+        module = load_script('production-network')
+        with patch.object(module, 'api', return_value=[{'id': 'qemu/100'}]), \
+             patch.object(module.Path, 'read_text', return_value='[OPTIONS]\nenable: 1\n'), \
+             patch.object(module, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')):
+            with self.assertRaises(module.GuestFirewallNotReady):
+                module.guest_firewall_check()
+        with patch.object(module, 'api', return_value=[{'id': 'qemu/100'}]), \
+             patch.object(module.Path, 'read_text', return_value='[OPTIONS]\nenable: 1\n'), \
+             patch.object(module, 'run', side_effect=RuntimeError('iptables failed')):
+            with self.assertRaisesRegex(RuntimeError, 'iptables failed'):
+                module.guest_firewall_check()
+        with patch.object(module, 'api', return_value=[{'id': 'qemu/100'}]), \
+             patch.object(module.Path, 'read_text', return_value='[OPTIONS]\nenable: 0\n'), \
+             patch.object(module, 'run') as run:
+            with self.assertRaisesRegex(AssertionError, 'not enabled'):
+                module.guest_firewall_check()
+        run.assert_not_called()
+
+    def test_cluster_wait_classifies_only_expected_identity_without_quorum(self):
+        module = load_script('production-network')
+        rows = [{'type': 'cluster', 'name': CONFIG['cluster'], 'quorate': 0},
+                *[{'type': 'node', 'name': name} for name in CONFIG['nodes']]]
+
+        def cluster_api(status_rows, ha=None, options=None):
+            def fake(path, *_args):
+                if path == '/cluster/status':
+                    return status_rows
+                if path == '/cluster/ha/resources':
+                    return [] if ha is None else ha
+                return {} if options is None else options
+            return fake
+
+        with patch.object(module, 'api', side_effect=cluster_api(rows)):
+            with self.assertRaises(module.ClusterQuorumNotReady):
+                module.cluster_check(CONFIG)
+        wrong = copy.deepcopy(rows)
+        wrong[0]['name'] = 'other-cluster'
+        with patch.object(module, 'api', side_effect=cluster_api(wrong)):
+            with self.assertRaisesRegex(AssertionError, 'cluster identity'):
+                module.cluster_check(CONFIG)
+        wrong_members = copy.deepcopy(rows[:-1])
+        with patch.object(module, 'api', side_effect=cluster_api(wrong_members)):
+            with self.assertRaisesRegex(AssertionError, 'cluster membership'):
+                module.cluster_check(CONFIG)
+        with patch.object(module, 'api', side_effect=cluster_api(rows, ha=[{'vmid': 100}])):
+            with self.assertRaisesRegex(AssertionError, 'HA resources'):
+                module.cluster_check(CONFIG)
+
+        ready = copy.deepcopy(rows)
+        ready[0]['quorate'] = 1
+        with patch.object(module, 'api', side_effect=cluster_api(ready, options={})):
+            module.cluster_check(CONFIG)
+        for invalid in (None, True, '0', 1.0):
+            with self.subTest(invalid=invalid), \
+                 patch.object(module, 'api', side_effect=cluster_api(
+                         ready, options={'nftables': invalid})):
+                with self.assertRaisesRegex(AssertionError, 'nftables backend'):
+                    module.cluster_check(CONFIG)
+
+    def test_start_guests_is_guarded_and_never_uses_the_vendor_unit(self):
+        module = load_script('production-network')
+        state = {'phase': 'active', 'pending': False,
+                 'guest_start_recovery': {'status': 'COMPLETED', 'boot_id': 'old-boot'}}
+        calls = []
+        timeouts = []
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            timeouts.append(kwargs.get('timeout'))
+            stdout = ('ActiveState=inactive\nExecMainStartTimestampMonotonic=0\n'
+                      if argv[:2] == ['systemctl', 'show'] else '')
+            return subprocess.CompletedProcess(argv, 0, stdout, '')
+        with patch.object(module, 'reconcile_readiness', side_effect=lambda *_: calls.append('ready')), \
+             patch.object(module, 'validate_current', side_effect=lambda *_: calls.append('current')), \
+             patch.object(module, 'local_checks', side_effect=lambda *_: calls.append('local')), \
+             patch.object(module, 'run', side_effect=fake_run), \
+             patch.object(module, 'write_json'), patch.object(module, 'current_boot_id', return_value='new-boot'), \
+             patch.object(module.time, 'time', side_effect=[10, 11]):
+            module.start_guests(CONFIG, 'pve-a', state)
+        self.assertEqual(calls[:3], ['ready', 'current', 'local'])
+        self.assertEqual(calls[3:], [
+            ['/usr/share/pve-manager/helpers/pve-startall-delay'],
+            'ready', 'current', 'local',
+            ['systemctl', 'show', 'pve-guests.service', '-p', 'ActiveState',
+             '-p', 'ExecMainStartTimestampMonotonic'],
+            ['pvesh', '--nooutput', 'create', '/nodes/localhost/startall']])
+        self.assertFalse(any(isinstance(call, list) and 'start' in call for call in calls))
+        self.assertEqual([timeout for timeout in timeouts if timeout is not None],
+                         [module.GUEST_START_DELAY_TIMEOUT, module.GUEST_STARTALL_TIMEOUT])
+        self.assertEqual(state['guest_start_recovery']['status'], 'COMPLETED')
+        self.assertEqual(state['guest_start_recovery']['boot_id'], 'new-boot')
+
+    def test_start_guests_refuses_uncommitted_or_failed_validation(self):
+        module = load_script('production-network')
+        for state, failure in (({'phase': 'active', 'pending': True}, None),
+                               ({'phase': 'active', 'pending': False}, AssertionError('invalid'))):
+            with self.subTest(state=state), \
+                 patch.object(module, 'reconcile_readiness', side_effect=failure), \
+                 patch.object(module, 'current_boot_id', return_value='boot'), \
+                 patch.object(module, 'run') as run:
+                with self.assertRaises(AssertionError):
+                    module.start_guests(CONFIG, 'pve-a', state)
+                run.assert_not_called()
+
+        with patch.object(module, 'reconcile_readiness'), \
+             patch.object(module, 'validate_current'), patch.object(module, 'local_checks'), \
+             patch.object(module, 'current_boot_id', return_value='boot'), \
+             patch.object(module, 'run', return_value=subprocess.CompletedProcess(
+                     [], 0, 'ActiveState=active\nExecMainStartTimestampMonotonic=42\n', '')) as run:
+            with self.assertRaisesRegex(AssertionError, 'was not skipped'):
+                module.start_guests(CONFIG, 'pve-a', {'phase': 'active', 'pending': False})
+        self.assertEqual(run.call_count, 2)
+
+        for previous in ({'status': 'COMPLETED', 'boot_id': 'boot'},
+                         {'status': 'STARTING', 'boot_id': 'older'},
+                         {'status': 'UNKNOWN', 'boot_id': 'older'},
+                         {'status': 'COMPLETED'}):
+            state = {'phase': 'active', 'pending': False, 'guest_start_recovery': previous}
+            with self.subTest(previous=previous), \
+                 patch.object(module, 'current_boot_id', return_value='boot'), \
+                 patch.object(module, 'run') as run:
+                with self.assertRaises(AssertionError):
+                    module.start_guests(CONFIG, 'pve-a', state)
+                run.assert_not_called()
+
+    def test_start_guests_revalidates_after_delay_before_starting(self):
+        module = load_script('production-network')
+        state = {'phase': 'active', 'pending': False}
+        with patch.object(module, 'current_boot_id', return_value='boot'), \
+             patch.object(module, 'reconcile_readiness', side_effect=[None, AssertionError('stale')]), \
+             patch.object(module, 'validate_current'), patch.object(module, 'local_checks'), \
+             patch.object(module, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run, \
+             patch.object(module, 'write_json') as write:
+            with self.assertRaisesRegex(AssertionError, 'stale'):
+                module.start_guests(CONFIG, 'pve-a', state)
+        self.assertEqual(run.call_args_list, [
+            call(['/usr/share/pve-manager/helpers/pve-startall-delay'],
+                 timeout=module.GUEST_START_DELAY_TIMEOUT)])
+        write.assert_not_called()
+        self.assertNotIn('guest_start_recovery', state)
+
+    def test_start_guests_records_unknown_outcome_and_blocks_retry(self):
+        module = load_script('production-network')
+        state = {'phase': 'active', 'pending': False}
+        results = [
+            subprocess.CompletedProcess([], 0, '', ''),
+            subprocess.CompletedProcess([], 0,
+                'ActiveState=inactive\nExecMainStartTimestampMonotonic=0\n', ''),
+            subprocess.TimeoutExpired('pvesh', module.GUEST_STARTALL_TIMEOUT),
+        ]
+        with patch.object(module, 'reconcile_readiness'), patch.object(module, 'validate_current'), \
+             patch.object(module, 'local_checks'), patch.object(module, 'run', side_effect=results), \
+             patch.object(module, 'current_boot_id', return_value='boot'), \
+             patch.object(module, 'write_json') as write, \
+             patch.object(module.time, 'time', side_effect=[10, 11]):
+            with self.assertRaisesRegex(RuntimeError, 'outcome is unknown'):
+                module.start_guests(CONFIG, 'pve-a', state)
+        self.assertEqual(state['guest_start_recovery']['status'], 'UNKNOWN')
+        self.assertEqual(write.call_count, 2)
+        with patch.object(module, 'run') as run:
+            with patch.object(module, 'current_boot_id', return_value='other-boot'), \
+                 self.assertRaisesRegex(AssertionError, 'needs operator investigation'):
+                module.start_guests(CONFIG, 'pve-a', state)
+        run.assert_not_called()
+
+    def test_boot_unit_holds_guest_dependency_with_bounded_headroom(self):
+        module = load_script('production-network')
+        text = (SCRIPTS / 'production-network.py').read_text()
+        self.assertIn('Before=pve-guests.service', text)
+        self.assertIn('Requires=' + module.UNIT, text)
+        self.assertIn('After=' + module.UNIT, text)
+        self.assertIn('TimeoutStartSec=180s', text)
+        self.assertIn('--startup-wait-seconds 120 --apply', text)
+        self.assertNotIn('Upholds=', text)
+        self.assertNotIn('systemctl", "start", "pve-guests', text)
+
+    def test_startup_wait_is_boot_reconcile_only_and_defaults_to_immediate(self):
+        module = load_script('production-network')
+        module.validate_startup_wait('reconcile', 0, False, False)
+        module.validate_startup_wait('reconcile', 120, True, True)
+        for values in (('activate', 120, True, True), ('reconcile', 121, True, True),
+                       ('reconcile', 120, False, True), ('reconcile', 120, True, False),
+                       ('reconcile', -1, True, True)):
+            with self.subTest(values=values), self.assertRaises(AssertionError):
+                module.validate_startup_wait(*values)
+
     def test_mark_parser_distinguishes_only_transient_empty_rules(self):
         with self.assertRaises(NetBirdMarkNotReady):
             parse_netbird_accept_mark('', MANGLE, PVE_SOURCE)

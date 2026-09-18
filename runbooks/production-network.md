@@ -150,11 +150,34 @@ network-online, NetBird, pve-cluster와 pve-firewall 뒤에 실행하고 guest �
 VNet의 if-up hook은 같은 service를 비동기로 재시작한다. 생성된 SDN interface 파일에
 host IP를 덧붙이는 방식을 쓰지 않는다.
 
-부팅 시 quorum이나 NetBird 연결이 아직 준비되지 않았으면 network service는 실패하고
-10초 뒤 재시도한다. Dependency 실패로 이미 중단된 guest 시작은 자동 복구됐다고
-가정하지 않는다. 운영자가 network 상태와 PVE firewall을 확인한 뒤 `pve-guests.service`를
-다시 시작한다. PVE firewall을 중지하거나 bridge netfilter를 끈 상태에서는 guest 정책을
-검증했다고 볼 수 없으며 신규 guest 시작과 운영 검증을 중단한다.
+부팅 unit의 reconcile은 최대 120초 동안 quorum과 mesh link/route/FDB, NetBird mark와
+필요한 legacy PVE firewall chain이 준비되기를 기다린다. 기다리는 동안에는 rule, 주소,
+sysctl과 state를 쓰지 않는다. 예상 cluster 신원·구성·owner·기존 link/route/mark layout이
+다르거나 명령 자체가 실패하면 기다리지 않고 즉시 중단한다. 준비 판정 뒤 실제 쓰기 직전에
+같은 검사를 다시 한다. 180초 unit timeout은 적용 작업을 위한 여유를 남긴다.
+
+Network unit의 첫 실행이 실패하면 `pve-guests.service`의 dependency job도 실패하고,
+network unit의 뒤늦은 재시작 성공이 그 job을 다시 실행하지 않는다. Vendor unit은
+`RefuseManualStart=true`이므로 `systemctl start pve-guests`를 복구 절차로 사용하지 않는다.
+
+Bounded wait가 끝나거나 fatal 검사가 실패하면 guest 자동 시작은 중단된 채로 둔다. 이후
+network가 정상이어도 자동으로 guest를 시작하지 않는다. 운영자가 원래 owner를 fence하고
+복구 실행 주체가 하나임을 확인한 뒤 다음 명시 경로를 사용한다.
+
+```bash
+bash /usr/local/libexec/example-production-network/apply-production-network.sh \
+  start-guests --config /etc/pickle/production-network.json --apply
+```
+
+이 경로는 committed active state(`pending=false`), 현재 owner와 baseline hash, quorum,
+mesh/mark, PVE firewall, guard와 관리 HTTPS를 같은 lock 안에서 다시 확인한 뒤 vendor delay
+helper와 `pvesh --nooutput create /nodes/localhost/startall`을 실행한다. Boot reconcile과 if-up
+hook은 이 경로를 호출하지 않는다. PVE firewall을 중지하거나 bridge netfilter를 끈 상태에서는
+guest 정책을 검증했다고 볼 수 없으며 신규 guest 시작과 운영 검증을 중단한다.
+Delay helper는 최대 120초, startall은 최대 600초 기다린다. Startall을 호출하기 직전에
+state에 `STARTING`을 기록하고 성공하면 `COMPLETED`로 바꾼다. Timeout이나 오류 뒤에는 일부
+guest가 이미 시작됐을 수 있으므로 `UNKNOWN`을 남기고 자동 재시도를 거부한다. PVE task와
+각 VM 상태를 확인해 결과를 판정하기 전에는 state를 지우거나 명령을 다시 실행하지 않는다.
 
 Gateway owner 기록은 `/etc/pve/priv/example-production-network-owner.json`이다.
 일반 부팅은 이 기록과 현재 quorum을 확인하고 해당 owner만 주소와 SNAT를 갖는다.
@@ -169,6 +192,10 @@ PVE 9.2.11의 `pvesh get /cluster/firewall/options`가 `unknown schema type`으�
 `libpve-common-perl 9.2.1`의 CLI schema compiler가 `get_options`의
 parameters schema에 `properties`가 없는 경우를 처리하지 못한 것으로 확인됐다.
 Node options GET은 정상이다.
+
+Node options의 `nftables`는 optional boolean이며 schema default는 `0`이다. 따라서 키 부재만
+legacy backend의 default 0으로 허용한다. 명시적 null, true, 문자열과 다른 값은 거부한다.
+`pve-firewall`과 `proxmox-firewall` service가 둘 다 active인 것은 backend 판정의 증거가 아니다.
 
 root가 직접 읽기 전용으로 다음 getter를 실행해 실제 옵션 읽기 경로를 확인할 수 있다.
 
