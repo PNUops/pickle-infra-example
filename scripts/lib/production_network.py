@@ -49,6 +49,20 @@ def validate_config(config):
     assert len({v["vni"] for v in config["vnets"].values()}) == 2
     for value in config["service_sources"].values():
         ipaddress.IPv4Address(value)
+    if "backup_service" in config:
+        backup = config["backup_service"]
+        assert isinstance(backup, dict) and set(backup) == {"source", "destination", "port"}
+        source = ipaddress.IPv4Address(backup["source"])
+        destination = ipaddress.IPv4Address(backup["destination"])
+        assert type(backup["port"]) is int and backup["port"] == 8007
+        networks = [ipaddress.IPv4Network(vnet["cidr"]) for vnet in config["vnets"].values()]
+        infra = ipaddress.IPv4Network(config["vnets"]["pinfra"]["cidr"])
+        assert source in infra and source not in (infra.network_address, infra.broadcast_address)
+        assert source != ipaddress.IPv4Address(config["vnets"]["pinfra"]["gateway"])
+        assert all(destination not in network for network in networks)
+        host_addresses = {ipaddress.IPv4Address(value) for node in config["nodes"].values()
+                          for key, value in node.items() if key in ("campus", "mesh", "bmc_address") and value}
+        assert destination not in host_addresses
     return config
 
 
@@ -151,6 +165,17 @@ def firewall_plan(config, node_name, accept_mark, active):
     v4["forward"].append(["-i", "pguest", "-o", "pinfra", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"])
     for source in ("proxy", "sshgw", "relay"):
         v4["forward"].append(["-i", "pinfra", "-o", "pguest", "-s", config["service_sources"][source], "-j", "RETURN"])
+    backup = config.get("backup_service")
+    if active and backup is not None:
+        v4["forward"] += [
+            ["-i", "pinfra", "-o", mesh, "-s", backup["source"], "-d", backup["destination"],
+             "-p", "tcp", "--dport", str(backup["port"]), "-j", "RETURN"],
+            ["-i", mesh, "-o", "pinfra", "-s", backup["destination"], "-d", backup["source"],
+             "-p", "tcp", "--sport", str(backup["port"]), "-m", "conntrack", "--ctstate",
+             "ESTABLISHED,RELATED", "-j", "RETURN"],
+        ]
+        v4["nat"].append(["-s", backup["source"], "-d", backup["destination"], "-o", mesh,
+                           "-p", "tcp", "--dport", str(backup["port"]), "-j", "MASQUERADE"])
     for family in (v4, v6):
         for name in config["vnets"]:
             family["forward"] += [["-i", name, "-j", "DROP"], ["-o", name, "-j", "DROP"]]
@@ -178,6 +203,9 @@ def nft_filter_rule(rule, family):
         elif option in ("--dport", "--dports"):
             assert protocol in ("tcp", "udp")
             words += [protocol, "dport", "{ " + ", ".join(value.split(",")) + " }"]
+        elif option == "--sport":
+            assert protocol in ("tcp", "udp")
+            words += [protocol, "sport", "{ " + ", ".join(value.split(",")) + " }"]
         elif option == "--icmp-type":
             assert protocol == "icmp" and value == "echo-request"
             words += ["icmp type", "echo-request"]

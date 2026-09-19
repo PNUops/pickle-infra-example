@@ -14,7 +14,7 @@ from unittest.mock import call, patch
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS / "lib"))
-from production_network import NetBirdMarkNotReady, firewall_plan, nft_guard_text, parse_netbird_accept_mark, validate_config, validate_sdn_inventory
+from production_network import NetBirdMarkNotReady, firewall_plan, nft_filter_rule, nft_guard_text, parse_netbird_accept_mark, validate_config, validate_sdn_inventory
 
 CONFIG = {
     "schema": 1, "cluster": "example-prod", "zone": "prodvx", "gateway_owner": "pve-a",
@@ -551,6 +551,64 @@ class ProductionNetworkTests(unittest.TestCase):
         self.assertEqual(plan['iptables']['nat'], [])
         self.assertNotIn(['-i', 'pguest', '-o', 'vmbr0', '-j', 'RETURN'], plan['iptables']['forward'])
         self.assertIn(['-i', 'pguest', '-o', 'pguest', '-j', 'RETURN'], plan['iptables']['forward'])
+
+    def test_active_owner_allows_only_configured_pbs_backup_tuple(self):
+        config = copy.deepcopy(CONFIG)
+        config['backup_service'] = {'source': '100.65.1.21', 'destination': '203.0.113.40', 'port': 8007}
+        validate_config(config)
+        plan = firewall_plan(config, 'pve-a', (0x1bd20, 0xffffffff, 0x80000000), True)
+        forward = plan['iptables']['forward']
+        nat = plan['iptables']['nat']
+        self.assertIn(['-i', 'pinfra', '-o', 'wt0', '-s', '100.65.1.21', '-d', '203.0.113.40',
+                       '-p', 'tcp', '--dport', '8007', '-j', 'RETURN'], forward)
+        self.assertIn(['-i', 'wt0', '-o', 'pinfra', '-s', '203.0.113.40', '-d', '100.65.1.21',
+                       '-p', 'tcp', '--sport', '8007', '-m', 'conntrack', '--ctstate',
+                       'ESTABLISHED,RELATED', '-j', 'RETURN'], forward)
+        self.assertIn(['-s', '100.65.1.21', '-d', '203.0.113.40', '-o', 'wt0', '-p', 'tcp',
+                       '--dport', '8007', '-j', 'MASQUERADE'], nat)
+        self.assertIn('tcp sport { 8007 }', nft_filter_rule(
+            ['-i', 'wt0', '-o', 'pinfra', '-s', '203.0.113.40', '-d', '100.65.1.21',
+             '-p', 'tcp', '--sport', '8007', '-m', 'conntrack', '--ctstate',
+             'ESTABLISHED,RELATED', '-j', 'RETURN'], 'ipv4'))
+
+    def test_standby_has_no_pbs_backup_forward_or_nat(self):
+        config = copy.deepcopy(CONFIG)
+        config['backup_service'] = {'source': '198.18.1.21', 'destination': '203.0.113.40', 'port': 8007}
+        plan = firewall_plan(config, 'pve-b', (0x1bd20, 0xffffffff, 0x80000000), False)
+        self.assertFalse(any('203.0.113.40' in rule or '8007' in rule for rule in plan['iptables']['forward']))
+        self.assertFalse(any('203.0.113.40' in rule or '8007' in rule for rule in plan['iptables']['nat']))
+
+    def test_pbs_backup_config_rejects_wrong_source_destination_port_or_shape(self):
+        source = '100.65.1.21'
+        guest_destination = '100.66.1.40'
+        for backup in ({'source': '203.0.113.21', 'destination': '203.0.113.40', 'port': 8007},
+                       {'source': source, 'destination': guest_destination, 'port': 8007},
+                       {'source': source, 'destination': '192.0.2.30', 'port': 8007},
+                       {'source': source, 'destination': '203.0.113.40', 'port': 5432},
+                       {'source': source, 'destination': '203.0.113.40', 'port': 8007, 'extra': True}):
+            with self.subTest(backup=backup):
+                config = copy.deepcopy(CONFIG)
+                config['backup_service'] = backup
+                with self.assertRaises(AssertionError):
+                    validate_config(config)
+
+    def test_absent_backup_config_preserves_baseline_plan_hash(self):
+        plan = firewall_plan(CONFIG, 'pve-a', (0x1bd20, 0xffffffff, 0x80000000), True)
+        self.assertEqual(__import__('hashlib').sha256(
+            __import__('json').dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
+            '2b7586f79463c137f36843be6c8249b2698f83a74b0a51868cda991df9059fce')
+        config = copy.deepcopy(CONFIG)
+        config['backup_service'] = None
+        with self.assertRaises(AssertionError):
+            validate_config(config)
+
+    def test_backup_source_cannot_be_pinfra_boundary_or_gateway(self):
+        for source in ('100.65.0.0', '100.65.255.255', '100.65.0.1'):
+            with self.subTest(source=source):
+                config = copy.deepcopy(CONFIG)
+                config['backup_service'] = {'source': source, 'destination': '203.0.113.40', 'port': 8007}
+                with self.assertRaises(AssertionError):
+                    validate_config(config)
 
     def test_bmc_guard_precedes_all_forward_permissions(self):
         plan = firewall_plan(CONFIG, 'pve-a', (0x1bd20, 0xffffffff, 0x80000000), True)
