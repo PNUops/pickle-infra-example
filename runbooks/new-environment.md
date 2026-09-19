@@ -147,6 +147,8 @@ vault 가 잠긴 채로는 5단계에 설치할 비밀이 없고 `deploy-relay.s
 
 ### 4. api용 Proxmox API 계정
 
+새 서비스 principal의 권한 분리와 token custody 절차는 [Proxmox API principal 런북](proxmox-api-principal.md)을 따릅니다. 이 문서는 새 전체 환경의 pve1 구축 순서와 별도로 읽습니다.
+
 api는 전용 사용자와 API 토큰으로 Proxmox에 인증하고, 커스텀 역할 하나와 ACL 네 건이 그것을
 인가한다. 이것들을 만드는 커밋된 절차는 없었고 토큰 *교체*만 적혀 있다
 (비밀 교체 런북(비공개 레포) §2b). 아래 순서는 라이브 계정을 `pveum`으로 다시

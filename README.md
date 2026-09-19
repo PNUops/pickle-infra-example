@@ -173,7 +173,7 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 `node-registration.md`는 Proxmox 노드 단독 등록과 core·복구 용량 예약,
 활성화 전 검증을 설명합니다.
 
-이 예시본에는 `new-environment.md`(신규 환경 관통 구축 순서 — 환경별로 바꿀 값 표와
+이 예시본에는 `proxmox-api-principal.md`(Proxmox API 서비스 principal 권한 분리와 token custody), `new-environment.md`(신규 환경 관통 구축 순서 — 환경별로 바꿀 값 표와
 사람만 할 수 있는 단계·절차가 없는 지점 명시), `node-intake.md`(비Proxmox 노드 편입 절차 —
 실측 체크리스트, 운영자 접속 키 설치, 대역외 관리 평면 점검), `drift-resolution.md`(DB와
 하이퍼바이저 상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원),
