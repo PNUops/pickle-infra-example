@@ -98,7 +98,7 @@ runbooks/         운영 절차                                    // 이 예시
 
 | 분류 | 스크립트 |
 |---|---|
-| 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh`, `bootstrap-isolated-core.sh` |
+| 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh`, `bootstrap-isolated-core.sh`, `bootstrap-isolated-services.sh` |
 | 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 예약 용량 기록) |
 | 전용 관리 계정 | `provision-operator-access.py`, `revoke-operator-access.py` (기본 사전 검사, 새 pickle 계정에 비밀번호 없는 전체 root sudo 권한 등록 및 회수) |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
@@ -179,7 +179,8 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 하이퍼바이저 상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원),
 `inventory-readiness.md`(IP pool 한 건 등록과 MAINTENANCE 노드의 VM 방화벽 opt-in 준비),
 `template-replication.md`(중지 VM template의 검증된 VMA archive 복제와 실패 정리),
-`isolated-core-bootstrap.md`(새 API/콘솔과 별도 DB LXC의 private TLS 연결 및 기동 제한), `pbs-egress.md`(DB LXC의 PBS TCP 8007 egress와 state-guarded 재적용),
+`isolated-core-bootstrap.md`(새 API/콘솔과 별도 DB LXC의 private TLS 연결 및 기동 제한),
+`isolated-service-core.md`(새 후보 proxy/SSH gateway LXC의 방화벽 우선 준비와 서비스 정지 인계), `pbs-egress.md`(DB LXC의 PBS TCP 8007 egress와 state-guarded 재적용),
 `db-pbs-backup.md`(플랫폼 DB의 암호화 PBS 백업, 독립 복구점 감시 및 같은 서비스의 수동 복원),
 `gpu-node-vllm.md`(GPU 노드 vLLM 서빙 운영 — 시작·종료, 모델·플래그 교체와 롤백, 장애
 복구, 재부팅), `proxmox-node-intake.md`(Proxmox 노드 후보 인수 절차 초안 — 초기화 전
@@ -206,7 +207,9 @@ scripts/verify.sh        # shellcheck, 설정 초기화, core, DB 백업, SDN, q
 픽스처로 스크립트를 두 번 실행해 기존 설정값과 수정 시각이 유지되는지 검사합니다.
 PostgreSQL의 타입 검사와 실제 컨테이너 연결은 이 테스트의 범위에 포함하지 않습니다.
 격리 core 테스트는 Python 3 표준 라이브러리로 입력 검증과 기존 자원 보호, TLS 및
-서비스 기동 조건을 확인합니다. 실제 PVE 호스트에 접속하거나 컨테이너를 만들지 않습니다.
+서비스 기동 조건을 확인합니다. 후보 서비스 core 테스트는 candidate token 분리, 닫힌 포트,
+onboot 0, artifact checksum readback과 firewall/network/service 순서를 확인합니다. 둘 다 실제
+PVE 호스트에 접속하거나 컨테이너를 만들지 않습니다.
 DB 백업 테스트는 PBS 응답을 대신하는 메모리 객체로 snapshot 누락, 복원 대조 실패,
 조회 지연과 알림 재시도를 확인합니다. 실제 DB/PBS/SMTP 접속과 서비스 복구는 별도 시험입니다.
 
