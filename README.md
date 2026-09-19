@@ -178,6 +178,7 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 실측 체크리스트, 운영자 접속 키 설치, 대역외 관리 평면 점검), `drift-resolution.md`(DB와
 하이퍼바이저 상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원),
 `inventory-readiness.md`(IP pool 한 건 등록과 MAINTENANCE 노드의 VM 방화벽 opt-in 준비),
+`template-replication.md`(중지 VM template의 검증된 VMA archive 복제와 실패 정리),
 `isolated-core-bootstrap.md`(새 API/콘솔과 별도 DB LXC의 private TLS 연결 및 기동 제한), `pbs-egress.md`(DB LXC의 PBS TCP 8007 egress와 state-guarded 재적용),
 `db-pbs-backup.md`(플랫폼 DB의 암호화 PBS 백업, 독립 복구점 감시 및 같은 서비스의 수동 복원),
 `gpu-node-vllm.md`(GPU 노드 vLLM 서빙 운영 — 시작·종료, 모델·플래그 교체와 롤백, 장애
