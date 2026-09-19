@@ -655,9 +655,16 @@ def notify(c: Config, report: dict, *, test=False, sender=send_mail) -> dict:
         prior = json.loads(path.read_text()) if path.exists() else {}
         now = int(time.time())
         attempts = 0
+        if not test and report.get('status') == 'HEALTHY':
+            if prior.get('delivery') == 'BASELINE' and prior.get('key') == key:
+                return prior
+            if not prior or prior.get('delivery') == 'BASELINE':
+                receipt = {'key': key, 'delivery': 'BASELINE', 'time': now, 'attempts': 0}
+                atomic_json(path, receipt)
+                return receipt
         if prior.get('key') == key:
             delivery = prior.get('delivery')
-            if delivery == 'SENT':
+            if delivery in ('BASELINE', 'SENT'):
                 return prior
             if test or delivery in ('ATTEMPTED', 'UNCERTAIN', 'RETRIES_EXHAUSTED'):
                 raise BackupError('Notification needs operator review; no automatic duplicate send')

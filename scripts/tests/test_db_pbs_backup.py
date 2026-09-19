@@ -351,6 +351,23 @@ class BackupWorkflowTest(unittest.TestCase):
             backup.notify(c, {'status': 'TEST', 'reason': 'test'}, test=True, sender=uncertain)
         self.assertEqual(sent.count('TEST'), 1)
 
+    def test_initial_healthy_notification_records_a_baseline_without_sending(self):
+        mail = self.root / 'mail.json'
+        backup.atomic_json(mail, {'enabled': True})
+        c = replace(self.c, mail_config_file=str(mail))
+        sent = []
+        def sender(_config, report, **kwargs):
+            sent.append(report['status'])
+            return True
+        healthy = {'status': 'HEALTHY', 'reason': 'VERIFIED_AND_REMOTE_AVAILABLE'}
+        self.assertEqual(backup.notify(c, healthy, sender=sender)['delivery'], 'BASELINE')
+        self.assertEqual(backup.notify(c, healthy, sender=sender)['delivery'], 'BASELINE')
+        self.assertEqual(backup.notify(c, {'status': 'HEALTHY', 'reason': 'REMOTE_PROBE_COMPLETE'}, sender=sender)['delivery'], 'BASELINE')
+        self.assertEqual(sent, [])
+        self.assertEqual(backup.notify(c, {'status': 'WARNING', 'reason': 'RECOVERY_POINT_AGING'}, sender=sender)['delivery'], 'SENT')
+        self.assertEqual(backup.notify(c, healthy, sender=sender)['delivery'], 'SENT')
+        self.assertEqual(sent, ['WARNING', 'HEALTHY'])
+
     def test_default_plan_never_reads_credentials_or_runs_a_backup(self):
         path = self.root / 'config.json'
         from dataclasses import asdict
