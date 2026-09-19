@@ -1,0 +1,13 @@
+{
+  "node": "pve-example",
+  "node_public_id": "20000000-0000-4000-8000-000000000001",
+  "api_host": "https://pve.example.invalid:8006",
+  "bridge": "guestbr0",
+  "storage": "local-lvm",
+  "bridge_mtu": 1370,
+  "capability_evidence_id": "vm-firewall-live-20260919",
+  "database": "pickle_example",
+  "database_hostname": "db-example",
+  "database_system_identifier": "7600000000000000001",
+  "database_socket_dir": "/var/run/postgresql"
+}

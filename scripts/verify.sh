@@ -13,6 +13,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_production_network.py
 python3 -B scripts/tests/test_qdevice_activation.py
 python3 -B scripts/tests/test_create_pbs_vm.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_node_registration.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_inventory_readiness.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_apply_os_catalog_guard.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_image_registration.py
 

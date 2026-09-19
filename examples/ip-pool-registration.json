@@ -1,0 +1,14 @@
+{
+  "name": "guest-private",
+  "cidr": "198.19.0.0/16",
+  "gateway": "198.19.0.1",
+  "dns": ["192.0.2.53", "198.51.100.53"],
+  "reserved_ranges": [
+    {"from": "198.19.0.1", "to": "198.19.0.31"}
+  ],
+  "database": "pickle_example",
+  "database_hostname": "db-example",
+  "database_system_identifier": "7600000000000000001",
+  "database_socket_dir": "/var/run/postgresql",
+  "existing_public_id": null
+}
