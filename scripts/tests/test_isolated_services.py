@@ -179,6 +179,132 @@ class IsolatedServicesTest(unittest.TestCase):
         with self.assertRaisesRegex(service.BootstrapError, 'Linux amd64'):
             service.require_linux_amd64_elf(bytes(elf), 'fixture')
 
+    def test_apt_source_endpoint_parser_is_strict_and_deduplicates(self):
+        plan = """Types: deb
+URIs: http://deb.example.org/debian https://security.example.org/debian-security
+Suites: stable stable-security
+
+deb [signed-by=/keyring] http://deb.example.org/debian stable main
+"""
+        self.assertEqual(service.apt_source_endpoints(plan), [
+            ('deb.example.org', 80), ('security.example.org', 443)])
+        for invalid in ('', 'URIs: ftp://mirror.example.org/debian\n',
+                        'deb http://user@example.org/debian stable main\n'):
+            with self.subTest(invalid=invalid), self.assertRaises(service.BootstrapError):
+                service.apt_source_endpoints(invalid)
+
+    def test_apt_deb822_continued_uris_are_all_preflighted(self):
+        source = """Types: deb deb-src
+URIs: http://deb.example.org/debian
+ https://security.example.org/debian-security
+Suites: stable
+Components: main
+"""
+        self.assertEqual(service.apt_source_endpoints(source), [
+            ('deb.example.org', 80), ('security.example.org', 443)])
+
+    def test_apt_disabled_deb822_stanza_is_not_preflighted(self):
+        source = """Types: deb
+URIs: http://disabled.example.org/debian
+Suites: stable
+Enabled: no
+
+Types: deb
+URIs: https://enabled.example.org/debian
+Suites: stable
+Enabled: yes
+"""
+        self.assertEqual(service.apt_source_endpoints(source), [
+            ('enabled.example.org', 443)])
+
+    def test_apt_update_promotes_every_index_error(self):
+        self.assertEqual(service.apt_update_command()[-2:], ['update', '--error-on=any'])
+
+    def test_apt_network_preflight_resolves_then_connects_by_ipv4(self):
+        runner = FakeRunner({
+            'APT source definitions':
+                'Types: deb\nURIs: http://deb.example.org/debian\nSuites: stable\n',
+            'APT endpoint deb.example.org:80 DNS resolution':
+                '192.0.2.40 STREAM deb.example.org\n192.0.2.40 DGRAM\n',
+        })
+        bootstrap = service.Bootstrap(config(), runner)
+        bootstrap.apt_network_preflight('proxy')
+        connect = next(args for args, kwargs in runner.calls
+                       if kwargs.get('label') == 'APT endpoint deb.example.org:80 TCP connect')
+        self.assertEqual(connect[-2:], ['192.0.2.40', '80'])
+
+    def test_failed_dns_preflight_stops_before_any_apt_mutation(self):
+        runner = FakeRunner({'APT source definitions':
+                             'Types: deb\nURIs: http://deb.example.org/debian\nSuites: stable\n'})
+        bootstrap = service.Bootstrap(config(), runner)
+        with self.assertRaises(service.BootstrapError):
+            bootstrap.packages_and_firewall('proxy')
+        self.assertFalse(any('systemd-run' in args for args, _ in runner.calls))
+        self.assertFalse(any(kwargs.get('label') == 'new owned guest file'
+                             for _, kwargs in runner.calls))
+
+    def test_transient_package_unit_owns_timeout_and_whole_process_group(self):
+        runner = FakeRunner({'fixture unit collision': 'not-found\n'})
+        bootstrap = service.Bootstrap(config(), runner)
+        with patch.object(bootstrap, 'owned'):
+            bootstrap.transient_package_command(
+                'proxy', 'fixture', 120, ['/usr/bin/true'], 'fixture')
+        command, kwargs = next((args, kwargs) for args, kwargs in runner.calls
+                               if 'systemd-run' in args)
+        unit = service.transient_unit_name(bootstrap.run_id, 'proxy', 'fixture')
+        self.assertIn('--unit=' + unit, command)
+        self.assertIn('--property=Type=exec', command)
+        self.assertIn('--property=RuntimeMaxSec=120s', command)
+        self.assertIn('--property=TimeoutStopSec=20s', command)
+        self.assertIn('--property=KillMode=control-group', command)
+        self.assertIn('--property=SendSIGKILL=yes', command)
+        self.assertIn('--property=UMask=0022', command)
+        self.assertNotIn('--pipe', command)
+        self.assertFalse(any('MemoryMax' in value for value in command))
+        self.assertEqual(kwargs['timeout'], 180)
+
+    def test_transient_unit_collision_never_stops_or_reuses_existing_unit(self):
+        runner = FakeRunner({'fixture unit collision': 'loaded\n'})
+        bootstrap = service.Bootstrap(config(), runner)
+        with patch.object(bootstrap, 'owned'):
+            with self.assertRaisesRegex(service.BootstrapError, 'already exists'):
+                bootstrap.transient_package_command(
+                    'proxy', 'fixture', 120, ['/usr/bin/true'], 'fixture')
+        self.assertFalse(any('systemd-run' in args for args, _ in runner.calls))
+        self.assertFalse(any('systemctl' in args and 'stop' in args
+                             for args, _ in runner.calls))
+
+    def test_package_flow_preflights_and_wraps_every_apt_mutation(self):
+        runner = FakeRunner({
+            'nginx signing key fingerprint':
+                f'fpr:::::::::{service.core.NGINX_SIGNING_FINGERPRINT}:\n',
+            'signed nginx candidate':
+                'Candidate: 1.30.5-1~trixie\n https://nginx.org/packages/debian\n',
+            'installed package receipt': 'nginx\t1.30.5-1~trixie\n',
+        })
+        bootstrap = service.Bootstrap(config(), runner)
+        events = []
+        with patch.object(bootstrap, 'apt_network_preflight',
+                          side_effect=lambda role: events.append(('preflight', role))), \
+                patch.object(bootstrap, 'endpoint_preflight',
+                             side_effect=lambda role, host, port, label:
+                             events.append(('endpoint', host, port))), \
+                patch.object(bootstrap, 'transient_package_command',
+                             side_effect=lambda role, phase, runtime, command, label:
+                             events.append(('apt', phase, command))), \
+                patch.object(bootstrap, 'put'), patch.object(bootstrap, 'save'):
+            bootstrap.packages_and_firewall('proxy')
+        phases = [event[1] for event in events if event[0] == 'apt']
+        self.assertEqual(phases, ['debian-index', 'debian-upgrade', 'debian-packages',
+                                  'nginx-index', 'nginx-package'])
+        self.assertEqual(events[0], ('preflight', 'proxy'))
+        self.assertLess(events.index(('endpoint', 'nginx.org', 443)),
+                        next(index for index, event in enumerate(events)
+                             if event[:2] == ('apt', 'nginx-index')))
+        for event in events:
+            if event[:2] in (('apt', 'debian-index'), ('apt', 'nginx-index')):
+                self.assertIn('--error-on=any', event[2])
+
     def test_firewalls_expose_only_candidate_control_ports(self):
         proxy = service.firewall(config(), 'proxy')
         sshgw = service.firewall(config(), 'sshgw')

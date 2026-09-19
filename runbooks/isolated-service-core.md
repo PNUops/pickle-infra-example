@@ -120,19 +120,35 @@ bash scripts/bootstrap-isolated-services.sh --config /root/<protected>/isolated-
 4. 새 unprivileged guest를 `onboot=0,start=0`으로 만들고 ownership description을 기록한 뒤
    시작한다.
 5. ifupdown/ifupdown2 hook parent를 검사하고 MTU hook을 설치한 뒤 live MTU를 readback한다.
-6. package autostart를 막은 상태에서 Debian update/upgrade와 fresh package install을 수행한다.
-   proxy nginx는 공식 nginx.org signing fingerprint와 exact candidate version을 검사한다.
-7. guest firewall syntax를 검사하고 firewall service를 먼저 활성화한다. networking과 각
+6. APT source URI에서 package endpoint를 뽑고 guest 안에서 각 hostname의 IPv4 DNS resolution과
+   TCP 연결을 10초씩 확인한다. 하나라도 확인되지 않으면 index나 package를 변경하기 전에
+   중단한다.
+7. package autostart를 막은 상태에서 Debian update/upgrade와 fresh package install을 수행한다.
+   update는 APT 3의 `--error-on=any`로 transient warning도 실패로 올린다. 각 package command는
+   run UUID, role, phase가 들어간 guest systemd transient service에서 실행한다. service는
+   `RuntimeMaxSec`, `TimeoutStopSec`, `KillMode=control-group`, `SendSIGKILL=yes`를 가져 host의
+   `pct exec` wait가 먼저 끊겨도 apt와 method child가 deadline 뒤 남지 않는다. `UMask=0022`를
+   명시해 private bootstrap state의 0077 umask가 package helper로 번지지 않게 한다. unit name이
+   이미 있으면 그 unit이나 다른 apt/dpkg process를 stop하지 않고 거부한다.
+8. proxy nginx는 별도로 공식 nginx.org endpoint, signing fingerprint와 exact candidate
+   version을 검사한다.
+9. guest firewall syntax를 검사하고 firewall service를 먼저 활성화한다. networking과 각
    application unit은 firewall을 `Requires`/`After`로 참조한다.
-8. artifact와 env를 no-overwrite 방식으로 설치하고 unit/nginx syntax를 검사한다.
-9. SSH upstream, terminal, sshpiperd host key를 guest에서 one-time/no-clobber 방식으로 만든다.
+10. artifact와 env를 no-overwrite 방식으로 설치하고 unit/nginx syntax를 검사한다.
+11. SSH upstream, terminal, sshpiperd host key를 guest에서 one-time/no-clobber 방식으로 만든다.
    private half는 guest 밖으로 내보내지 않는다.
-10. application service를 disabled/stopped로 확인하고 manifest를 완료한다.
+12. application service를 disabled/stopped로 확인하고 manifest를 완료한다.
 
 최초 provisioning의 APT 통신은 guest에 nftables package가 생기기 전이라 PVE/host의 기존
 infrastructure guard 아래에서 진행된다. 위 firewall → networking → service 순서는 package 설치
 이후의 cold boot와 application service 시작 순서를 뜻한다. 최초 APT 트래픽까지 guest nft가
 보호했다고 해석하지 않는다.
+
+Transient package unit의 stdout/stderr는 journal에 남는다. 이름은
+`pickle-isolated-services-<run UUID>-<role>-<phase>.service`이고 완료 뒤 collect된다. 실패 조사는
+같은 이름으로 journal을 읽으며, bootstrap은 기존 apt/dpkg process나 이름이 겹친 unit을 임의로
+종료하지 않는다. update 240초, upgrade 840초, install 540초 안에 끝나지 않으면 guest systemd가
+먼저 unit 전체를 종료하고, host wait timeout은 stop 시간과 40초 여유 뒤에 온다.
 
 실제 apply 명령과 configuration은 대상 host preflight 결과를 검토한 뒤 실행 기록에서 작성한다.
 이 런북은 특정 운영 node의 command line을 미리 고정하지 않는다.

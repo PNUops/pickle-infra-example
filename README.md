@@ -208,7 +208,8 @@ scripts/verify.sh        # shellcheck, 설정 초기화, core, DB 백업, SDN, q
 PostgreSQL의 타입 검사와 실제 컨테이너 연결은 이 테스트의 범위에 포함하지 않습니다.
 격리 core 테스트는 Python 3 표준 라이브러리로 입력 검증과 기존 자원 보호, TLS 및
 서비스 기동 조건을 확인합니다. 후보 서비스 core 테스트는 candidate token 분리, 닫힌 포트,
-onboot 0, artifact checksum readback과 firewall/network/service 순서를 확인합니다. 둘 다 실제
+onboot 0, artifact checksum readback, package endpoint 사전 검사와 guest transient unit의
+process-group timeout, firewall/network/service 순서를 확인합니다. 둘 다 실제
 PVE 호스트에 접속하거나 컨테이너를 만들지 않습니다.
 DB 백업 테스트는 PBS 응답을 대신하는 메모리 객체로 snapshot 누락, 복원 대조 실패,
 조회 지연과 알림 재시도를 확인합니다. 실제 DB/PBS/SMTP 접속과 서비스 복구는 별도 시험입니다.

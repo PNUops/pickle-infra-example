@@ -12,12 +12,14 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import socket
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+from urllib.parse import urlsplit
 import uuid
 
 import isolated_core as core
@@ -28,6 +30,11 @@ Runner = core.Runner
 SSHPIPERD_VERSION = 'v1.6.1'
 SSHPIPERD_ASSET_SHA256 = '95d423a70e843a7512a72fbb16c0fa5dc59217cf064cb3e277520fddffded1e1'
 DESCRIPTION_PREFIX = 'isolated-services:'
+APT_UPDATE_RUNTIME_SECONDS = 240
+APT_UPGRADE_RUNTIME_SECONDS = 840
+APT_INSTALL_RUNTIME_SECONDS = 540
+TRANSIENT_STOP_SECONDS = 20
+HOST_TIMEOUT_MARGIN_SECONDS = 40
 
 
 @dataclass(frozen=True)
@@ -287,6 +294,100 @@ def api_net0_identity(config_text: str) -> tuple[str, str]:
     if not isinstance(interface, ipaddress.IPv4Interface):
         raise BootstrapError('API LXC net0 must use static IPv4')
     return values['bridge'], str(interface.ip)
+
+
+def apt_source_endpoints(source_text: str) -> list[tuple[str, int]]:
+    """Extract unique HTTP(S) endpoints from legacy and deb822 APT sources."""
+    uris: list[str] = []
+    paragraphs = re.split(r'\n[ \t]*\n', source_text)
+    for paragraph in paragraphs:
+        lines = [line for line in paragraph.splitlines()
+                 if line.strip() and not line.lstrip().startswith('#')]
+        if not lines:
+            continue
+        if any(line.lstrip().startswith(('deb ', 'deb-src ')) for line in lines):
+            if any(not line.lstrip().startswith(('deb ', 'deb-src ')) for line in lines):
+                raise BootstrapError('APT source paragraph mixes legacy and deb822 syntax')
+            for raw in lines:
+                try:
+                    tokens = shlex.split(raw.strip())
+                except ValueError as error:
+                    raise BootstrapError('APT source definition is malformed') from error
+                position = 1
+                options: list[str] = []
+                if position < len(tokens) and tokens[position].startswith('['):
+                    while position < len(tokens):
+                        options.append(tokens[position])
+                        if tokens[position].endswith(']'):
+                            break
+                        position += 1
+                    if not options[-1].endswith(']'):
+                        raise BootstrapError('APT source options are unterminated')
+                    position += 1
+                if any(option.strip('[]').lower() == 'enabled=no' for option in options):
+                    continue
+                if position >= len(tokens):
+                    raise BootstrapError('APT source definition has no URI')
+                uris.append(tokens[position])
+            continue
+        fields: dict[str, str] = {}
+        current: str | None = None
+        for raw in lines:
+            if raw[:1].isspace():
+                if current is None:
+                    raise BootstrapError('APT deb822 continuation has no field')
+                fields[current] += ' ' + raw.strip()
+                continue
+            key, separator, value = raw.partition(':')
+            normalized = key.strip().lower()
+            if (not separator or not re.fullmatch(r'[a-z][a-z0-9-]*', normalized)
+                    or normalized in fields):
+                raise BootstrapError('APT deb822 source paragraph is malformed')
+            fields[normalized] = value.strip()
+            current = normalized
+        enabled = fields.get('enabled', 'yes').lower()
+        if enabled not in ('yes', 'no'):
+            raise BootstrapError('APT deb822 Enabled field must be yes or no')
+        if enabled == 'no':
+            continue
+        types = fields.get('types', '').split()
+        if not types or any(value not in ('deb', 'deb-src') for value in types):
+            raise BootstrapError('APT deb822 Types field is missing or unsupported')
+        stanza_uris = fields.get('uris', '').split()
+        if not stanza_uris:
+            raise BootstrapError('APT deb822 source paragraph has no URI')
+        uris.extend(stanza_uris)
+    endpoints: list[tuple[str, int]] = []
+    for uri in uris:
+        parsed = urlsplit(uri)
+        if (parsed.scheme not in ('http', 'https') or parsed.hostname is None
+                or parsed.username is not None or parsed.password is not None):
+            raise BootstrapError('APT source plan contains an unsupported endpoint')
+        try:
+            port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+        except ValueError as error:
+            raise BootstrapError('APT source plan contains an invalid port') from error
+        endpoint = (parsed.hostname, port)
+        if endpoint not in endpoints:
+            endpoints.append(endpoint)
+    if not endpoints:
+        raise BootstrapError('APT source plan did not expose any HTTP(S) endpoint')
+    return endpoints
+
+
+def apt_update_command() -> list[str]:
+    # APT 3 may otherwise return success after a transient index failure and
+    # leave the caller using a stale or incomplete cache.
+    return ['/usr/bin/env', 'DEBIAN_FRONTEND=noninteractive', '/usr/bin/apt-get',
+            'update', '--error-on=any']
+
+
+def transient_unit_name(run_id: str, role: str, phase: str) -> str:
+    if (not re.fullmatch(r'[0-9a-f-]{36}', run_id)
+            or role not in ('proxy', 'sshgw')
+            or not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', phase)):
+        raise BootstrapError('Transient package unit identity is invalid')
+    return f'pickle-isolated-services-{run_id}-{role}-{phase}.service'
 
 
 def firewall(c: Config, role: str) -> str:
@@ -561,25 +662,102 @@ class Bootstrap:
         if len(link) != 1 or link[0].get('ifname') != 'eth0' or link[0].get('mtu') != self.c.mtu:
             raise BootstrapError('Guest eth0 MTU readback did not match the configured MTU')
 
+    def endpoint_preflight(self, role: str, host: str, port: int, label: str) -> None:
+        ctid, _ = self.identity(role)
+        if (not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?', host)
+                or not 1 <= port <= 65535):
+            raise BootstrapError('Package endpoint is not one DNS hostname and TCP port')
+        answers = self.r.guest(
+            ctid, ['timeout', '10s', 'getent', 'ahostsv4', host],
+            label=label + ' DNS resolution', timeout=15)
+        addresses: list[str] = []
+        for line in answers.splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            try:
+                address = str(ipaddress.IPv4Address(fields[0]))
+            except ipaddress.AddressValueError:
+                continue
+            if address not in addresses:
+                addresses.append(address)
+        if not addresses:
+            raise BootstrapError(f'{label} did not resolve to IPv4')
+        for address in addresses:
+            try:
+                self.r.guest(
+                    ctid,
+                    ['timeout', '10s', 'bash', '-c',
+                     'exec 3<>"/dev/tcp/$1/$2"', 'package-endpoint', address, str(port)],
+                    label=label + ' TCP connect', timeout=15)
+                return
+            except BootstrapError:
+                continue
+        raise BootstrapError(f'{label} has no reachable IPv4 TCP endpoint')
+
+    def apt_network_preflight(self, role: str) -> None:
+        ctid, _ = self.identity(role)
+        sources = self.r.guest(
+            ctid, ['sh', '-c',
+                   'for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list '
+                   '/etc/apt/sources.list.d/*.sources; do '
+                   '[ -f "$f" ] || continue; cat -- "$f"; printf "\\n\\n"; done'],
+            label='APT source definitions', timeout=30)
+        for host, port in apt_source_endpoints(sources):
+            self.endpoint_preflight(role, host, port, f'APT endpoint {host}:{port}')
+
+    def transient_package_command(self, role: str, phase: str, runtime_seconds: int,
+                                  command: list[str], label: str) -> None:
+        if type(runtime_seconds) is not int or runtime_seconds <= TRANSIENT_STOP_SECONDS:
+            raise BootstrapError('Transient package runtime is invalid')
+        ctid, _ = self.identity(role)
+        self.owned(role)
+        unit = transient_unit_name(self.run_id, role, phase)
+        load_state = self.r.guest(
+            ctid, ['systemctl', 'show', unit, '--property=LoadState', '--value'],
+            label=label + ' unit collision')
+        if load_state.strip() not in ('', 'not-found'):
+            raise BootstrapError(f'Transient package unit already exists: {unit}')
+        self.r.guest(
+            ctid,
+            ['systemd-run', '--wait', '--collect', '--quiet', '--expand-environment=no',
+             '--unit=' + unit,
+             '--property=Type=exec',
+             f'--property=RuntimeMaxSec={runtime_seconds}s',
+             f'--property=TimeoutStopSec={TRANSIENT_STOP_SECONDS}s',
+             '--property=KillMode=control-group', '--property=SendSIGKILL=yes',
+             '--property=UMask=0022',
+             '--property=StandardOutput=journal', '--property=StandardError=journal',
+             '--', *command],
+            label=label,
+            timeout=runtime_seconds + TRANSIENT_STOP_SECONDS + HOST_TIMEOUT_MARGIN_SECONDS)
+
     def packages_and_firewall(self, role: str) -> None:
         ctid, _ = self.identity(role)
+        self.apt_network_preflight(role)
         self.put(role, '/usr/sbin/policy-rc.d', '#!/bin/sh\nexit 101\n', '0755')
-        self.r.guest(ctid, ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'update'],
-                     label='signed Debian index', timeout=300)
-        self.r.guest(ctid, ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'upgrade',
-                            '--with-new-pkgs', '-y'], label='new guest security updates', timeout=900)
+        self.transient_package_command(
+            role, 'debian-index', APT_UPDATE_RUNTIME_SECONDS,
+            apt_update_command(), 'signed Debian index')
+        self.transient_package_command(
+            role, 'debian-upgrade', APT_UPGRADE_RUNTIME_SECONDS,
+            ['/usr/bin/env', 'DEBIAN_FRONTEND=noninteractive', '/usr/bin/apt-get',
+             'upgrade', '--with-new-pkgs', '-y'], 'new guest security updates')
         packages = ['ca-certificates', 'nftables', 'openssh-client', 'python3']
         if role == 'proxy':
             packages.extend(['curl', 'gnupg'])
-        self.r.guest(ctid, ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install',
-                            '-y', '--no-install-recommends', *packages],
-                     label='fresh guest packages', timeout=600)
+        self.transient_package_command(
+            role, 'debian-packages', APT_INSTALL_RUNTIME_SECONDS,
+            ['/usr/bin/env', 'DEBIAN_FRONTEND=noninteractive', '/usr/bin/apt-get', 'install',
+             '-y', '--no-install-recommends', *packages], 'fresh guest packages')
         if role == 'proxy':
             key = '/run/nginx_signing.key'
+            self.endpoint_preflight(role, 'nginx.org', 443, 'nginx.org package endpoint')
             self.r.guest(ctid, ['test', '!', '-e', '/usr/share/keyrings/nginx-archive-keyring.gpg'],
                          label='new nginx apt keyring guard')
-            self.r.guest(ctid, ['curl', '--proto', '=https', '--tlsv1.2', '-fsSLo', key,
-                                core.NGINX_KEY_URL], label='official nginx signing key')
+            self.r.guest(ctid, ['curl', '--proto', '=https', '--tlsv1.2',
+                                '--connect-timeout', '10', '--max-time', '30', '-fsSLo', key,
+                                core.NGINX_KEY_URL], label='official nginx signing key', timeout=40)
             detail = self.r.guest(ctid, ['gpg', '--batch', '--with-colons', '--show-keys', key],
                                   label='nginx signing key fingerprint')
             if f'fpr:::::::::{core.NGINX_SIGNING_FINGERPRINT}:' not in detail:
@@ -589,16 +767,19 @@ class Bootstrap:
                          label='nginx apt keyring')
             self.put(role, '/etc/apt/sources.list.d/nginx-stable.list', core.NGINX_REPOSITORY)
             self.r.guest(ctid, ['rm', '-f', key], label='remove downloaded nginx signing key')
-            self.r.guest(ctid, ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'update'],
-                         label='signed nginx stable index', timeout=300)
+            self.transient_package_command(
+                role, 'nginx-index', APT_UPDATE_RUNTIME_SECONDS,
+                apt_update_command(), 'signed nginx stable index')
             policy = self.r.guest(ctid, ['apt-cache', 'policy', 'nginx'], label='signed nginx candidate')
             candidate = re.search(r'^\s*Candidate:\s*(\S+)', policy, re.MULTILINE)
             if candidate is None or candidate.group(1) != self.c.nginx_version \
                     or 'https://nginx.org/packages/debian' not in policy:
                 raise BootstrapError('Reviewed nginx.org package candidate changed')
-            self.r.guest(ctid, ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install',
-                                '-y', '--no-install-recommends', f'nginx={self.c.nginx_version}'],
-                         label='pinned nginx package', timeout=600)
+            self.transient_package_command(
+                role, 'nginx-package', APT_INSTALL_RUNTIME_SECONDS,
+                ['/usr/bin/env', 'DEBIAN_FRONTEND=noninteractive', '/usr/bin/apt-get', 'install',
+                 '-y', '--no-install-recommends', f'nginx={self.c.nginx_version}'],
+                'pinned nginx package')
         self.r.guest(ctid, ['systemctl', 'mask', '--now', 'nftables.service'],
                      label='prevent a second guest firewall owner')
         self.put(role, '/etc/isolated-services.nft', firewall(self.c, role))
