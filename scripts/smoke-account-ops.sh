@@ -60,34 +60,6 @@ login(){ curl -sS -o "$B" -X POST "$BASE/auth/login" -H 'Content-Type: applicati
 # shellcheck source=scripts/lib/auth.sh
 . "$(dirname "$0")/lib/auth.sh"
 auth(){ echo "Authorization: Bearer $1"; }
-# Sudo-mode reauth: VM delete/settings, SSH keys and group-member mutations
-# answer 403 REAUTH_REQUIRED without a fresh password proof (X-Reauth-Token).
-# The token is per-account and multi-use for 10 minutes, and POST /auth/reverify
-# is rate-limited per IP and per account, so cache it per access token instead
-# of minting one per call. A password change bumps the token version and kills
-# both tokens — the re-login that follows produces a new cache key here, so the
-# cache never serves a token the server has already invalidated.
-# The cache is FILE-backed on purpose: every call site invokes reauth from a
-# command substitution (a subshell), so an in-memory array would be written in
-# the subshell and thrown away — each protected call would then mint a fresh
-# token and the per-IP reverify limit (every account here shares this host's
-# egress IP) would start answering 429 with an empty token, i.e. a spurious
-# REAUTH_REQUIRED failure. Entries expire well inside the 10-minute server TTL.
-RT_DIR=$(mktemp -d)
-reauth(){ # reauth ACCESS_TOKEN PASSWORD → echoes the X-Reauth-Token value
-  local f exp tok
-  f="$RT_DIR/$(printf '%s' "$1" | md5sum | cut -d' ' -f1)"
-  if [ -s "$f" ]; then
-    { read -r exp; read -r tok; } < "$f"
-    [ "$SECONDS" -lt "${exp:-0}" ] && { printf '%s' "$tok"; return 0; }
-  fi
-  tok=$(curl -sS -X POST "$BASE/auth/reverify" -H "Authorization: Bearer $1" \
-    -H 'Content-Type: application/json' -d "$(jq -nc --arg p "$2" '{password:$p}')" \
-    | jq -r '.reauthToken // empty')
-  [ -n "$tok" ] && printf '%s\n%s\n' "$((SECONDS+480))" "$tok" > "$f"
-  printf '%s' "$tok"
-}
-rt(){ echo "X-Reauth-Token: $(reauth "$1" "$2")"; }
 
 # mk_user EMAIL PW NAME → "<accessToken> <publicId> <internalId>", from the
 # shared factory. It writes the account rather than signing up: this deployment
@@ -165,7 +137,7 @@ cleanup(){
   pgx "update settings set value=to_jsonb(''::text) where key='banner_message' and value=to_jsonb('스모크 공지 배너'::text)"
   pgx "delete from user_consents where terms_version_id in (select id from terms_versions where body like '%(스모크 개정판)%')"
   pgx "delete from terms_versions where body like '%(스모크 개정판)%'"
-  rm -f "${TMPFILES[@]}" 2>/dev/null; rm -rf "$RT_DIR"
+  rm -f "${TMPFILES[@]}" 2>/dev/null
   echo; echo "==== smoke-account-ops: PASS $P / FAIL $F ===="
   [ $F -eq 0 ] && [ $rc -eq 0 ] || exit 1
 }
@@ -315,7 +287,7 @@ fi
 if has_phase protect; then
   echo "── protect: deletion/stop protection on a real VM (provisions one)"
   U4="smoke-acct-vm-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U4")
-  U4PW='vmowner-password-1'   # also the sudo-mode proof for the VM/member calls below
+  U4PW='vmowner-password-1'
   read -r U4T _ <<<"$(mk_user "$U4" "$U4PW" 'VM보호스모크')"
   # membership tests need an invitable group — PERSONAL membership is immutable
   req "create protect team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U4T")" \
@@ -342,31 +314,26 @@ if has_phase protect; then
   QP=$(qm config "$VMID" 2>/dev/null | grep -c '^protection: 1')
   [ "$QP" = 1 ] && ok "fresh vm carries protection: 1 (always-on)" || ko "fresh vm protection (got $(qm config "$VMID" | grep '^protection' || echo none))"
 
-  req "deletion_protection on (200)" 200 -X PATCH "$BASE/vms/$VM/settings" -H "$(auth "$U4T")" \
-    -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' -d '{"settings":{"deletion_protection":true}}'
-  req "  self-delete blocked 409" 409 -X DELETE "$BASE/vms/$VM" -H "$(auth "$U4T")" -H "$(rt "$U4T" "$U4PW")"
+  req "deletion_protection on (200)" 200 -X PATCH "$BASE/vms/$VM/settings" -H "$(auth "$U4T")" -H 'Content-Type: application/json' -d '{"settings":{"deletion_protection":true}}'
+  req "  self-delete blocked 409" 409 -X DELETE "$BASE/vms/$VM" -H "$(auth "$U4T")"
   C=$(jq -r '.code' "$B"); [ "$C" = "VM_DELETION_PROTECTED" ] && ok "  code VM_DELETION_PROTECTED" || ko "  code ($C)"
   req "  force-delete without override 409" 409 -X POST "$BASE/admin/vms/$VM/force-delete" \
     -H "$(auth "$SAT")" -H 'Content-Type: application/json' -d "{\"confirmName\":\"$VNAME\"}"
-  req "stop_protection on (200)" 200 -X PATCH "$BASE/vms/$VM/settings" -H "$(auth "$U4T")" \
-    -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' -d '{"settings":{"stop_protection":true}}'
+  req "stop_protection on (200)" 200 -X PATCH "$BASE/vms/$VM/settings" -H "$(auth "$U4T")" -H 'Content-Type: application/json' -d '{"settings":{"stop_protection":true}}'
   # add a MEMBER who must be blocked from stopping
   U5="smoke-acct-mem-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U5")
   read -r U5T U5ID _ <<<"$(mk_user "$U5" 'member-password-10' '중지보호구성원')"
-  req "  add to group 201" 201 -X POST "$BASE/workspaces/$PGID4/members" -H "$(auth "$U4T")" \
-    -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U5\",\"role\":\"MEMBER\"}"
+  req "  add to group 201" 201 -X POST "$BASE/workspaces/$PGID4/members" -H "$(auth "$U4T")" -H 'Content-Type: application/json' -d "{\"email\":\"$U5\",\"role\":\"MEMBER\"}"
   # Put them on this VM's list at the rung that may power it. Without the entry
   # the shutdown is refused for having no access at all, and the assertion below
   # would pass while proving nothing about stop protection.
-  req "  grant MEMBER on the vm 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U4T")" \
-    -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' \
+  req "  grant MEMBER on the vm 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U4T")" -H 'Content-Type: application/json' \
     -d "{\"granteeType\":\"USER\",\"userId\":$U5ID,\"role\":\"MEMBER\"}"
   req "  member shutdown blocked 409" 409 -X POST "$BASE/vms/$VM/shutdown" -H "$(auth "$U5T")"
   C=$(jq -r '.code' "$B"); [ "$C" = "VM_STOP_PROTECTED" ] && ok "  code VM_STOP_PROTECTED" || ko "  code ($C)"
   req "  owner shutdown allowed 202" 202 -X POST "$BASE/vms/$VM/shutdown" -H "$(auth "$U4T")"
 
-  req "display_name set (200)" 200 -X PATCH "$BASE/vms/$VM/settings" -H "$(auth "$U4T")" \
-    -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' -d '{"settings":{"display_name":"보호 스모크 VM"}}'
+  req "display_name set (200)" 200 -X PATCH "$BASE/vms/$VM/settings" -H "$(auth "$U4T")" -H 'Content-Type: application/json' -d '{"settings":{"display_name":"보호 스모크 VM"}}'
   req "  vm list carries displayName" 200 "$BASE/vms" -H "$(auth "$U4T")"
   DN=$(jq -r ".content[] | select(.id==$VM) | .displayName" "$B")
   [ "$DN" = "보호 스모크 VM" ] && ok "  displayName round-trip" || ko "  displayName round-trip ($DN)"
@@ -374,13 +341,12 @@ if has_phase protect; then
   ON=$(jq -r '.content[0].orgName // empty' "$B"); [ -n "$ON" ] && ok "  orgName present ($ON)" || ko "  orgName present"
   req "admin tasks multi-status 200" 200 "$BASE/admin/tasks?status=FAILED&status=NEEDS_ADMIN" -H "$(auth "$SAT")"
 
-  req "deletion_protection off (200)" 200 -X PATCH "$BASE/vms/$VM/settings" -H "$(auth "$U4T")" \
-    -H "$(rt "$U4T" "$U4PW")" -H 'Content-Type: application/json' -d '{"settings":{"deletion_protection":false}}'
+  req "deletion_protection off (200)" 200 -X PATCH "$BASE/vms/$VM/settings" -H "$(auth "$U4T")" -H 'Content-Type: application/json' -d '{"settings":{"deletion_protection":false}}'
   # decoupling proof: the toggle never touches the hypervisor — the always-on
   # PVE flag stays armed until the destroy pipeline clears it pre-delete
   QP=$(qm config "$VMID" 2>/dev/null | grep -c '^protection: 1')
   [ "$QP" = 1 ] && ok "  qm protection still 1 after toggle off (decoupled)" || ko "  qm protection still 1 after toggle off"
-  req "self-delete now accepted 202" 202 -X DELETE "$BASE/vms/$VM" -H "$(auth "$U4T")" -H "$(rt "$U4T" "$U4PW")"
+  req "self-delete now accepted 202" 202 -X DELETE "$BASE/vms/$VM" -H "$(auth "$U4T")"
   # immediate destroy for the smoke: pull the grace forward and let the sweeper
   # fire — a completed destroy proves the pipeline's clear-then-delete works
   pgx "update vms set delete_scheduled_for=now() where id=$VM"

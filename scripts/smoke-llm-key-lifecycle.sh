@@ -26,7 +26,6 @@ P=0
 F=0
 REQUESTER_TOKEN=""
 REQUESTER_PASSWORD=""
-REAUTH_TOKEN=""
 KEY_ID=""
 KEY_REVOKED=0
 
@@ -67,13 +66,6 @@ login() {
       '{email:$email,password:$password}')" | jq -r '.accessToken // empty'
 }
 
-reauth() {
-  curl -sS --max-time 30 -X POST "$BASE/auth/reverify" \
-    -H "Authorization: Bearer $1" -H 'Content-Type: application/json' \
-    -d "$(jq -nc --arg password "$2" '{password:$password}')" \
-    | jq -r '.reauthToken // empty'
-}
-
 wait_gateway() {
   local name="$1" expected_http="$2" expected_error="$3" deadline code error_code
   deadline=$((SECONDS + SYNC_TIMEOUT))
@@ -97,11 +89,8 @@ wait_gateway() {
 cleanup() {
   local rc=$?
   if [ -n "$KEY_ID" ] && [ "$KEY_REVOKED" != 1 ] && [ -n "$REQUESTER_TOKEN" ]; then
-    [ -n "$REAUTH_TOKEN" ] || REAUTH_TOKEN=$(reauth "$REQUESTER_TOKEN" "$REQUESTER_PASSWORD")
-    if [ -n "$REAUTH_TOKEN" ]; then
-      curl -sS -o /dev/null --max-time 20 -X POST "$BASE/llm-keys/$KEY_ID/revoke" \
-        -H "Authorization: Bearer $REQUESTER_TOKEN" -H "X-Reauth-Token: $REAUTH_TOKEN" || true
-    fi
+    curl -sS -o /dev/null --max-time 20 -X POST "$BASE/llm-keys/$KEY_ID/revoke" \
+      -H "Authorization: Bearer $REQUESTER_TOKEN" || true
   fi
   rm -f "$BODY"
   exit "$rc"
@@ -175,11 +164,8 @@ jq -e '.content[0] | (has("token") or has("tokenHash") or has("tokenPrefix")) | 
   "$BODY" >/dev/null && ok 'admin list contains no key secret' \
   || { ko 'admin list contains no key secret'; exit 1; }
 
-REAUTH_TOKEN="$(reauth "$REQUESTER_TOKEN" "$REQUESTER_PASSWORD")"
-[ -n "$REAUTH_TOKEN" ] && ok 'requester re-authentication' \
-  || { ko 'requester re-authentication'; exit 1; }
 request 'issue plaintext key once' 200 --sensitive -X POST "$BASE/llm-keys/$KEY_ID/token" \
-  -H "Authorization: Bearer $REQUESTER_TOKEN" -H "X-Reauth-Token: $REAUTH_TOKEN" || exit 1
+  -H "Authorization: Bearer $REQUESTER_TOKEN" || exit 1
 LLM_TOKEN=$(jq -r '.token // empty' "$BODY")
 [ -n "$LLM_TOKEN" ] && ok 'plaintext key received without logging it' \
   || { ko 'plaintext key received'; exit 1; }
@@ -218,7 +204,7 @@ request 'resume suspended key' 200 -X POST "$BASE/admin/llm/keys/$KEY_ID/resume"
 wait_gateway 'resume reaches gateway' 200 '' || exit 1
 
 request 'revoke key' 204 -X POST "$BASE/llm-keys/$KEY_ID/revoke" \
-  -H "Authorization: Bearer $REQUESTER_TOKEN" -H "X-Reauth-Token: $REAUTH_TOKEN" || exit 1
+  -H "Authorization: Bearer $REQUESTER_TOKEN" || exit 1
 KEY_REVOKED=1
 wait_gateway 'revocation reaches gateway' 401 'api_key_revoked' || exit 1
 

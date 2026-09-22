@@ -48,7 +48,7 @@ seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d=
 . "$(dirname "$0")/lib/auth.sh"
 ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGADMIN_EMAIL:-orgadmin@pnuops.com}"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
 SYSADMIN_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYSADMIN_EMAIL="${SYSADMIN_EMAIL:-admin@pnuops.com}"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
-B=$(mktemp); RT_DIR=$(mktemp -d)   # RT_DIR: sudo-mode token cache (see reauth below)
+B=$(mktemp)
 # Always-run cleanup (EXIT trap): a mid-run failure after the VM exists must
 # not leak a real guest + IP — force-delete best-effort, mirroring smoke-provisioning.
 VM=""; VM_DELETED=0
@@ -75,38 +75,12 @@ cleanup(){
       echo "-- cleanup: could not obtain admin token or VM name; manual cleanup needed (vm id $VM) --" >&2
     fi
   fi
-  rm -f "$B"; rm -rf "$RT_DIR"
+  rm -f "$B"
   exit "$rc"
 }
 trap cleanup EXIT
 P=0; F=0; ok(){ echo "PASS  $1"; P=$((P+1)); }; ko(){ echo "FAIL  $1"; F=$((F+1)); }
 req(){ local n="$1" e="$2"; shift 2; local c; c=$(curl -sS -o "$B" -w '%{http_code}' "$@"); if [ "$c" = "$e" ]; then ok "$n ($c)"; return 0; else ko "$n (expected $e got $c)"; head -c 300 "$B"; echo; return 1; fi; }
-# Sudo-mode reauth: the password-reveal / VM-delete / settings / ssh-key /
-# group-member endpoints answer 403 REAUTH_REQUIRED without a fresh password
-# proof (X-Reauth-Token). The token is per-account and multi-use for 10 minutes,
-# and POST /auth/reverify is rate-limited per IP and per account, so cache it
-# per access token instead of minting one per call. A password change bumps the
-# token version (killing both tokens), but that also forces a re-login here, so
-# the new access token becomes a new cache key and the cache self-heals.
-# The cache is FILE-backed on purpose: every call site invokes reauth from a
-# command substitution (a subshell), so an in-memory array would be written in
-# the subshell and thrown away — each protected call would then mint a fresh
-# token and the per-IP reverify limit (every account here shares this host's
-# egress IP) would start answering 429 with an empty token, i.e. a spurious
-# REAUTH_REQUIRED failure. Entries expire well inside the 10-minute server TTL.
-reauth(){ # reauth ACCESS_TOKEN PASSWORD → echoes the X-Reauth-Token value
-  local f exp tok
-  f="$RT_DIR/$(printf '%s' "$1" | md5sum | cut -d' ' -f1)"
-  if [ -s "$f" ]; then
-    { read -r exp; read -r tok; } < "$f"
-    [ "$SECONDS" -lt "${exp:-0}" ] && { printf '%s' "$tok"; return 0; }
-  fi
-  tok=$(curl -sS -X POST "$BASE/auth/reverify" -H "Authorization: Bearer $1" \
-    -H 'Content-Type: application/json' -d "$(jq -nc --arg p "$2" '{password:$p}')" \
-    | jq -r '.reauthToken // empty')
-  [ -n "$tok" ] && printf '%s\n%s\n' "$((SECONDS+480))" "$tok" > "$f"
-  printf '%s' "$tok"
-}
 # 'basic' spec preset (first ACTIVE row as fallback) out of GET /vm-flavors
 FSEL='(map(select(.name=="basic"))[0] // .[0])'
 # VmDetail.publication (singular) became publications[] in v0.29.0 — select one
@@ -184,8 +158,7 @@ while :; do curl -sS -o "$B" "$BASE/vms/$VM" -H "Authorization: Bearer $SAT"; ST
 [ "$ST" = "RUNNING" ] && ok "VM RUNNING ip=$VIP" || exit 1
 
 echo "== reveal password + start web servers on VM:80 and VM:8080 =="
-curl -sS -o "$B" "$BASE/vms/$VM/password" -H "Authorization: Bearer $SAT" \
-  -H "X-Reauth-Token: $(reauth "$SAT" "$USER_PW")"
+curl -sS -o "$B" "$BASE/vms/$VM/password" -H "Authorization: Bearer $SAT"
 PWV=$(jq -r '.password // empty' "$B"); [ -n "$PWV" ] && ok "initial password revealed (masked)" || ko "password reveal"
 # The guest account is a property of the image, not a constant: ubuntu images
 # carry `ubuntu`, debian `debian`, rocky `rocky`. Hardcoding one broke this smoke

@@ -143,23 +143,11 @@ fi
 role=$(jq -r '.user.role // empty' <<<"$login")
 [ "$role" = "SYS_ADMIN" ] || { echo "  that account is $role, not SYS_ADMIN" >&2; exit 1; }
 echo "  logged in as $(jq -r '.user.email' <<<"$login")"
-
-# Issuing a token is one of the operations behind re-authentication: holding a
-# session is not enough, the password has to be proven again in the moment.
-reauth=$(api_call POST /auth/reverify \
-  "$(jq -nc --arg p "$PICKLE_ADMIN_PASSWORD" '{password:$p}')" "$ACCESS")
 unset PICKLE_ADMIN_PASSWORD
-if jq -e '.reauthToken // .token // empty' >/dev/null <<<"$reauth"; then
-  REAUTH=$(jq -r '.reauthToken // .token' <<<"$reauth")
-else
-  echo "  re-authentication failed: $(jq -r '.message // .' <<<"$reauth")" >&2
-  exit 1
-fi
-echo "  re-authenticated"
 
 echo "== issue the token"
 issued=$(pct exec "$CTID" -- curl -sS -X POST "$API/admin/relays/$RELAY_ID/token" \
-  -H "Authorization: Bearer $ACCESS" -H "X-Reauth-Token: $REAUTH" \
+  -H "Authorization: Bearer $ACCESS" \
   -H 'Content-Length: 0')
 TOKEN=$(jq -r '.token // .syncToken // empty' <<<"$issued")
 [ -n "$TOKEN" ] || { echo "  issuance failed: $(jq -r '.message // .' <<<"$issued")" >&2; exit 1; }

@@ -53,33 +53,6 @@ login(){ curl -sS -o "$B" -X POST "$BASE/auth/login" -H 'Content-Type: applicati
 # shellcheck source=scripts/lib/auth.sh
 . "$(dirname "$0")/lib/auth.sh"
 auth(){ echo "Authorization: Bearer $1"; }
-# Sudo-mode reauth: group-member mutations (and the VM password/settings/ssh-key
-# endpoints) answer 403 REAUTH_REQUIRED without a fresh password proof. The
-# token is per-account and multi-use for 10 minutes, and POST /auth/reverify is
-# rate-limited per IP and per account, so cache it per access token; a password
-# change invalidates it, but that also forces a re-login and therefore a new
-# cache key here.
-# The cache is FILE-backed on purpose: every call site invokes reauth from a
-# command substitution (a subshell), so an in-memory array would be written in
-# the subshell and thrown away — each protected call would then mint a fresh
-# token and the per-IP reverify limit (every account here shares this host's
-# egress IP) would start answering 429 with an empty token, i.e. a spurious
-# REAUTH_REQUIRED failure. Entries expire well inside the 10-minute server TTL.
-RT_DIR=$(mktemp -d)
-reauth(){ # reauth ACCESS_TOKEN PASSWORD → echoes the X-Reauth-Token value
-  local f exp tok
-  f="$RT_DIR/$(printf '%s' "$1" | md5sum | cut -d' ' -f1)"
-  if [ -s "$f" ]; then
-    { read -r exp; read -r tok; } < "$f"
-    [ "$SECONDS" -lt "${exp:-0}" ] && { printf '%s' "$tok"; return 0; }
-  fi
-  tok=$(curl -sS -X POST "$BASE/auth/reverify" -H "Authorization: Bearer $1" \
-    -H 'Content-Type: application/json' -d "$(jq -nc --arg p "$2" '{password:$p}')" \
-    | jq -r '.reauthToken // empty')
-  [ -n "$tok" ] && printf '%s\n%s\n' "$((SECONDS+480))" "$tok" > "$f"
-  printf '%s' "$tok"
-}
-rt(){ echo "X-Reauth-Token: $(reauth "$1" "$2")"; }
 
 mk_user(){ mk_verified_user "$BASE" "$@"; }
 
@@ -215,7 +188,7 @@ cleanup(){
     local left; left=$(pgq "select count(*) from users where email='$e'")
     [ "${left:-0}" = 0 ] || echo "-- cleanup: scratch user $e retained (owns a vm/request row) --"
   done
-  rm -f "${TMPFILES[@]}"; rm -rf "$RT_DIR"
+  rm -f "${TMPFILES[@]}"
   echo; echo "web-terminal smoke: PASS=$P FAIL=$F"
   [ "$F" -eq 0 ] && [ $rc -eq 0 ] || exit 1
 }
@@ -298,10 +271,8 @@ U3="smoke-term-view-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U3")
 read -r U3T _ <<<"$(mk_user "$U3" 'terminal-viewer-1' '터미널뷰어')"
 U4="smoke-term-out-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U4")
 read -r U4T _ <<<"$(mk_user "$U4" 'terminal-outsider-1' '터미널외부')"
-req "add U2 to group 201" 201 -X POST "$BASE/workspaces/$GID/members" -H "$(auth "$U1T")" \
-  -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U2\",\"role\":\"MEMBER\"}"
-req "add U3 to group 201" 201 -X POST "$BASE/workspaces/$GID/members" -H "$(auth "$U1T")" \
-  -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$U3\",\"role\":\"MEMBER\"}"
+req "add U2 to group 201" 201 -X POST "$BASE/workspaces/$GID/members" -H "$(auth "$U1T")" -H 'Content-Type: application/json' -d "{\"email\":\"$U2\",\"role\":\"MEMBER\"}"
+req "add U3 to group 201" 201 -X POST "$BASE/workspaces/$GID/members" -H "$(auth "$U1T")" -H 'Content-Type: application/json' -d "{\"email\":\"$U3\",\"role\":\"MEMBER\"}"
 
 # The seeded list: whoever requested the VM, and nobody else.
 req "access list seeded with the requester" 200 "$BASE/vms/$VM/access" -H "$(auth "$U1T")"
@@ -313,15 +284,10 @@ SEEDED=$(jq -r '[.grants[] | select(.role=="OWNER")] | length' "$B")
 
 # U3 stays unlisted for the denial assertions further down; U2 gets the rung
 # that carries terminal access.
-req "grant U2 MEMBER on this VM 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U1T")" \
-  -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' \
+req "grant U2 MEMBER on this VM 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
   -d "{\"granteeType\":\"USER\",\"userId\":$U2ID,\"role\":\"MEMBER\"}"
 U2GRANT=$(jq -r '.id' "$B")
 [ -n "$U2GRANT" ] && [ "$U2GRANT" != null ] && ok "  grant id returned" || { ko "  grant id returned"; exit 1; }
-req "  granting needs a fresh password proof (403)" 403 -X POST "$BASE/vms/$VM/access" \
-  -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
-  -d "{\"granteeType\":\"USER\",\"userId\":$U2ID,\"role\":\"VIEWER\"}"
-C=$(jq -r '.code' "$B"); [ "$C" = REAUTH_REQUIRED ] && ok "  code REAUTH_REQUIRED" || ko "  code ($C)"
 
 # ── happy path: mint → WS → echo → audit → admin visibility ──────────────
 mint "$VM" "$U2T"
@@ -425,7 +391,7 @@ refresh_tokens
 if open_live_session "$U2T" 300; then
   ok "U2 holds a live session before the entry is removed"
   req "remove U2 from the access list 204" 204 -X DELETE "$BASE/vms/$VM/access/$U2GRANT" \
-    -H "$(auth "$U1T")" -H "$(rt "$U1T" "$U1PW")"
+    -H "$(auth "$U1T")"
   mint "$VM" "$U2T"; [ "$MINT_CODE" = 403 ] && ok "  new mint refused after removal (403)" || ko "  new mint refused after removal (got $MINT_CODE)"
   GONE=0
   for _ in $(seq 1 12); do
@@ -441,8 +407,7 @@ if open_live_session "$U2T" 300; then
   kill "$WSPID" 2>/dev/null; wait "$WSPID" 2>/dev/null
   AUD_RVK=$(pgq "select count(*) from audit_logs where action='terminal.session_end' and detail::text like '%$LIVE_SID%' and detail::text like '%REVALIDATION_DENIED%'")
   [ "${AUD_RVK:-0}" -ge 1 ] && ok "  and it ended as REVALIDATION_DENIED" || ko "  session_end reason for the revoked session"
-  req "re-grant U2 MEMBER 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U1T")" \
-    -H "$(rt "$U1T" "$U1PW")" -H 'Content-Type: application/json' \
+  req "re-grant U2 MEMBER 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
     -d "{\"granteeType\":\"USER\",\"userId\":$U2ID,\"role\":\"MEMBER\"}"
 else
   ko "U2 could not hold a live session — removal convergence unchecked"

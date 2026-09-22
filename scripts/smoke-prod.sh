@@ -75,7 +75,6 @@ if [ -n "$AT" ]; then
   req "GET /orgs"         200 "$BASE/orgs"         -H "Authorization: Bearer $AT"
   req "GET /os-images"    200 "$BASE/os-images"    -H "Authorization: Bearer $AT"
   req "GET /vm-flavors"   200 "$BASE/vm-flavors"   -H "Authorization: Bearer $AT"
-  # listing keys is not a sudo-mode endpoint — no X-Reauth-Token needed here
   req "GET /me/ssh-keys"  200 "$BASE/me/ssh-keys"  -H "Authorization: Bearer $AT"
 fi
 

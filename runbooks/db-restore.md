@@ -232,7 +232,7 @@ bash /srv/pickle/infra/scripts/apply-terms.sh
 | 변수 | 예시 | 비고 |
 |---|---|---|
 | `PICKLE_ADMIN_EMAIL` | | **설정하지 않으면 터미널에서 묻는다.** 토큰을 관리 API 로 발급하므로 SYS_ADMIN 자격으로 실행해야 한다 |
-| `PICKLE_ADMIN_PASSWORD` | | 설정하지 않으면 터미널에서 묻고 화면에 표시하지 않는다. 토큰 발급이 재인증 뒤에 있어 한 번의 실행에서 비밀번호를 두 번 증명한다 |
+| `PICKLE_ADMIN_PASSWORD` | | 설정하지 않으면 터미널에서 묻고 화면에 표시하지 않는다 |
 | `PICKLE_RELAY_NAME` | `lightsail-1` | 어느 릴레이 행에 발급할지 |
 | `PICKLE_APP_CTID` | `101` | |
 | `PICKLE_DB` | `pickle_dev` | |

@@ -70,43 +70,11 @@ for cmd in curl jq nc qm pct; do
 done
 
 BODY=$(mktemp)
-RT_DIR=$(mktemp -d) # sudo-mode token cache (see reauth below)
-trap 'rm -f "$BODY"; rm -rf "$RT_DIR"' EXIT
+trap 'rm -f "$BODY"' EXIT
 
 ok() { echo "PASS  $1"; PASS=$((PASS + 1)); }
 ko() { echo "FAIL  $1"; FAIL=$((FAIL + 1)); }
 
-# Sudo-mode reauth: the password reveal and the VM delete answer 403
-# REAUTH_REQUIRED without a fresh password proof (X-Reauth-Token). The token is
-# per-account and multi-use for 10 minutes, and POST /auth/reverify is
-# rate-limited per IP and per account, so cache it per access token rather than
-# minting one per call (the cache key changes whenever a re-login is needed,
-# which is exactly when a password change has invalidated the old token).
-# The cache is FILE-backed on purpose: every call site invokes reauth from a
-# command substitution (a subshell), so an in-memory array would be written in
-# the subshell and thrown away — each protected call would then mint a fresh
-# token and the per-IP reverify limit (every account here shares this host's
-# egress IP) would start answering 429 with an empty token, i.e. a spurious
-# REAUTH_REQUIRED failure. The cached entry expires well inside the 10-minute
-# server TTL, so the long RUNNING/power polls between protected calls simply
-# cause one re-mint instead of serving an already-expired token.
-# reauth <access-token> <password>: echoes the X-Reauth-Token value
-reauth() {
-  local f exp tok
-  f="$RT_DIR/$(printf '%s' "$1" | md5sum | cut -d' ' -f1)"
-  if [ -s "$f" ]; then
-    { read -r exp; read -r tok; } <"$f"
-    if [ "$SECONDS" -lt "${exp:-0}" ]; then
-      printf '%s' "$tok"
-      return 0
-    fi
-  fi
-  tok=$(curl -sS -X POST "$BASE/auth/reverify" -H "Authorization: Bearer $1" \
-    -H 'Content-Type: application/json' -d "$(jq -nc --arg p "$2" '{password:$p}')" |
-    jq -r '.reauthToken // empty')
-  [ -n "$tok" ] && printf '%s\n%s\n' "$((SECONDS + 480))" "$tok" >"$f"
-  printf '%s' "$tok"
-}
 
 # step <name> <expected-status> <curl args...>  (dumps body head on mismatch)
 step() {
@@ -319,8 +287,7 @@ phase_ssh() {
 # ── phase 6: password reveal (re-viewable since v0.7.0, masked) ──
 phase_password() {
   step_masked "initial-password reveal" 200 "$BASE/vms/$VM_ID/password" \
-    -H "Authorization: Bearer $USER_AT" \
-    -H "X-Reauth-Token: $(reauth "$USER_AT" "$USER_PW")" || return 1
+    -H "Authorization: Bearer $USER_AT" || return 1
   local pwlen
   pwlen=$(jq -r '.password // "" | length' "$BODY")
   : >"$BODY" # drop the plaintext immediately; it is never echoed anywhere
@@ -331,8 +298,7 @@ phase_password() {
   fi
   # v0.7.0: the reveal no longer consumes — a second read must succeed too
   step_masked "initial-password re-read -> 200" 200 "$BASE/vms/$VM_ID/password" \
-    -H "Authorization: Bearer $USER_AT" \
-    -H "X-Reauth-Token: $(reauth "$USER_AT" "$USER_PW")"
+    -H "Authorization: Bearer $USER_AT"
   : >"$BODY"
 }
 
@@ -357,8 +323,7 @@ phase_power() {
 # ── phase 8/9: self-delete (no user cancel exists) + admin cancel ──
 phase_delete_cancel() {
   step "self-delete" 202 -X DELETE "$BASE/vms/$VM_ID" \
-    -H "Authorization: Bearer $USER_AT" \
-    -H "X-Reauth-Token: $(reauth "$USER_AT" "$USER_PW")" || return 1
+    -H "Authorization: Bearer $USER_AT" || return 1
   local kind
   kind=$(jq -r '.kind // empty' "$BODY")
   if [ "$kind" = "SELF" ]; then

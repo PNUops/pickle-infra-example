@@ -57,36 +57,8 @@ SYSADMIN_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYSADMIN_EMAIL="${SYSAD
 P=0; F=0; ok(){ echo "PASS  $1"; P=$((P+1)); }; ko(){ echo "FAIL  $1"; F=$((F+1)); }
 req(){ local n="$1" e="$2"; shift 2; local c; c=$(curl -sS -o "$B" -w '%{http_code}' "$@"); [ "$c" = "$e" ] && { ok "$n ($c)"; return 0; } || { ko "$n (want $e got $c)"; head -c 300 "$B"; echo; return 1; }; }
 # code_is EXPECTED NAME — asserts the Problem `code` of the last response, so a
-# generic 403 (e.g. a missing sudo-mode token) can never satisfy a role-gate check.
+# generic 403 can never satisfy a role-gate check.
 code_is(){ local c; c=$(jq -r '.code // empty' "$B"); [ "$c" = "$1" ] && ok "$2 (code=$c)" || ko "$2 (code=${c:-none}, want $1)"; }
-# Sudo-mode reauth: SSH-key, VM password/settings and group-member endpoints
-# answer 403 REAUTH_REQUIRED without a fresh password proof (X-Reauth-Token).
-# The token is per-account and multi-use for 10 minutes, and POST /auth/reverify
-# is rate-limited per IP and per account, so cache it per access token instead
-# of minting one per call; a password change invalidates it, but that also
-# forces a re-login and therefore a new cache key here.
-# The cache is FILE-backed on purpose: every call site invokes reauth from a
-# command substitution (a subshell), so an in-memory array would be written in
-# the subshell and thrown away — each protected call would then mint a fresh
-# token and the per-IP reverify limit (every account here shares this host's
-# egress IP) would start answering 429 with an empty token, which shows up as a
-# spurious REAUTH_REQUIRED failure. Entries expire well inside the 10-minute
-# server TTL, so a long run re-mints once instead of once per call.
-RT_DIR=$(mktemp -d)
-reauth(){ # reauth ACCESS_TOKEN PASSWORD → echoes the X-Reauth-Token value
-  local f exp tok
-  f="$RT_DIR/$(printf '%s' "$1" | md5sum | cut -d' ' -f1)"
-  if [ -s "$f" ]; then
-    { read -r exp; read -r tok; } < "$f"
-    [ "$SECONDS" -lt "${exp:-0}" ] && { printf '%s' "$tok"; return 0; }
-  fi
-  tok=$(curl -sS -X POST "$BASE/auth/reverify" -H "Authorization: Bearer $1" \
-    -H 'Content-Type: application/json' -d "$(jq -nc --arg p "$2" '{password:$p}')" \
-    | jq -r '.reauthToken // empty')
-  [ -n "$tok" ] && printf '%s\n%s\n' "$((SECONDS+480))" "$tok" > "$f"
-  printf '%s' "$tok"
-}
-rt(){ echo "X-Reauth-Token: $(reauth "$1" "$2")"; }
 
 SSHKO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o PreferredAuthentications=publickey -o IdentitiesOnly=yes"
 SSHPO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
@@ -105,16 +77,14 @@ fp_of(){ ssh-keygen -lf "$1" | awk '{print $2}'; }
 # mk_user EMAIL PW NAME → echoes "<accessToken> <userId>" (signup→verify→login).
 mk_user(){ mk_verified_user "$BASE" "$@"; }
 # reg_key TOKEN PW NAME PUBKEYLINE → echoes keyId (paste-registration).
-# The account's own password is needed for the sudo-mode token; without it the
-# call 403s and the caller would silently receive an empty key id.
-reg_key(){ curl -sS -o "$B" -X POST "$BASE/me/ssh-keys" -H "Authorization: Bearer $1" -H "$(rt "$1" "$2")" -H 'Content-Type: application/json' -d "$(jq -nc --arg n "$3" --arg k "$4" '{name:$n,publicKey:$k}')"; jq -r '.id // empty' "$B"; }
+reg_key(){ curl -sS -o "$B" -X POST "$BASE/me/ssh-keys" -H "Authorization: Bearer $1" -H 'Content-Type: application/json' -d "$(jq -nc --arg n "$3" --arg k "$4" '{name:$n,publicKey:$k}')"; jq -r '.id // empty' "$B"; }
 # addmember EMAIL ROLE (as group OWNER). Asserted (201): a silently failed add
 # would make the membership-scoped checks below vacuous — a VIEWER/MEMBER that
 # was never added is denied as a plain non-member and the test still "passes".
-addmember(){ req "add member ($1)" 201 -X POST "$BASE/workspaces/$GID/members" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"role\":\"MEMBER\"}"; }
+addmember(){ req "add member ($1)" 201 -X POST "$BASE/workspaces/$GID/members" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"role\":\"MEMBER\"}"; }
 # addgrant USERID ROLE — put somebody on THIS VM's access list. Group membership
 # admits nobody to a VM on its own; every rung below is granted per resource.
-addgrant(){ req "grant $2 on the vm (user $1)" 201 -X POST "$BASE/vms/$VM/access" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" -H 'Content-Type: application/json' -d "{\"granteeType\":\"USER\",\"userId\":$1,\"role\":\"$2\"}"; }
+addgrant(){ req "grant $2 on the vm (user $1)" 201 -X POST "$BASE/vms/$VM/access" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"granteeType\":\"USER\",\"userId\":$1,\"role\":\"$2\"}"; }
 
 # ---- state to restore on exit ----
 VM=""; VNAME=""; VM_DELETED=0; ORIG_HK_B64=""; ORIG_KILL=""
@@ -144,7 +114,7 @@ cleanup(){
       echo "-- cleanup: no admin token or VM name; manual cleanup needed (vm id $VM) --" >&2
     fi
   fi
-  rm -f "${TMPFILES[@]}"; rm -rf "$RT_DIR"
+  rm -f "${TMPFILES[@]}"
   exit "$rc"
 }
 trap cleanup EXIT
@@ -223,10 +193,10 @@ for _ in $(seq 1 18); do nc -z -w5 "$VIP" 22 2>/dev/null && break; sleep 5; done
 
 # --- 1. server-side key generate + private-key download ---
 echo "== [1] create key (server-side generate) =="
-req "generate key" 201 -X POST "$BASE/me/ssh-keys/generate" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" -H 'Content-Type: application/json' -d '{"name":"pickle-smoke"}' || exit 1
+req "generate key" 201 -X POST "$BASE/me/ssh-keys/generate" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d '{"name":"pickle-smoke"}' || exit 1
 KID=$(jq -r .id "$B"); OFPR=$(jq -r .fingerprint "$B")
 [ "$(jq -r .privateKeyStored "$B")" = true ] && ok "generated key privateKeyStored=true fp=$OFPR" || ko "privateKeyStored not true"
-req "download private key" 200 "$BASE/me/ssh-keys/$KID/private-key" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" || exit 1
+req "download private key" 200 "$BASE/me/ssh-keys/$KID/private-key" -H "Authorization: Bearer $OAT" || exit 1
 OKEY=$(mktemp); TMPFILES+=("$OKEY"); jq -r .privateKey "$B" > "$OKEY"; chmod 600 "$OKEY"
 
 # --- 2. connect with the key ---
@@ -327,13 +297,13 @@ try_connect PICKLE-LISTED kssh "$VWKEY" "$SLUG" 'echo PICKLE-LISTED' >/dev/null 
 
 # --- 8. password default-deny (ssh_password_enabled=false) → SSHGW_PASSWORD_DISABLED ---
 echo "== [8] password default-deny =="
-req "reveal password" 200 "$BASE/vms/$VM/password" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" || exit 1
+req "reveal password" 200 "$BASE/vms/$VM/password" -H "Authorization: Bearer $OAT" || exit 1
 VMPW=$(jq -r .password "$B")
 pssh "$VMPW" "$SLUG" 'echo X' | grep -q '^X$' && ko "password worked while disabled" || { sleep 1; [ "$(denied SSHGW_PASSWORD_DISABLED)" -ge 1 ] 2>/dev/null && ok "password denied by default (SSHGW_PASSWORD_DISABLED)" || ko "no SSHGW_PASSWORD_DISABLED audit"; }
 
 # --- 9. opt-in password enable → password SSH allowed ---
 echo "== [9] opt-in password enable → allowed =="
-req "enable ssh_password" 200 -X PATCH "$BASE/vms/$VM/settings" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" -H 'Content-Type: application/json' -d '{"settings":{"ssh_password_enabled":true}}' || ko "enable settings"
+req "enable ssh_password" 200 -X PATCH "$BASE/vms/$VM/settings" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d '{"settings":{"ssh_password_enabled":true}}' || ko "enable settings"
 sleep 1
 try_connect PICKLE-PW-OK pssh "$VMPW" "$SLUG" 'echo PICKLE-PW-OK' >/dev/null && ok "password SSH allowed after opt-in" || ko "password SSH failed after opt-in"
 
@@ -346,11 +316,8 @@ addmember "sgw-member-${TS}@pusan.ac.kr"
 # makes this a test of the rung: an unlisted person is refused one step earlier,
 # and the check would pass without the settings gate ever being consulted.
 addgrant "$MB_ID" MEMBER
-# Hand the MEMBER a VALID sudo-mode token on purpose: without one the endpoint
-# 403s on REAUTH_REQUIRED and this check would pass without ever reaching the
-# role gate. The Problem code is asserted for the same reason.
-req "member settings forbidden" 403 -X PATCH "$BASE/vms/$VM/settings" -H "Authorization: Bearer $MBAT" -H "$(rt "$MBAT" "$MB_PW")" -H 'Content-Type: application/json' -d '{"settings":{"ssh_password_enabled":false}}'
-code_is WORKSPACE_ROLE_INSUFFICIENT "  refused by the role gate, not by reauth"
+req "member settings forbidden" 403 -X PATCH "$BASE/vms/$VM/settings" -H "Authorization: Bearer $MBAT" -H 'Content-Type: application/json' -d '{"settings":{"ssh_password_enabled":false}}'
+code_is WORKSPACE_ROLE_INSUFFICIENT "  refused by the role gate"
 
 # --- 12. EDITOR cannot raise password_reveal_min_role (OWNER-gated) → 403 ---
 echo "== [12] EDITOR raise min_role → 403 =="
@@ -358,9 +325,8 @@ ED_PW="ed-pw-${TS}!"
 read -r EDAT ED_ID _ < <(mk_user "sgw-editor-${TS}@pusan.ac.kr" "$ED_PW" "SGW Editor")
 addmember "sgw-editor-${TS}@pusan.ac.kr"
 addgrant "$ED_ID" EDITOR
-# valid sudo-mode token here too — the OWNER-only key is what must refuse
-req "editor min_role forbidden" 403 -X PATCH "$BASE/vms/$VM/settings" -H "Authorization: Bearer $EDAT" -H "$(rt "$EDAT" "$ED_PW")" -H 'Content-Type: application/json' -d '{"settings":{"password_reveal_min_role":"EDITOR"}}'
-code_is WORKSPACE_ROLE_INSUFFICIENT "  refused by the role gate, not by reauth"
+req "editor min_role forbidden" 403 -X PATCH "$BASE/vms/$VM/settings" -H "Authorization: Bearer $EDAT" -H 'Content-Type: application/json' -d '{"settings":{"password_reveal_min_role":"EDITOR"}}'
+code_is WORKSPACE_ROLE_INSUFFICIENT "  refused by the role gate"
 
 # --- 13. sudo demands a password inside the VM (sudoers PASSWD override) ---
 echo "== [13] sudo -n fails in guest (NOPASSWD overridden) =="
@@ -373,7 +339,7 @@ else ok "sudo requires a password (sudo -n refused)"; fi
 
 # --- 15. password regenerate → new password, audited, old fails ---
 echo "== [15] password regenerate =="
-req "regenerate password" 200 -X POST "$BASE/vms/$VM/password/regenerate" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" || ko "regenerate"
+req "regenerate password" 200 -X POST "$BASE/vms/$VM/password/regenerate" -H "Authorization: Bearer $OAT" || ko "regenerate"
 NEWPW=$(jq -r .password "$B")
 [ -n "$NEWPW" ] && [ "$NEWPW" != "$VMPW" ] && ok "password changed on regenerate" || ko "regenerate did not change password"
 sleep 1
@@ -386,7 +352,7 @@ VMPW="$NEWPW"
 
 # --- 11. delete key → immediate deny (same key that worked in [2]) ---
 echo "== [11] delete key → immediate deny =="
-req "delete key" 204 -X DELETE "$BASE/me/ssh-keys/$KID" -H "Authorization: Bearer $OAT" -H "$(rt "$OAT" "$OWNER_PW")" || ko "delete key"
+req "delete key" 204 -X DELETE "$BASE/me/ssh-keys/$KID" -H "Authorization: Bearer $OAT" || ko "delete key"
 kssh "$OKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "deleted key still routed" || { sleep 1; [ "$(denied SSHGW_KEY_UNKNOWN "$OFPR")" -ge 1 ] 2>/dev/null && ok "deleted key denied immediately (SSHGW_KEY_UNKNOWN)" || ko "no SSHGW_KEY_UNKNOWN audit for the deleted key fp"; }
 
 # --- per-VM gateway block → deny, with its own audit reason ---
