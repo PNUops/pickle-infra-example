@@ -131,7 +131,10 @@ def firewall_plan(config, node_name, accept_mark, active):
     # Admit only the intended encrypted VTEP before host INPUT policy is evaluated.
     local_vxlan = ["-p", "udp", "--dport", "4789", "-m", "addrtype", "--dst-type", "LOCAL"]
     v4["raw"] += [["-i", mesh, "-s", peer["mesh"], *local_vxlan, "-j", "RETURN"],
-                  [*local_vxlan, "-j", "DROP"]]
+                  [*local_vxlan, "-j", "DROP"],
+                  # PVE's fwbr path needs one conntrack zone for both directions.
+                  # A guest-source filter would split the bridge path between zones.
+                  ["-i", "fwbr+", "-j", "CT", "--zone", "1"]]
     v6["raw"] += [[*local_vxlan, "-j", "DROP"]]
     mark, mask, _pve_mask = accept_mark
     for family in (v4, v6):

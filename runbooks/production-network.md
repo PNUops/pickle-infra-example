@@ -125,6 +125,19 @@ per-VM allowlist를 만들거나 PVE/NetBird firewall을 비활성화하지 않�
 - Legacy chain은 `PKL-PROD-*`만 소유한다. Hook과 해당 chain만 원자적으로 갱신하며
   다른 chain이나 전체 table을 flush하지 않는다. Guest 허용 경로는 `RETURN`으로
   나가므로 per-VM PVE 판정을 건너뛰는 전역 ACCEPT를 추가하지 않는다.
+- IPv4 raw `PKL-PROD-RAW`는 기존 VXLAN 수신 guard 뒤, 마지막 `RETURN` 앞에서
+  `-i fwbr+ -j CT --zone 1`을 적용한다. `fwbr+`는 PVE가 VM 방화벽에 연결하는
+  bridge 쪽 인터페이스만 가리키며 guest 주소나 host IP로 범위를 정하지 않는다.
+  `fwbr+` 양방향 패킷에 같은 conntrack zone을 지정하며, guest source 조건으로 한쪽
+  방향을 제외하지 않는다.
+  Gateway owner와 standby에 동일하게 설치해 수동 owner 전환 뒤에도 유지한다. IPv6
+  raw에는 넣지 않으며 다른 필터의 `ACCEPT` 또는 SNAT 범위를 넓히지 않는다.
+  설치 전에는 raw hook과 다른 chain에 같은 `fwbr+` 트래픽의 zone을 지정하는 별도
+  규칙이 없는지 읽기 전용으로 확인한다. 이미 guest가 있는 노드에서 초기 `prepare`를
+  다시 실행하지 않고, 설치된 runtime의 동일한 생성기를 갱신한 뒤 `reconcile` 경로로
+  소유 chain을 갱신한다. 이전 상태로 되돌릴 때는 `PKL-PROD-RAW`의 정확한
+  `-i fwbr+ -j CT --zone 1` 규칙만 제거하고 구 runtime을 복원한다. 전체 raw table이나
+  conntrack 상태를 비우지 않는다.
 - 별도 `inet pickle_production_guard`의 INPUT/FORWARD hook은 priority -20이다.
   NetBird가 legacy rule을 앞에 재삽입해도 BMC와 host 관리면의 거부가 먼저 적용된다.
 - `bridge pickle_production_l2`는 확인한 `vxlan_pinfra`/`vxlan_pguest` ingress에서만

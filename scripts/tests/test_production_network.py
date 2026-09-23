@@ -592,8 +592,10 @@ class ProductionNetworkTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_config(config)
 
-    def test_absent_backup_config_preserves_baseline_plan_hash(self):
+    def test_conntrack_zone_is_only_change_without_backup_config(self):
         plan = firewall_plan(CONFIG, 'pve-a', (0x1bd20, 0xffffffff, 0x80000000), True)
+        # Remove the reviewed new rule to prove every pre-existing rule is unchanged.
+        plan['iptables']['raw'].remove(['-i', 'fwbr+', '-j', 'CT', '--zone', '1'])
         self.assertEqual(__import__('hashlib').sha256(
             __import__('json').dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
             '2b7586f79463c137f36843be6c8249b2698f83a74b0a51868cda991df9059fce')
@@ -645,8 +647,31 @@ class ProductionNetworkTests(unittest.TestCase):
         plan = firewall_plan(CONFIG, 'pve-a', (0x1bd20, 0xffffffff, 0x80000000), True)
         for family in plan.values():
             for rule in family['raw']:
+                if '-j' in rule and rule[rule.index('-j') + 1] == 'CT':
+                    continue
                 self.assertIn('--dst-type', rule)
                 self.assertEqual(rule[rule.index('--dst-type') + 1], 'LOCAL')
+
+    def test_guest_conntrack_zone_precedes_raw_return_on_owner_and_standby(self):
+        module = load_script('production-network')
+        config = copy.deepcopy(CONFIG)
+        config['uplink'] = 'vmbr9'
+        config['mesh_interface'] = 'wt9'
+        config['vnets']['pguest']['vni'] = 999999
+        validate_config(config)
+        for node, active in (('pve-a', True), ('pve-b', False)):
+            with self.subTest(node=node), patch.object(module, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+                plan = firewall_plan(config, node, (0x1bd20, 0xffffffff, 0x80000000), active)
+                self.assertEqual(plan['iptables']['raw'][-1], ['-i', 'fwbr+', '-j', 'CT', '--zone', '1'])
+                self.assertEqual(len(plan['ip6tables']['raw']), 1)
+                module.install_chains(plan)
+                batches = [call.kwargs['stdin'] for call in run.call_args_list
+                           if call.args and call.args[0] == ['iptables-restore', '--noflush', '--wait', '10']]
+                raw = next(batch for batch in batches if batch.startswith('*raw\n'))
+                self.assertLess(raw.index('-A PKL-PROD-RAW -i fwbr+ -j CT --zone 1'),
+                                raw.index('-A PKL-PROD-RAW -j RETURN'))
+                zone_line = next(line for line in raw.splitlines() if '-j CT --zone 1' in line)
+                self.assertNotIn('-s', zone_line.split())
 
     def test_sdn_failure_rolls_back_only_under_its_own_lock(self):
         spec = importlib.util.spec_from_file_location('production_sdn_test', SCRIPTS / 'production-sdn.py')
