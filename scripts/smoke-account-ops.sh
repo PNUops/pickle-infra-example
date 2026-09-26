@@ -345,6 +345,17 @@ if has_phase protect; then
   # PVE flag stays armed until the destroy pipeline clears it pre-delete
   QP=$(qm config "$VMID" 2>/dev/null | grep -c '^protection: 1')
   [ "$QP" = 1 ] && ok "  qm protection still 1 after toggle off (decoupled)" || ko "  qm protection still 1 after toggle off"
+  # The owner shutdown above is asynchronous, and beginSelfDeletion claims the row
+  # only while power_operation_id is null. Without this wait the delete can reach a
+  # VM still mid-transition and answer 409 "already being deleted", which names the
+  # wrong cause. The reauthentication round trip used to supply this delay by accident.
+  for _ in $(seq 1 30); do
+    PO=$(pgq "select coalesce(power_operation_id::text,'') from vms where id=$VM_DB")
+    ST=$(pgq "select status from vms where id=$VM_DB")
+    [ -z "$PO" ] && [ "$ST" = STOPPED ] && break
+    sleep 5
+  done
+  [ -z "$PO" ] && ok "  power operation settled before delete" || ko "  power operation still running ($PO)"
   req "self-delete now accepted 202" 202 -X DELETE "$BASE/vms/$VM" -H "$(auth "$U4T")"
   # immediate destroy for the smoke: pull the grace forward and let the sweeper
   # fire — a completed destroy proves the pipeline's clear-then-delete works
