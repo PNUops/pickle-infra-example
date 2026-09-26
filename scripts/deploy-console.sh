@@ -11,6 +11,23 @@ require_ct "$CTID" pickle-app
 CONSOLE_DIR="${CONSOLE_DIR:-/srv/pickle/console}"
 WEB_ROOT=/var/www/pickle-console
 
+# The console's default-off tests must run without deployment-only Vite flags.
+# Validate before npm ci so a typo cannot start a partial deployment run.
+for flag in VITE_VM_NETWORK_POLICY_ENABLED VITE_PUBLIC_SOURCE_POLICY_ENABLED; do
+  case "${!flag-0}" in
+    0|1) ;;
+    *) echo "unsupported $flag value: expected 0 or 1" >&2; exit 1 ;;
+  esac
+done
+candidate_build_env=(env -u VITE_VM_NETWORK_POLICY_ENABLED -u VITE_PUBLIC_SOURCE_POLICY_ENABLED)
+candidate_build_requested=0
+for flag in VITE_VM_NETWORK_POLICY_ENABLED VITE_PUBLIC_SOURCE_POLICY_ENABLED; do
+  if [ "${!flag+x}" = x ]; then
+    candidate_build_requested=1
+    candidate_build_env+=("$flag=${!flag}")
+  fi
+done
+
 cd "$CONSOLE_DIR"
 # Install what the lockfile says before building. Without this the build runs
 # against whatever node_modules the previous deploy left behind, so a branch
@@ -22,7 +39,12 @@ cd "$CONSOLE_DIR"
 # cache leaves the checkout unbuildable: prefer the cache where it can. The
 # audit that gates this build is the one verify.sh runs, not this one.
 npm ci --prefer-offline --no-audit --no-fund
-scripts/verify.sh
+env -u VITE_VM_NETWORK_POLICY_ENABLED -u VITE_PUBLIC_SOURCE_POLICY_ENABLED scripts/verify.sh
+# verify.sh builds the default bundle. Keep that bundle for ordinary deploys;
+# when candidate flags were requested, rebuild only after every gate succeeds.
+if [ "$candidate_build_requested" -eq 1 ]; then
+  "${candidate_build_env[@]}" npm run --silent build
+fi
 
 tar -czf /tmp/pickle-console-dist.tgz -C dist .
 pct exec "$CTID" -- bash -c "mkdir -p $WEB_ROOT.new && rm -rf $WEB_ROOT.new/*"

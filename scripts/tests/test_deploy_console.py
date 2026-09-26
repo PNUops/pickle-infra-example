@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Offline checks for console deployment flag isolation and the deploy gate."""
+
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+
+DEPLOY = Path(__file__).resolve().parents[1] / 'deploy-console.sh'
+
+
+class DeployConsoleTest(unittest.TestCase):
+    def run_deploy(self, flags=None, fail_verify=False):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            console = root / 'console'
+            commands = root / 'bin'
+            console.mkdir()
+            commands.mkdir()
+            trace = root / 'trace'
+            (console / 'scripts').mkdir()
+            (console / 'dist').mkdir()
+            (console / 'dist' / 'index.html').write_text('bundle')
+            (console / 'scripts' / 'verify.sh').write_text(
+                '#!/usr/bin/env bash\n'
+                'printf "verify:%s:%s:%s\\n" "${VITE_VM_NETWORK_POLICY_ENABLED-unset}" '
+                '"${VITE_PUBLIC_SOURCE_POLICY_ENABLED-unset}" "$PICKLE_TEST_MAX_WORKERS" >> "$TRACE"\n'
+                + ('exit 13\n' if fail_verify else 'exit 0\n'))
+            (console / 'scripts' / 'verify.sh').chmod(0o755)
+            (commands / 'npm').write_text(
+                '#!/usr/bin/env bash\n'
+                'printf "npm:%s:%s:%s\\n" "$*" '
+                '"${VITE_VM_NETWORK_POLICY_ENABLED-unset}" '
+                '"${VITE_PUBLIC_SOURCE_POLICY_ENABLED-unset}" >> "$TRACE"\n')
+            (commands / 'pct').write_text(
+                '#!/usr/bin/env bash\n'
+                'printf "pct:%s\\n" "$*" >> "$TRACE"\n'
+                'if [ "$1" = config ]; then printf "hostname: pickle-app\\n"; fi\n')
+            for name in ('tar', 'rm'):
+                (commands / name).write_text(
+                    '#!/usr/bin/env bash\n'
+                    f'printf "{name}:%s\\n" "$*" >> "$TRACE"\n')
+            for name in ('npm', 'pct', 'tar', 'rm'):
+                (commands / name).chmod(0o755)
+            env = os.environ.copy()
+            for key in ('VITE_VM_NETWORK_POLICY_ENABLED', 'VITE_PUBLIC_SOURCE_POLICY_ENABLED'):
+                env.pop(key, None)
+            env.update({'PATH': f'{commands}:{env["PATH"]}', 'CONSOLE_DIR': str(console),
+                        'TRACE': str(trace), 'CTID': '201'})
+            env.update(flags or {})
+            result = subprocess.run(['bash', str(DEPLOY)], env=env, text=True,
+                                    capture_output=True, check=False)
+            return result, trace.read_text().splitlines() if trace.exists() else []
+
+    def test_candidate_build_follows_default_verification(self):
+        result, lines = self.run_deploy({
+            'VITE_VM_NETWORK_POLICY_ENABLED': '1',
+            'VITE_PUBLIC_SOURCE_POLICY_ENABLED': '1',
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('verify:unset:unset:', lines)
+        self.assertIn('npm:run --silent build:1:1', lines)
+        self.assertLess(lines.index('verify:unset:unset:'),
+                        lines.index('npm:run --silent build:1:1'))
+        self.assertTrue(any(line.startswith('pct:push ') for line in lines))
+
+    def test_default_deploy_uses_verified_bundle_without_rebuild(self):
+        result, lines = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('verify:unset:unset:', lines)
+        self.assertFalse(any(line.startswith('npm:run --silent build') for line in lines))
+        self.assertTrue(any(line.startswith('pct:push ') for line in lines))
+
+    def test_failed_verify_never_builds_or_deploys(self):
+        result, lines = self.run_deploy({'VITE_VM_NETWORK_POLICY_ENABLED': '1'},
+                                        fail_verify=True)
+        self.assertEqual(result.returncode, 13)
+        self.assertIn('verify:unset:unset:', lines)
+        self.assertFalse(any(line.startswith('npm:run --silent build') for line in lines))
+        self.assertFalse(any(line.startswith('tar:') for line in lines))
+        self.assertFalse(any(line.startswith('pct:push ') or line.startswith('pct:exec ')
+                             for line in lines))
+
+    def test_unsupported_flag_fails_before_install(self):
+        result, lines = self.run_deploy({'VITE_PUBLIC_SOURCE_POLICY_ENABLED': 'true'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('expected 0 or 1', result.stderr)
+        self.assertEqual(lines, ['pct:config 201'])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -16,6 +16,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_node_registration.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_inventory_readiness.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_apply_os_catalog_guard.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_image_registration.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_deploy_console.py
 
 readiness_url='readonly HEALTH_URL="http://127.0.0.1:8080/actuator/health/readiness"'
 grep -Fxq "$readiness_url" scripts/deploy-api.sh || {

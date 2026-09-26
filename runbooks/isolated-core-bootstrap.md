@@ -210,6 +210,9 @@ proxy 주소만 허용하고, loopback 요청은 게스트 내부에서만 허�
 console 전체 검증을 실행한다. LXC에 Node.js를 설치하는 것으로 대신할 수 없다.
 배포 루트는 실제 준비한 경로로 정한다. `/pickle`을 쓰려면 먼저 그 경로에 두
 체크아웃을 준비해야 한다.
+검증 단계는 두 Vite 기능 플래그를 해제해 기본값으로 시험·빌드한다. 검증이 모두
+통과한 뒤 요청한 `0` 또는 `1` 값으로 배포용 번들을 다시 빌드한다. 값이 없으면
+기존 기본값을 유지하며, 다른 값이면 설치 전에 중단한다.
 
 다음 사전 검사는 하나라도 실패하면 중단한다. `DEPLOY_ROOT`는 대상 호스트에서
 실제로 준비한 배포 루트로 지정한다. config의 `app_ctid`와 manifest, `pct config`의
@@ -310,7 +313,9 @@ pct push "$APP_CTID" /root/isolated-core/isolated-core.conf.candidate /tmp/isola
 pct exec "$APP_CTID" -- install -m 0644 /tmp/isolated-core.conf.candidate /etc/nginx/conf.d/isolated-core.conf
 pct exec "$APP_CTID" -- nginx -t
 pct exec "$APP_CTID" -- systemctl reload nginx
-CTID="$APP_CTID" PICKLE_ROOT="$DEPLOY_ROOT" CONSOLE_DIR="$CONSOLE_DIR" bash scripts/deploy-console.sh
+CTID="$APP_CTID" PICKLE_ROOT="$DEPLOY_ROOT" CONSOLE_DIR="$CONSOLE_DIR" \
+  VITE_VM_NETWORK_POLICY_ENABLED=1 VITE_PUBLIC_SOURCE_POLICY_ENABLED=1 \
+  bash scripts/deploy-console.sh
 ```
 
 `nginx -t` 또는 reload가 실패하면 console 배포를 시작하지 않는다. localhost의
