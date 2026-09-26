@@ -281,6 +281,13 @@ PY
 뒤 `EXPECTED_CT_HOSTNAME`에 정확한 값을 지정한다. 값이 비었거나 형식이 잘못됐거나
 CT의 hostname과 다르면 배포를 시작하지 않는다.
 
+첫 콘솔 배포 전에 선택한 console HEAD의 생성 API 타입과 호출 경로를 라이브 API
+명세에 대조하고, 로그인·인증·재인증 흐름이 해당 API와 맞는지 확인한다.
+호환되지 않으면 API와 console의 배포 버전을 맞추거나 호환되는 console
+커밋을 선택한다. 첫 배포는 두 정책 UI 플래그를 `0`으로 빌드해 정적 파일을
+확인하고, 검증 계정이 준비되면 로그인을 확인한다. 플래그 `0`도 API·console
+전체 호환성 검사를 대신하지 않는다.
+
 nginx 설정을 바꾸기 전에 **원본 노드의 후보 CT 201을 새로 백업하고 다른 노드에서
 격리 복원**해 실제 파일을 읽을 수 있음을 확인한다. 원본 아카이브를 복원 노드로
 옮기지 않은 복원이나 같은 노드에서의 복원은 이 선행 조건을 충족하지 않는다.
@@ -436,7 +443,7 @@ pct exec "$APP_CTID" -- nginx -t
 pct exec "$APP_CTID" -- systemctl reload nginx
 CTID="$APP_CTID" EXPECTED_CT_HOSTNAME="$APP_HOSTNAME" \
   PICKLE_ROOT="$DEPLOY_ROOT" CONSOLE_DIR="$CONSOLE_DIR" \
-  VITE_VM_NETWORK_POLICY_ENABLED=1 VITE_PUBLIC_SOURCE_POLICY_ENABLED=1 \
+  VITE_VM_NETWORK_POLICY_ENABLED=0 VITE_PUBLIC_SOURCE_POLICY_ENABLED=0 \
   bash scripts/deploy-console.sh
 ```
 
@@ -456,6 +463,66 @@ pct exec "$APP_CTID" -- systemctl reload nginx
 없다. 스크립트는 실패를 보고하고 새 web root를 그대로 남긴다. 실패한 후보의
 `/var/www/pickle-console`과 배포 로그를 조사한 뒤 빌드 원인을 고치고 다시 배포한다.
 기존 서비스의 console이나 다른 LXC를 rollback 대상으로 사용하지 않는다.
+
+### 정책 UI 활성화 전 검사와 재배포
+
+첫 콘솔 배포가 끝나도 정책 UI는 꺼 둔다. 기능 노출 전에 후보 CT의 **실행 중인
+API** OpenAPI에서 아래 7개 정책 경로와 method를 확인한다. 라이브 `paths`
+키에는 `/api/v1` prefix가 포함된다. 누락이 있으면 플래그 `1` 배포를 중단하고
+API 배포본을 맞춘 뒤 다시 검사한다. 이 검사는 기능 동작을 증명하지 않는다.
+
+```bash
+set -e
+: "${APP_CTID:?set the verified candidate CTID}"
+OPENAPI_JSON="$(mktemp)"
+trap 'rm -f "$OPENAPI_JSON"' EXIT
+pct exec "$APP_CTID" -- curl -fsS http://127.0.0.1:8080/api/v1/openapi > "$OPENAPI_JSON"
+python3 - "$OPENAPI_JSON" <<'PY'
+import json
+import sys
+
+document = json.load(open(sys.argv[1], encoding='utf-8'))
+paths = document['paths']
+required = {
+    '/api/v1/vms/{vmId}/network-policy': {'get', 'put'},
+    '/api/v1/admin/vms/{vmId}/network-policy': {'get', 'put'},
+    '/api/v1/domains/{domainId}/source-policy': {'get', 'put'},
+    '/api/v1/vms/{vmId}/port-forwardings/{portForwardingId}/source-policy': {'get', 'put'},
+    '/api/v1/admin/port-mappings/{mappingId}/source-policy': {'get', 'put'},
+    '/api/v1/admin/routes/{routeId}/source-policy': {'get', 'put'},
+    '/api/v1/source-policy-presets/campus': {'get'},
+}
+missing = [(path, method) for path, methods in required.items()
+           for method in methods if method not in paths.get(path, {})]
+if missing:
+    raise SystemExit(f'live API lacks policy operations: {sorted(missing)}')
+print(f"live policy operations present; API version {document.get('info', {}).get('version', 'unknown')}")
+PY
+rm -f "$OPENAPI_JSON"
+trap - EXIT
+```
+
+선택한 console 커밋의 생성 API 타입·인증 흐름이 실제 API와 맞는지 다시 확인한다.
+후보 node label과 agent 대상을 확인하고, PVE VM NIC 방화벽의 규칙 쓰기·조회,
+기본 차단·명시 허용·위조·IPv6 우회 방지, 실패 후 재처리를 시험 VM으로 실측한다.
+공개 출발지 정책은 proxy·relay의 원본 주소와 HTTP·TCP·UDP 허용·거부를
+검증한다. API runtime 설정은 파일 값만 읽지 말고 실제 정책 API의 저장·반영
+상태와 PVE/진입점 결과로 확인한다. 조건이 하나라도 미충족이면 두 UI 플래그를
+`0`으로 유지한다. 모두 통과한 뒤에만 같은 console 커밋을 플래그 `1`로
+다시 빌드·배포하고 해당 화면과 접근 권한을 확인한다.
+
+```bash
+set -e
+: "${APP_CTID:?set the verified candidate CTID}"
+: "${APP_HOSTNAME:?set the verified candidate hostname}"
+: "${DEPLOY_ROOT:?set the deployment checkout root}"
+: "${CONSOLE_DIR:?set the selected console checkout}"
+: "${INFRA_DIR:?set the selected infra checkout}"
+CTID="$APP_CTID" EXPECTED_CT_HOSTNAME="$APP_HOSTNAME" \
+  PICKLE_ROOT="$DEPLOY_ROOT" CONSOLE_DIR="$CONSOLE_DIR" \
+  VITE_VM_NETWORK_POLICY_ENABLED=1 VITE_PUBLIC_SOURCE_POLICY_ENABLED=1 \
+  bash "$INFRA_DIR/scripts/deploy-console.sh"
+```
 
 ## 최초 관리자 one-shot
 
