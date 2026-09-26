@@ -197,6 +197,139 @@ MAINTENANCE 노드 등록, agent 연결, 사용자 VM, PBS 복구, RPO/RTO 검�
 `allow-api-start`를 만들거나 JobRunr를 켜는 것도 그 다음 실행의 명시적 단계다.
 DB가 별도 LXC이므로 app 컨테이너 안의 PostgreSQL을 가정하는 운영 명령을 재사용하지 않는다.
 
+### 후보 콘솔 첫 배포
+
+`deploy-console.sh`는 호스트의 console 체크아웃에서 빌드한 뒤 app LXC의 nginx를
+reload하고, 게스트의 `127.0.0.1:80`에서 index와 JavaScript 번들을 확인한다. 후보
+설정은 app 전용망 주소와 loopback에서만 80번 포트를 듣는다. 전용망 요청은 지정한
+proxy 주소만 허용하고, loopback 요청은 게스트 내부에서만 허용한다.
+
+대상 호스트에 infra와 검증할 console 커밋의 배포 체크아웃, Node.js 24 이상과 npm이
+먼저 준비되어야 한다. 대상 노드에 이 체크아웃과 Node/npm, 후보 CT 백업이
+없다면 아래 적용 단계로 진행할 수 없다. `deploy-console.sh`는 호스트에서 `npm ci`와
+console 전체 검증을 실행한다. LXC에 Node.js를 설치하는 것으로 대신할 수 없다.
+배포 루트는 실제 준비한 경로로 정한다. `/pickle`을 쓰려면 먼저 그 경로에 두
+체크아웃을 준비해야 한다.
+
+다음 사전 검사는 하나라도 실패하면 중단한다. `DEPLOY_ROOT`는 대상 호스트에서
+실제로 준비한 배포 루트로 지정한다. config의 `app_ctid`와 manifest, `pct config`의
+hostname 및 `isolated-core:<run UUID>` description을 대조한 후보 LXC 번호를 쓴다.
+아래 201은 예시다. 기존 운영 LXC의 번호를 대신 넣지 않는다.
+
+```bash
+set -e
+: "${DEPLOY_ROOT:?set the existing deployment checkout root}"
+INFRA_DIR="$DEPLOY_ROOT/infra"
+CONSOLE_DIR="$DEPLOY_ROOT/console"
+test -f "$INFRA_DIR/scripts/deploy-console.sh"
+test -f "$INFRA_DIR/scripts/lib/isolated_core.py"
+test "$(git -C "$CONSOLE_DIR" rev-parse --is-inside-work-tree)" = true
+test -f "$CONSOLE_DIR/package-lock.json"
+test -f "$CONSOLE_DIR/scripts/verify.sh"
+command -v node
+command -v npm
+test "$(node -p 'Number(process.versions.node.split(".")[0])')" -ge 24
+git -C "$CONSOLE_DIR" rev-parse HEAD
+```
+
+nginx 설정을 바꾸기 전에 **원본 노드의 후보 CT 201을 새로 백업하고 다른 노드에서
+격리 복원**해 실제 파일을 읽을 수 있음을 확인한다. 원본 아카이브를 복원 노드로
+옮기지 않은 복원이나 같은 노드에서의 복원은 이 선행 조건을 충족하지 않는다.
+양쪽 스토리지의 여유 공간과 클러스터 전체에서 미사용인 복원 CTID를 확인한다.
+후보 rootfs가 snapshot 가능한 local-lvm에 있을 때는 아래처럼 `snapshot` 모드를
+선택한다. 지원되지 않으면 자동으로 다른 모드로 바꾸지 말고 중단한다. 백업 뒤
+원본 CT가 계속 `running`인지 확인한다.
+
+```bash
+# 원본 노드에서만 실행. 실제 아카이브 경로는 vzdump 출력에서 확인한다.
+set -e
+APP_CTID=201
+: "${BACKUP_STORAGE:?set verified source-node backup storage}"
+test "$(pct status "$APP_CTID")" = 'status: running'
+vzdump "$APP_CTID" --mode snapshot --compress zstd --storage "$BACKUP_STORAGE"
+test "$(pct status "$APP_CTID")" = 'status: running'
+# ARCHIVE를 방금 생성된 실제 로컬 파일로 설정한 뒤:
+: "${ARCHIVE:?set the fresh source-node archive path}"
+test -s "$ARCHIVE"
+sha256sum "$ARCHIVE"
+```
+
+방금 출력한 SHA-256과 파일 크기를 기록한다. 승인된 관리 전송 경로로 아카이브를
+**복원 노드의 보호된 로컬 경로**에 복사한다. 전송 명령과 경로는 양 노드의 실제
+SSH 및 스토리지 설정을 확인해 정한다. 복원 노드에서 다음 검사가 통과하지 않으면
+복원하지 않는다. `EXPECTED_SHA256`은 원본 노드에서 얻은 64자리 값이며,
+복원 노드의 `ARCHIVE`는 전송 완료된 파일의 절대 경로다.
+
+```bash
+# 복원 노드에서만 실행. 파일과 기대 해시를 실제 값으로 설정한 뒤 검사한다.
+set -e
+: "${ARCHIVE:?set the transferred archive path}"
+: "${EXPECTED_SHA256:?set the source-node SHA-256}"
+test -s "$ARCHIVE"
+printf '%s  %s\n' "$EXPECTED_SHA256" "$ARCHIVE" | sha256sum -c -
+```
+
+복원 노드에서 `pct help restore`와 `pct help mount`로 설치된 PVE 버전의 옵션과
+오프라인 mount 절차를 확인한다. `RESTORE_CTID`가 클러스터 전체에서 미사용이고
+`RESTORE_STORAGE`에 충분한 공간이 있음을 확인한 다음, **기동 금지·onboot 0**
+옵션이 실제 도움말에서 확인된 경우에만 새 CTID로 복원한다. 아래 명령은 그
+옵션을 확인한 뒤에만 실행한다. 원본 CTID를 덮어쓰는 `--force`는 사용하지 않는다.
+
+```bash
+# 복원 노드에서만 실행. 위의 해시 검사가 통과한 아카이브만 사용한다.
+set -e
+: "${RESTORE_CTID:?set a cluster-wide unused CTID}"
+: "${RESTORE_STORAGE:?set verified restore storage}"
+pct restore "$RESTORE_CTID" "$ARCHIVE" --storage "$RESTORE_STORAGE" --start 0 --onboot 0
+test "$(pct status "$RESTORE_CTID")" = 'status: stopped'
+pct config "$RESTORE_CTID"
+```
+
+복원본이 `stopped`, `onboot: 0`인지 확인한다. 복원 노드에서 **시작·exec·네트워크
+연결을 하지 않고** `pct mount`로 복원 rootfs를 오프라인으로 열어 nginx 설정과
+주요 파일을 원본 및 원본 노드의 manifest 기록과 대조한 뒤 `pct unmount`한다. mount가
+반환한 실제 경로를 확인해 읽으며, mount가 실패하거나 잠금이 남으면 중단한다.
+복원본은 계속 꺼 둔다. 복원 실패·내용 불일치·동일 IP 노출 가능성이 있으면 nginx
+변경을 중단한다. 이 검증은 백업의 교차 노드 복원 가능성을 확인하는 것이며,
+DB와 서비스의 전체 복구 검증을 대신하지 않는다. 명령 근거는
+[Proxmox VE 9 pct 참조](https://pve.proxmox.com/pve-docs-9-beta/pct.1.html)이며,
+실제 적용 전에는 설치 버전의 도움말을 우선한다.
+
+백업과 격리 복원까지 끝난 기존 후보 LXC에만 새 nginx 설정을 반영한다.
+부트스트랩 전체를 다시 실행하지 않는다. `config.json`은 이 후보를 생성할 때
+사용한 입력이다.
+
+```bash
+set -e
+cd "$INFRA_DIR"
+APP_CTID=201
+python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "scripts/lib"); from isolated_core import Config, nginx; print(nginx(Config.load(Path(sys.argv[1]))), end="")' /root/isolated-core/config.json > /root/isolated-core/isolated-core.conf.candidate
+pct exec "$APP_CTID" -- test ! -e /etc/nginx/conf.d/isolated-core.conf.before-loopback
+pct exec "$APP_CTID" -- cp -p /etc/nginx/conf.d/isolated-core.conf /etc/nginx/conf.d/isolated-core.conf.before-loopback
+pct push "$APP_CTID" /root/isolated-core/isolated-core.conf.candidate /tmp/isolated-core.conf.candidate
+pct exec "$APP_CTID" -- install -m 0644 /tmp/isolated-core.conf.candidate /etc/nginx/conf.d/isolated-core.conf
+pct exec "$APP_CTID" -- nginx -t
+pct exec "$APP_CTID" -- systemctl reload nginx
+CTID="$APP_CTID" PICKLE_ROOT="$DEPLOY_ROOT" CONSOLE_DIR="$CONSOLE_DIR" bash scripts/deploy-console.sh
+```
+
+`nginx -t` 또는 reload가 실패하면 console 배포를 시작하지 않는다. localhost의
+index와 번들 확인은 실제 정적 파일을 올린 뒤 배포 스크립트가 수행한다.
+아래 명령은 이 후보의 nginx 설정만 원래대로 돌린다. 기존 설정에서는 localhost
+postcheck가 다시 실패하므로 원인 조사 뒤 재적용한다.
+
+```bash
+APP_CTID=201
+pct exec "$APP_CTID" -- cp -p /etc/nginx/conf.d/isolated-core.conf.before-loopback /etc/nginx/conf.d/isolated-core.conf
+pct exec "$APP_CTID" -- nginx -t
+pct exec "$APP_CTID" -- systemctl reload nginx
+```
+
+첫 console 배포에는 이전 번들이 없어 postcheck 실패 시 자동으로 되돌릴 대상이
+없다. 스크립트는 실패를 보고하고 새 web root를 그대로 남긴다. 실패한 후보의
+`/var/www/pickle-console`과 배포 로그를 조사한 뒤 빌드 원인을 고치고 다시 배포한다.
+기존 서비스의 console이나 다른 LXC를 rollback 대상으로 사용하지 않는다.
+
 ## 최초 관리자 one-shot
 
 검증할 API jar를 `/opt/pickle/api/current.jar`에 설치한 뒤에도 정상 API 유닛은 disabled이고

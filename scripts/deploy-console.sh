@@ -7,6 +7,7 @@ CTID="${CTID:-101}"
 # shellcheck source=scripts/lib/ct.sh
 . "$(dirname "$0")/lib/ct.sh"
 require_ct "$CTID" pickle-app
+# Build from this host's deployment checkout.
 CONSOLE_DIR="${CONSOLE_DIR:-/srv/pickle/console}"
 WEB_ROOT=/var/www/pickle-console
 

@@ -453,8 +453,10 @@ def api_environment(c: Config, password: bytes) -> bytes:
 def nginx(c: Config) -> str:
     return f"""server {{
     listen {c.app_ip}:80;
+    listen 127.0.0.1:80;
     server_name {c.app_hostname};
     allow {c.proxy_ip};
+    allow 127.0.0.1;
     deny all;
     root /var/www/pickle-console;
     add_header X-Content-Type-Options nosniff always;

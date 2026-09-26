@@ -502,8 +502,13 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
 
     def test_proxy_header_trust_is_restricted_even_if_the_kernel_policy_is_missing(self):
         content = core.nginx(config())
+        self.assertIn('listen 100.65.1.20:80;', content)
+        self.assertIn('listen 127.0.0.1:80;', content)
         self.assertIn('allow 100.65.1.10;', content)
+        self.assertIn('allow 127.0.0.1;', content)
         self.assertIn('deny all;', content)
+        self.assertNotIn('listen 0.0.0.0:80;', content)
+        self.assertNotIn('listen 80;', content)
         self.assertNotIn('real_ip_header', content)
 
     def test_changed_container_ownership_blocks_guest_file_writes(self):
