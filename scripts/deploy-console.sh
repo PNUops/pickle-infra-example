@@ -4,9 +4,14 @@
 set -euo pipefail
 
 CTID="${CTID:-101}"
+EXPECTED_CT_HOSTNAME="${EXPECTED_CT_HOSTNAME-pickle-app}"
+if [[ ! "$EXPECTED_CT_HOSTNAME" =~ ^[a-z][a-z0-9-]{0,61}[a-z0-9]$ ]]; then
+  echo 'EXPECTED_CT_HOSTNAME must be a single lowercase hostname' >&2
+  exit 1
+fi
 # shellcheck source=scripts/lib/ct.sh
 . "$(dirname "$0")/lib/ct.sh"
-require_ct "$CTID" pickle-app
+require_ct "$CTID" "$EXPECTED_CT_HOSTNAME"
 # Build from this host's deployment checkout.
 CONSOLE_DIR="${CONSOLE_DIR:-/srv/pickle/console}"
 WEB_ROOT=/var/www/pickle-console

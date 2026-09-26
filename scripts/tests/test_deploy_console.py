@@ -12,7 +12,7 @@ DEPLOY = Path(__file__).resolve().parents[1] / 'deploy-console.sh'
 
 
 class DeployConsoleTest(unittest.TestCase):
-    def run_deploy(self, flags=None, fail_verify=False):
+    def run_deploy(self, flags=None, fail_verify=False, hostname='pickle-app'):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             console = root / 'console'
@@ -37,7 +37,7 @@ class DeployConsoleTest(unittest.TestCase):
             (commands / 'pct').write_text(
                 '#!/usr/bin/env bash\n'
                 'printf "pct:%s\\n" "$*" >> "$TRACE"\n'
-                'if [ "$1" = config ]; then printf "hostname: pickle-app\\n"; fi\n')
+                'if [ "$1" = config ]; then printf "hostname: %s\\n" "$MOCK_CT_HOSTNAME"; fi\n')
             for name in ('tar', 'rm'):
                 (commands / name).write_text(
                     '#!/usr/bin/env bash\n'
@@ -45,10 +45,12 @@ class DeployConsoleTest(unittest.TestCase):
             for name in ('npm', 'pct', 'tar', 'rm'):
                 (commands / name).chmod(0o755)
             env = os.environ.copy()
-            for key in ('VITE_VM_NETWORK_POLICY_ENABLED', 'VITE_PUBLIC_SOURCE_POLICY_ENABLED'):
+            for key in ('VITE_VM_NETWORK_POLICY_ENABLED', 'VITE_PUBLIC_SOURCE_POLICY_ENABLED',
+                        'EXPECTED_CT_HOSTNAME'):
                 env.pop(key, None)
             env.update({'PATH': f'{commands}:{env["PATH"]}', 'CONSOLE_DIR': str(console),
-                        'TRACE': str(trace), 'CTID': '201'})
+                        'TRACE': str(trace), 'CTID': '201',
+                        'MOCK_CT_HOSTNAME': hostname})
             env.update(flags or {})
             result = subprocess.run(['bash', str(DEPLOY)], env=env, text=True,
                                     capture_output=True, check=False)
@@ -88,6 +90,24 @@ class DeployConsoleTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('expected 0 or 1', result.stderr)
         self.assertEqual(lines, ['pct:config 201'])
+
+    def test_explicit_candidate_hostname_allows_deploy(self):
+        result, lines = self.run_deploy(
+            {'EXPECTED_CT_HOSTNAME': 'pickle-app-example'}, hostname='pickle-app-example')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(line.startswith('pct:push ') for line in lines))
+
+    def test_hostname_mismatch_fails_before_install(self):
+        result, lines = self.run_deploy({'EXPECTED_CT_HOSTNAME': 'pickle-app-example'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("container 201 is 'pickle-app'", result.stderr)
+        self.assertEqual(lines, ['pct:config 201'])
+
+    def test_empty_expected_hostname_fails_before_target_lookup(self):
+        result, lines = self.run_deploy({'EXPECTED_CT_HOSTNAME': ''})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('single lowercase hostname', result.stderr)
+        self.assertEqual(lines, [])
 
 
 if __name__ == '__main__':

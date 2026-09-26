@@ -106,6 +106,11 @@ runbooks/         운영 절차                                    // 이 예시
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
 
+`deploy-console.sh`는 기본적으로 hostname이 `pickle-app`인 LXC만 받습니다. 다른
+후보 LXC에는 `CTID`와 `EXPECTED_CT_HOSTNAME`을 함께 지정합니다. 실제 hostname과
+다르면 설치 전에 중단합니다. 후보의 백업·격리 복원 절차는
+`runbooks/isolated-core-bootstrap.md`에 있습니다.
+
 `create-pbs-vm.sh`는 명시한 UEFI loader와 vars template을 host capability 및 firmware
 descriptor와 대조합니다. cloud-init seed는 read-only virtio block으로 연결합니다.
 

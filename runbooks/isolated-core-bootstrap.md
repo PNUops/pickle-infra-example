@@ -215,15 +215,26 @@ console 전체 검증을 실행한다. LXC에 Node.js를 설치하는 것으로 
 기존 기본값을 유지하며, 다른 값이면 설치 전에 중단한다.
 
 다음 사전 검사는 하나라도 실패하면 중단한다. `DEPLOY_ROOT`는 대상 호스트에서
-실제로 준비한 배포 루트로 지정한다. config의 `app_ctid`와 manifest, `pct config`의
-hostname 및 `isolated-core:<run UUID>` description을 대조한 후보 LXC 번호를 쓴다.
-아래 201은 예시다. 기존 운영 LXC의 번호를 대신 넣지 않는다.
+실제로 준비한 배포 루트로 지정한다. 후보 생성 때 사용한 config의 실제 경로를
+`CONFIG_PATH`, 완료된 실행의 manifest 경로를 `RUN_MANIFEST`로 지정한다. 같은
+보호 디렉터리 안에서 아직 존재하지 않는 출력 경로를 `CANDIDATE_CONFIG`로
+지정한다. 아래 201은 예시다. 기존 운영 LXC의 번호를 대신 넣지 않는다.
 
 ```bash
 set -e
 : "${DEPLOY_ROOT:?set the existing deployment checkout root}"
+: "${CONFIG_PATH:?set the verified bootstrap config path}"
+: "${RUN_MANIFEST:?set the matching completed manifest path}"
+: "${CANDIDATE_CONFIG:?set a new protected candidate config path}"
+APP_CTID=201
+: "${APP_HOSTNAME:?set the verified candidate hostname}"
 INFRA_DIR="$DEPLOY_ROOT/infra"
 CONSOLE_DIR="$DEPLOY_ROOT/console"
+test -f "$CONFIG_PATH"
+test -f "$RUN_MANIFEST"
+test ! -e "$CANDIDATE_CONFIG"
+test "$(dirname "$CANDIDATE_CONFIG")" = "$(dirname "$CONFIG_PATH")"
+test "$(stat -c %a "$(dirname "$CANDIDATE_CONFIG")")" = 700
 test -f "$INFRA_DIR/scripts/deploy-console.sh"
 test -f "$INFRA_DIR/scripts/lib/isolated_core.py"
 test "$(git -C "$CONSOLE_DIR" rev-parse --is-inside-work-tree)" = true
@@ -235,6 +246,41 @@ test "$(node -p 'Number(process.versions.node.split(".")[0])')" -ge 24
 git -C "$CONSOLE_DIR" rev-parse HEAD
 ```
 
+기존 부트스트랩 코드의 parser로 config와 manifest의 plan·완료 상태·생성된 app
+항목을 검증하고, 실제 `pct config`의 hostname과 description을 맞춘다. 아래는
+조회만 수행한다. 하나라도 맞지 않으면 후보 LXC를 변경하지 않는다.
+
+```bash
+python3 - "$INFRA_DIR" "$CONFIG_PATH" "$RUN_MANIFEST" "$APP_CTID" "$APP_HOSTNAME" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts/lib'))
+from isolated_core import Config, pct_container_identity, plan
+
+config = Config.load(Path(sys.argv[2]))
+manifest_path = Path(sys.argv[3])
+manifest = json.loads(manifest_path.read_text())
+ctid, hostname = int(sys.argv[4]), sys.argv[5]
+created = [row for row in manifest.get('created', []) if row.get('role') == 'application']
+actual = pct_container_identity(subprocess.check_output(['pct', 'config', str(ctid)], text=True))
+if (Path(config.state_dir) != manifest_path.parent or config.app_ctid != ctid
+        or config.app_hostname != hostname or manifest.get('completed') is not True
+        or manifest.get('plan') != plan(config) or len(created) != 1
+        or created[0].get('id') != ctid or created[0].get('hostname') != hostname
+        or actual != (hostname, 'isolated-core:' + str(manifest.get('run_id')))):
+    raise SystemExit('candidate config, manifest and CT identity disagree')
+print('candidate config, manifest and CT identity agree')
+PY
+```
+
+`deploy-console.sh`는 기본적으로 `pickle-app` hostname만 대상으로 한다. 후보 CT의
+실제 hostname이 다른 경우 config, manifest, `pct config`의 값이 일치하는지 확인한
+뒤 `EXPECTED_CT_HOSTNAME`에 정확한 값을 지정한다. 값이 비었거나 형식이 잘못됐거나
+CT의 hostname과 다르면 배포를 시작하지 않는다.
+
 nginx 설정을 바꾸기 전에 **원본 노드의 후보 CT 201을 새로 백업하고 다른 노드에서
 격리 복원**해 실제 파일을 읽을 수 있음을 확인한다. 원본 아카이브를 복원 노드로
 옮기지 않은 복원이나 같은 노드에서의 복원은 이 선행 조건을 충족하지 않는다.
@@ -244,21 +290,54 @@ nginx 설정을 바꾸기 전에 **원본 노드의 후보 CT 201을 새로 백�
 원본 CT가 계속 `running`인지 확인한다.
 
 ```bash
-# 원본 노드에서만 실행. 실제 아카이브 경로는 vzdump 출력에서 확인한다.
+# 원본 노드 root shell에서만 실행. RUN_TAG와 mapped root UID는 실제 CT 설정을 확인해 정한다.
 set -e
 APP_CTID=201
-: "${BACKUP_STORAGE:?set verified source-node backup storage}"
+: "${RUN_TAG:?set a unique reviewed run tag}"
+: "${MAPPED_ROOT_UID:?verify the unprivileged CT root UID mapping}"
+DUMP_DIR="/root/pickle-ct-backup-$RUN_TAG"
+TMP_DIR="/var/lib/vz/dump/pickle-ct-tmp-$RUN_TAG"
+test ! -e "$DUMP_DIR"
+test ! -e "$TMP_DIR"
 test "$(pct status "$APP_CTID")" = 'status: running'
-vzdump "$APP_CTID" --mode snapshot --compress zstd --storage "$BACKUP_STORAGE"
+SOURCE_CONFIG="$(pct config "$APP_CTID")"
+SOURCE_NET_KEYS="$(printf '%s\n' "$SOURCE_CONFIG" | sed -nE 's/^(net[0-9]+):.*/\1/p')"
+test "$SOURCE_NET_KEYS" = net0 || { echo 'source has unexpected network adapters' >&2; exit 1; }
+install -d -m 0700 "$DUMP_DIR" "$TMP_DIR"
+setfacl -m "u:${MAPPED_ROOT_UID}:--x" "$TMP_DIR"
+getfacl "$TMP_DIR"
+cd /
+umask 022
+vzdump "$APP_CTID" --mode snapshot --compress zstd \
+  --dumpdir "$DUMP_DIR" --tmpdir "$TMP_DIR" --remove 0 --lockwait 0
 test "$(pct status "$APP_CTID")" = 'status: running'
-# ARCHIVE를 방금 생성된 실제 로컬 파일로 설정한 뒤:
-: "${ARCHIVE:?set the fresh source-node archive path}"
+# ARCHIVE를 위 실행에서 생성된 단 하나의 실제 tar.zst 파일로 설정한 뒤:
+: "${ARCHIVE:?set the fresh archive path}"
+test -f "$ARCHIVE"
 test -s "$ARCHIVE"
+test "$(stat -c %a "$ARCHIVE")" = 600
+zstd -t "$ARCHIVE"
+tar --zstd -tf "$ARCHIVE" >/dev/null
+ARCHIVE_CONFIG="$(tar --zstd -xOf "$ARCHIVE" ./etc/vzdump/pct.conf)"
+ARCHIVE_NET_KEYS="$(printf '%s\n' "$ARCHIVE_CONFIG" | sed -nE 's/^(net[0-9]+):.*/\1/p')"
+test "$ARCHIVE_NET_KEYS" = net0 || { echo 'archive has unexpected network adapters' >&2; exit 1; }
+stat -c '%s %n' "$ARCHIVE"
 sha256sum "$ARCHIVE"
 ```
 
+unprivileged CT의 `vzdump`는 mapped root(일반적인 PVE 기본 매핑에서는 UID
+100000)가 임시 작업 디렉터리를 통과해야 한다. `/root` 아래 0700 디렉터리를
+`tmpdir`로 쓰면 archive 생성 전에 tar가 접근 거부로 실패한다. 위 ACL은 별도의
+임시 디렉터리에 mapped root의 **통과 권한만** 주며, 아카이브와 로그는 `/root`의
+보호 디렉터리에 둔다. `umask 022`는 PVE helper에만 적용한다. 실패 시 원본 CT
+상태, LVM 임시 snapshot, PVE task와 로그를 먼저 확인하고 반복 실행하지 않는다.
+작업이 끝나고 임시 디렉터리가 비었으며 관련 task가 없음을 확인한 뒤
+`setfacl -b "$TMP_DIR"`, `rmdir "$TMP_DIR"` 순서로 정리한다. 아카이브와 로그는
+보호 경로에 보존한다.
+
 방금 출력한 SHA-256과 파일 크기를 기록한다. 승인된 관리 전송 경로로 아카이브를
-**복원 노드의 보호된 로컬 경로**에 복사한다. 전송 명령과 경로는 양 노드의 실제
+**복원 노드의 0700 디렉터리와 0600 임시 파일**에 복사하고, 전체 전송과 해시
+확인이 끝난 뒤 최종 이름으로 바꾼다. 전송 명령과 경로는 양 노드의 실제
 SSH 및 스토리지 설정을 확인해 정한다. 복원 노드에서 다음 검사가 통과하지 않으면
 복원하지 않는다. `EXPECTED_SHA256`은 원본 노드에서 얻은 64자리 값이며,
 복원 노드의 `ARCHIVE`는 전송 완료된 파일의 절대 경로다.
@@ -270,6 +349,8 @@ set -e
 : "${EXPECTED_SHA256:?set the source-node SHA-256}"
 test -s "$ARCHIVE"
 printf '%s  %s\n' "$EXPECTED_SHA256" "$ARCHIVE" | sha256sum -c -
+zstd -t "$ARCHIVE"
+tar --zstd -tf "$ARCHIVE" >/dev/null
 ```
 
 복원 노드에서 `pct help restore`와 `pct help mount`로 설치된 PVE 버전의 옵션과
@@ -283,15 +364,50 @@ printf '%s  %s\n' "$EXPECTED_SHA256" "$ARCHIVE" | sha256sum -c -
 set -e
 : "${RESTORE_CTID:?set a cluster-wide unused CTID}"
 : "${RESTORE_STORAGE:?set verified restore storage}"
-pct restore "$RESTORE_CTID" "$ARCHIVE" --storage "$RESTORE_STORAGE" --start 0 --onboot 0
+: "${RESTORE_HOSTNAME:?set a distinct test hostname}"
+: "${RESTORE_MARKER:?set a unique ownership marker}"
+pct restore "$RESTORE_CTID" "$ARCHIVE" --storage "$RESTORE_STORAGE" \
+  --start 0 --onboot 0 --net0 'name=eth0,ip=manual,link_down=1' \
+  --hostname "$RESTORE_HOSTNAME" --description "$RESTORE_MARKER"
 test "$(pct status "$RESTORE_CTID")" = 'status: stopped'
+RESTORED_CONFIG="$(pct config "$RESTORE_CTID")"
+RESTORED_NET_KEYS="$(printf '%s\n' "$RESTORED_CONFIG" | sed -nE 's/^(net[0-9]+):.*/\1/p')"
+test "$RESTORED_NET_KEYS" = net0 || { echo 'restore has unexpected network adapters' >&2; exit 1; }
+RESTORED_NET0="$(printf '%s\n' "$RESTORED_CONFIG" | sed -n 's/^net0: //p')"
+case ",$RESTORED_NET0," in *,ip=manual,*) ;; *) echo 'restore IP is not manual' >&2; exit 1 ;; esac
+case ",$RESTORED_NET0," in *,link_down=1,*) ;; *) echo 'restore link is not down' >&2; exit 1 ;; esac
+case "$RESTORED_NET0" in *bridge=*|*gw=*|*ip6=*) echo 'restore has a routable NIC' >&2; exit 1 ;; esac
+test "$(printf '%s\n' "$RESTORED_CONFIG" | sed -n 's/^onboot: //p')" = 0
+printf '%s\n' "$RESTORED_CONFIG"
+```
+
+복원본이 `stopped`, `onboot: 0`이며 네트워크 어댑터는 수동 IP와
+`link_down=1`인 `net0` **하나만** 있고 bridge·gateway·IPv6 주소가 없어야 한다.
+원본 또는 archive에 `net1` 이상이 있으면 복원 전 중단한다. 복원 후 다른 NIC가
+나타나도 중단하고 원인을 조사하며 임의로 제거하지 않는다.
+`description`과 hostname은 원본과 다른 시험 소유권
+표시여야 한다. 복원 노드에서 **시작·exec·네트워크 연결을 하지 않고** 다음과 같이
+rootfs를 오프라인으로 검사한다. `pct mount`가 반환한 실제 경로를 `MOUNT_ROOT`와
+대조하고, nginx 설정 및 주요 파일의 SHA-256을 원본과 비교한다.
+
+```bash
+set -e
+MOUNT_ROOT="/var/lib/lxc/$RESTORE_CTID/rootfs"
+pct mount "$RESTORE_CTID"
+trap 'pct unmount "$RESTORE_CTID"' EXIT
+test -f "$MOUNT_ROOT/etc/nginx/conf.d/isolated-core.conf"
+sha256sum "$MOUNT_ROOT/etc/nginx/conf.d/isolated-core.conf"
+pct unmount "$RESTORE_CTID"
+trap - EXIT
+if findmnt -rn -M "$MOUNT_ROOT"; then
+  echo 'restore rootfs remains mounted' >&2
+  exit 1
+fi
+pct status "$RESTORE_CTID"
 pct config "$RESTORE_CTID"
 ```
 
-복원본이 `stopped`, `onboot: 0`인지 확인한다. 복원 노드에서 **시작·exec·네트워크
-연결을 하지 않고** `pct mount`로 복원 rootfs를 오프라인으로 열어 nginx 설정과
-주요 파일을 원본 및 원본 노드의 manifest 기록과 대조한 뒤 `pct unmount`한다. mount가
-반환한 실제 경로를 확인해 읽으며, mount가 실패하거나 잠금이 남으면 중단한다.
+unmount 뒤 `pct config`에 lock이 없어야 한다. mount가 실패하거나 잠금이 남으면 중단한다.
 복원본은 계속 꺼 둔다. 복원 실패·내용 불일치·동일 IP 노출 가능성이 있으면 nginx
 변경을 중단한다. 이 검증은 백업의 교차 노드 복원 가능성을 확인하는 것이며,
 DB와 서비스의 전체 복구 검증을 대신하지 않는다. 명령 근거는
@@ -299,21 +415,27 @@ DB와 서비스의 전체 복구 검증을 대신하지 않는다. 명령 근거
 실제 적용 전에는 설치 버전의 도움말을 우선한다.
 
 백업과 격리 복원까지 끝난 기존 후보 LXC에만 새 nginx 설정을 반영한다.
-부트스트랩 전체를 다시 실행하지 않는다. `config.json`은 이 후보를 생성할 때
-사용한 입력이다.
+부트스트랩 전체를 다시 실행하지 않는다. `CONFIG_PATH`는 위에서 신원을
+검증한 이 후보의 생성 입력이고, `CANDIDATE_CONFIG`는 아직 없는 보호 파일이다.
 
 ```bash
 set -e
 cd "$INFRA_DIR"
-APP_CTID=201
-python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "scripts/lib"); from isolated_core import Config, nginx; print(nginx(Config.load(Path(sys.argv[1]))), end="")' /root/isolated-core/config.json > /root/isolated-core/isolated-core.conf.candidate
+: "${APP_CTID:?set the verified candidate CTID}"
+: "${APP_HOSTNAME:?set the verified candidate hostname from config and pct config}"
+: "${CONFIG_PATH:?set the verified bootstrap config path}"
+: "${CANDIDATE_CONFIG:?set a new protected candidate config path}"
+test ! -e "$CANDIDATE_CONFIG"
+umask 077
+python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "scripts/lib"); from isolated_core import Config, nginx; print(nginx(Config.load(Path(sys.argv[1]))), end="")' "$CONFIG_PATH" > "$CANDIDATE_CONFIG"
 pct exec "$APP_CTID" -- test ! -e /etc/nginx/conf.d/isolated-core.conf.before-loopback
 pct exec "$APP_CTID" -- cp -p /etc/nginx/conf.d/isolated-core.conf /etc/nginx/conf.d/isolated-core.conf.before-loopback
-pct push "$APP_CTID" /root/isolated-core/isolated-core.conf.candidate /tmp/isolated-core.conf.candidate
+pct push "$APP_CTID" "$CANDIDATE_CONFIG" /tmp/isolated-core.conf.candidate
 pct exec "$APP_CTID" -- install -m 0644 /tmp/isolated-core.conf.candidate /etc/nginx/conf.d/isolated-core.conf
 pct exec "$APP_CTID" -- nginx -t
 pct exec "$APP_CTID" -- systemctl reload nginx
-CTID="$APP_CTID" PICKLE_ROOT="$DEPLOY_ROOT" CONSOLE_DIR="$CONSOLE_DIR" \
+CTID="$APP_CTID" EXPECTED_CT_HOSTNAME="$APP_HOSTNAME" \
+  PICKLE_ROOT="$DEPLOY_ROOT" CONSOLE_DIR="$CONSOLE_DIR" \
   VITE_VM_NETWORK_POLICY_ENABLED=1 VITE_PUBLIC_SOURCE_POLICY_ENABLED=1 \
   bash scripts/deploy-console.sh
 ```
@@ -396,4 +518,4 @@ private TLS HBA, host/CT/machine/DB identity와 schema-empty bootstrap guard, �
 비노출, marker 순서와 부분 생성 보존을 검증한다. 실제 LXC 생성이나
 호스트 재부팅을 수행하는 검사가 아니다.
 
-최종 갱신: 2026-09-16
+최종 갱신: 2026-09-27
