@@ -1,0 +1,21 @@
+[Unit]
+Description=Check backup datastore capacity
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+StateDirectory=pickle-example-capacity
+StateDirectoryMode=0700
+TimeoutStartSec=120
+ExecStart=/usr/bin/python3 /usr/local/libexec/pickle-example/pbs-capacity-monitor.py

@@ -102,7 +102,7 @@ runbooks/         운영 절차                                    // 이 예시
 | 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 예약 용량 기록) |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`(기본 설정 검증 후 요청한 Vite 기능 플래그로 최종 빌드), `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `register-image.py`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
-| 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `candidate-core-vzdump-hook.sh`, `core-pbs-monitor.py`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py` |
+| 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `candidate-core-vzdump-hook.sh`, `core-pbs-monitor.py`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py`, `pbs-capacity-probe.py`, `pbs-capacity-monitor.py` |
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
 
@@ -166,6 +166,11 @@ PBS로 백업하기 전 노드·스토리지·정족수·설정·실행 상태�
 보호된 수동 복구점을 확인하고 장애·복구 상태 변화를 알립니다. 설치 절차는
 [독립 감시 런북](runbooks/core-pbs-monitor.md)에 있습니다. CTID, 설정 해시, 암호화
 fingerprint와 날짜는 예시 값이며 실제 환경에 맞게 검증해 채워야 합니다.
+
+`pbs-capacity-probe.py`는 인증서 pin을 확인하고 읽기 전용 token으로 datastore 용량만
+조회합니다. `pbs-capacity-monitor.py`는 pve-node-3에서 5분마다 상태 변화를 확인하고
+알림 receipt를 기록합니다. token ACL, 보호 설정, 설치와 장애 대응은
+[PBS 용량 감시 런북](runbooks/pbs-capacity-monitor.md)에 있습니다.
 
 스모크는 목이 아니라 살아 있는 시스템에 실제 요청을 보냅니다. `smoke-provisioning.sh`는
 회원가입부터 인증, 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기, SSH 도달 확인,

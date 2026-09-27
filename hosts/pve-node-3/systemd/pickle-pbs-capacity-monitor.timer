@@ -1,0 +1,11 @@
+[Unit]
+Description=Check backup datastore capacity every five minutes
+
+[Timer]
+OnCalendar=*-*-* *:0/5:00
+AccuracySec=1s
+Persistent=true
+Unit=pickle-pbs-capacity-monitor.service
+
+[Install]
+WantedBy=timers.target
