@@ -19,11 +19,13 @@ user ── :22 ──▶ HAProxy (mode tcp, send-proxy-v2)
         sshgw LXC 100.64.0.2  →  sshgw-proxyfront :22  →  sshpiperd  →  VM
 ```
 
-The relay is the WireGuard **listener**; the campus sshgw side is the
-initiator (it holds `PersistentKeepalive` and dials the relay's public
-`:51820`). HAProxy prepends a **PROXY v2** header so the sshgw shim recovers the
-real client IP; the shim drops any connection that is not a valid PROXY v2
-header from `100.64.0.1` (contract conditions #1–#4).
+릴레이가 WireGuard **listener**이고 캠퍼스 sshgw가 `PersistentKeepalive`를 유지하며
+릴레이의 공개 `:51820`으로 연결합니다. HAProxy는 **PROXY v2** 헤더에 실제 클라이언트 IP를
+담습니다. sshgw 방화벽은 `wg0`의 릴레이 피어 `100.64.0.1`에서 오는 `:22` 연결만
+허용하며, shim은 유효한 PROXY v2 헤더가 없는 연결을 SSH 배너 없이 끊습니다. 헤더가
+잘못되거나 송신자가 릴레이 피어가 아니면 TCP 송신자 IP를 클라이언트 IP로 대신 신뢰하지
+않고 연결을 끊습니다. 내부 브리지에서 직접 연결하거나 비허용 송신자가 헤더를 위조한
+경우와 릴레이 피어가 손상된 헤더를 보낸 경우도 거부되는지 확인해야 합니다.
 
 ## Bring-up (after the instance exists)
 

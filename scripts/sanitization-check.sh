@@ -202,10 +202,9 @@ sanitization_check() {
     | xargs -0 grep -EnIi '(admin(istrative)? ssh[^0-9/]{0,24}|관리(용)? ?ssh[^0-9/]{0,24}|_SSH_PORT[^0-9/]{0,8}|\bSSH_PORT=|ssh +-p +|^[[:space:]]*Port +)[`:]?[0-9]+' 2>/dev/null \
     | grep -viE '(admin(istrative)? ssh[^0-9/]{0,24}|관리(용)? ?ssh[^0-9/]{0,24}|_SSH_PORT[^0-9/]{0,8}|\bSSH_PORT=|ssh +-p +|^[^:]*:[0-9]+:[[:space:]]*Port +)[`:]?22([^0-9]|$)')
 
-  # 4. Host names. `CLAUDE.md` lists "host names -> example names" as one of the
-  # substitutions this copy promises, and nothing checked it: the real console,
-  # gateway and SSH host names all passed. The sibling gate on the vault copy
-  # has had this rule since it was written; this one never received it.
+  # 4. Host names. This public copy substitutes example names for private host
+  # names. The gate checks that promise so a real console, gateway, or SSH host
+  # name cannot pass through an otherwise sanitized copy.
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     file=${line%%:*}
