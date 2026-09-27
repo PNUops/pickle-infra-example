@@ -204,12 +204,15 @@ reload하고, 게스트의 `127.0.0.1:80`에서 index와 JavaScript 번들을 �
 설정은 app 전용망 주소와 loopback에서만 80번 포트를 듣는다. 전용망 요청은 지정한
 proxy 주소만 허용하고, loopback 요청은 게스트 내부에서만 허용한다.
 
-대상 호스트에 infra와 검증할 console 커밋의 배포 체크아웃, Node.js 24 이상과 npm이
-먼저 준비되어야 한다. 대상 노드에 이 체크아웃과 Node/npm, 후보 CT 백업이
+대상 호스트에 확인한 infra 소스 트리와 검증할 console 커밋의 체크아웃,
+Node.js 24 이상과 npm이 먼저 준비되어야 한다. infra 소스는 고정 커밋의
+체크아웃 또는 커밋과 archive SHA-256을 기록한 트리를 사용한다.
+대상 노드에 이 소스와 Node/npm, 후보 CT 백업이
 없다면 아래 적용 단계로 진행할 수 없다. `deploy-console.sh`는 호스트에서 `npm ci`와
 console 전체 검증을 실행한다. LXC에 Node.js를 설치하는 것으로 대신할 수 없다.
-배포 루트는 실제 준비한 경로로 정한다. `/pickle`을 쓰려면 먼저 그 경로에 두
-체크아웃을 준비해야 한다.
+배포 루트와 infra·console 경로는 실제 준비한 값으로 정한다. 서로 다른
+보호 경로에 준비했다면 `INFRA_DIR`와 `CONSOLE_DIR`을 각각 지정한다.
+`/pickle`을 쓰려면 먼저 그 경로에 두 소스를 준비해야 한다.
 검증 단계는 두 Vite 기능 플래그를 해제해 기본값으로 시험·빌드한다. 검증이 모두
 통과한 뒤 요청한 `0` 또는 `1` 값으로 배포용 번들을 다시 빌드한다. 값이 없으면
 기존 기본값을 유지하며, 다른 값이면 설치 전에 중단한다.
@@ -219,6 +222,10 @@ console 전체 검증을 실행한다. LXC에 Node.js를 설치하는 것으로 
 `CONFIG_PATH`, 완료된 실행의 manifest 경로를 `RUN_MANIFEST`로 지정한다. 같은
 보호 디렉터리 안에서 아직 존재하지 않는 출력 경로를 `CANDIDATE_CONFIG`로
 지정한다. 아래 201은 예시다. 기존 운영 LXC의 번호를 대신 넣지 않는다.
+`INFRA_REVISION`은 검토한 commit SHA다. archive 트리를 사용한다면 추출 전
+상대 경로·링크 항목과 root 전용 권한을 확인하고, 원본 tar 경로와 별도로 확인한
+`INFRA_ARCHIVE_SHA256`을 지정한다. 사전 검사는 tar 해시·commit id와 실행에
+사용할 스크립트 세 파일의 바이트를 추출 트리와 대조한다.
 
 ```bash
 set -e
@@ -228,8 +235,8 @@ set -e
 : "${CANDIDATE_CONFIG:?set a new protected candidate config path}"
 APP_CTID=201
 : "${APP_HOSTNAME:?set the verified candidate hostname}"
-INFRA_DIR="$DEPLOY_ROOT/infra"
-CONSOLE_DIR="$DEPLOY_ROOT/console"
+INFRA_DIR="${INFRA_DIR:-$DEPLOY_ROOT/infra}"
+CONSOLE_DIR="${CONSOLE_DIR:-$DEPLOY_ROOT/console}"
 test -f "$CONFIG_PATH"
 test -f "$RUN_MANIFEST"
 test ! -e "$CANDIDATE_CONFIG"
@@ -237,6 +244,19 @@ test "$(dirname "$CANDIDATE_CONFIG")" = "$(dirname "$CONFIG_PATH")"
 test "$(stat -c %a "$(dirname "$CANDIDATE_CONFIG")")" = 700
 test -f "$INFRA_DIR/scripts/deploy-console.sh"
 test -f "$INFRA_DIR/scripts/lib/isolated_core.py"
+: "${INFRA_REVISION:?set the reviewed infra commit SHA}"
+if [ -e "$INFRA_DIR/.git" ]; then
+  test "$(git -C "$INFRA_DIR" rev-parse HEAD)" = "$INFRA_REVISION"
+  test -z "$(git -C "$INFRA_DIR" status --porcelain)"
+else
+  : "${INFRA_ARCHIVE:?set the verified infra tree archive}"
+  : "${INFRA_ARCHIVE_SHA256:?set its reviewed SHA-256}"
+  printf '%s  %s\n' "$INFRA_ARCHIVE_SHA256" "$INFRA_ARCHIVE" | sha256sum -c -
+  test "$(git get-tar-commit-id < "$INFRA_ARCHIVE")" = "$INFRA_REVISION"
+  for path in scripts/deploy-console.sh scripts/lib/ct.sh scripts/lib/isolated_core.py; do
+    cmp -s "$INFRA_DIR/$path" <(tar -xOf "$INFRA_ARCHIVE" "$path")
+  done
+fi
 test "$(git -C "$CONSOLE_DIR" rev-parse --is-inside-work-tree)" = true
 test -f "$CONSOLE_DIR/package-lock.json"
 test -f "$CONSOLE_DIR/scripts/verify.sh"
@@ -437,31 +457,96 @@ umask 077
 python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "scripts/lib"); from isolated_core import Config, nginx; print(nginx(Config.load(Path(sys.argv[1]))), end="")' "$CONFIG_PATH" > "$CANDIDATE_CONFIG"
 pct exec "$APP_CTID" -- test ! -e /etc/nginx/conf.d/isolated-core.conf.before-loopback
 pct exec "$APP_CTID" -- cp -p /etc/nginx/conf.d/isolated-core.conf /etc/nginx/conf.d/isolated-core.conf.before-loopback
-pct push "$APP_CTID" "$CANDIDATE_CONFIG" /tmp/isolated-core.conf.candidate
-pct exec "$APP_CTID" -- install -m 0644 /tmp/isolated-core.conf.candidate /etc/nginx/conf.d/isolated-core.conf
+pct exec "$APP_CTID" -- test ! -e /root/isolated-core.conf.candidate
+pct push "$APP_CTID" "$CANDIDATE_CONFIG" /root/isolated-core.conf.candidate
+pct exec "$APP_CTID" -- install -m 0644 /root/isolated-core.conf.candidate /etc/nginx/conf.d/isolated-core.conf
+# Preserve and disable the packaged wildcard vhost when it exists.
+if pct exec "$APP_CTID" -- test -f /etc/nginx/conf.d/default.conf; then
+  pct exec "$APP_CTID" -- test ! -e /etc/nginx/conf.d/default.conf.before-loopback
+  pct exec "$APP_CTID" -- mv /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf.before-loopback
+fi
 pct exec "$APP_CTID" -- nginx -t
 pct exec "$APP_CTID" -- systemctl reload nginx
+APP_IP="$(python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "scripts/lib"); from isolated_core import Config; print(Config.load(Path(sys.argv[1])).app_ip)' "$CONFIG_PATH")"
+EXPECTED_LISTENERS="$(printf '127.0.0.1:80\n%s:80\n' "$APP_IP" | sort)"
+ACTUAL_LISTENERS="$(pct exec "$APP_CTID" -- ss -H -ltn '( sport = :80 )' | awk '{print $4}' | sort)"
+test "$ACTUAL_LISTENERS" = "$EXPECTED_LISTENERS" || {
+  echo 'nginx still has an unexpected :80 listener; stop before deploying' >&2
+  exit 1
+}
 CTID="$APP_CTID" EXPECTED_CT_HOSTNAME="$APP_HOSTNAME" \
   PICKLE_ROOT="$DEPLOY_ROOT" CONSOLE_DIR="$CONSOLE_DIR" \
   VITE_VM_NETWORK_POLICY_ENABLED=0 VITE_PUBLIC_SOURCE_POLICY_ENABLED=0 \
   bash scripts/deploy-console.sh
+pct exec "$APP_CTID" -- cmp -s /root/isolated-core.conf.candidate /etc/nginx/conf.d/isolated-core.conf
+pct exec "$APP_CTID" -- rm -- /root/isolated-core.conf.candidate
 ```
 
-`nginx -t` 또는 reload가 실패하면 console 배포를 시작하지 않는다. localhost의
-index와 번들 확인은 실제 정적 파일을 올린 뒤 배포 스크립트가 수행한다.
-아래 명령은 이 후보의 nginx 설정만 원래대로 돌린다. 기존 설정에서는 localhost
-postcheck가 다시 실패하므로 원인 조사 뒤 재적용한다.
+`nginx -t` 또는 reload가 실패하면 console 배포를 시작하지 않는다. 기본 vhost를
+제외하고도 이전 wildcard 소켓이 남으면 배포를 멈춘다. 실제 `ss` 결과와 유효
+설정을 대조하고 80번 포트의 established 연결이 **0개**일 때에만 후보 nginx를
+restart한 뒤 위 listener 검사를 다시 실행한다. 같은 포트에 알 수 없는 다른
+프로세스가 있거나 예상한 두 주소 외의 listener가 남으면 진행하지 않는다.
+localhost의 index와 번들 확인은 실제 정적 파일을 올린 뒤 배포 스크립트가
+수행한다. 호출자가 보호 로그를 위해 umask 077을 사용해도 배포 스크립트는
+공개 정적 번들 `dist/`만 nginx worker가 읽을 수 있는 권한으로 맞춘다.
+
+성공한 첫 배포의 정적 번들만 되돌릴 때는 `.old`가 실제로 이전 번들인지
+내용과 소유권을 확인한다. 이전 번들이 비어 있었다면 복원 후 `/`는 403이다.
+현재 번들은 새 고유 경로에 남기고 `.old`를 web root로 옮긴다. 연결 중인
+세션이 있으면 중단 시간을 정한 뒤 수행한다.
 
 ```bash
-APP_CTID=201
-pct exec "$APP_CTID" -- cp -p /etc/nginx/conf.d/isolated-core.conf.before-loopback /etc/nginx/conf.d/isolated-core.conf
+set -e
+: "${APP_CTID:?set the verified candidate CTID}"
+: "${APP_HOSTNAME:?set the verified candidate hostname}"
+: "${INFRA_DIR:?set the reviewed infra source path}"
+: "${ROLLBACK_TAG:?set a unique lowercase rollback tag}"
+[[ "$ROLLBACK_TAG" =~ ^[a-z0-9-]+$ ]]
+. "$INFRA_DIR/scripts/lib/ct.sh"
+require_ct "$APP_CTID" "$APP_HOSTNAME"
+WEB_ROOT=/var/www/pickle-console
+RETAINED="${WEB_ROOT}.rollback-${ROLLBACK_TAG}"
+pct exec "$APP_CTID" -- test -d "$WEB_ROOT.old"
+pct exec "$APP_CTID" -- test ! -e "$RETAINED"
+SESSIONS="$(pct exec "$APP_CTID" -- ss -Htan state established '( sport = :80 )')"
+test -z "$SESSIONS" || { echo 'active :80 sessions; defer bundle rollback' >&2; exit 1; }
+pct exec "$APP_CTID" -- mv "$WEB_ROOT" "$RETAINED"
+pct exec "$APP_CTID" -- mv "$WEB_ROOT.old" "$WEB_ROOT"
 pct exec "$APP_CTID" -- nginx -t
 pct exec "$APP_CTID" -- systemctl reload nginx
 ```
 
-첫 console 배포에는 이전 번들이 없어 postcheck 실패 시 자동으로 되돌릴 대상이
-없다. 스크립트는 실패를 보고하고 새 web root를 그대로 남긴다. 실패한 후보의
-`/var/www/pickle-console`과 배포 로그를 조사한 뒤 빌드 원인을 고치고 다시 배포한다.
+아래는 앱 설정과 패키지 기본 vhost를 모두 원본으로 돌리는 절차다. 재시작은
+기존 wildcard 소켓을 되살릴 수 있으므로 원인 조사와 세션 수 확인 뒤에만 한다.
+
+```bash
+set -e
+APP_CTID=201
+: "${INFRA_DIR:?set the reviewed infra source path}"
+: "${APP_HOSTNAME:?set the verified candidate hostname}"
+. "$INFRA_DIR/scripts/lib/ct.sh"
+require_ct "$APP_CTID" "$APP_HOSTNAME"
+SESSIONS="$(pct exec "$APP_CTID" -- ss -Htan state established '( sport = :80 )')"
+test -z "$SESSIONS" || { echo 'active :80 sessions; defer nginx restart' >&2; exit 1; }
+pct exec "$APP_CTID" -- test -f /etc/nginx/conf.d/isolated-core.conf.before-loopback
+HAS_DEFAULT_BACKUP="$(pct exec "$APP_CTID" -- sh -c 'if [ -f /etc/nginx/conf.d/default.conf.before-loopback ]; then printf yes; else printf no; fi')"
+case "$HAS_DEFAULT_BACKUP" in yes|no) ;; *) echo 'cannot determine default vhost backup state' >&2; exit 1 ;; esac
+if [ "$HAS_DEFAULT_BACKUP" = yes ]; then
+  pct exec "$APP_CTID" -- test ! -e /etc/nginx/conf.d/default.conf
+fi
+pct exec "$APP_CTID" -- cp -p /etc/nginx/conf.d/isolated-core.conf.before-loopback /etc/nginx/conf.d/isolated-core.conf
+if [ "$HAS_DEFAULT_BACKUP" = yes ]; then
+  pct exec "$APP_CTID" -- mv /etc/nginx/conf.d/default.conf.before-loopback /etc/nginx/conf.d/default.conf
+fi
+pct exec "$APP_CTID" -- nginx -t
+pct exec "$APP_CTID" -- systemctl restart nginx
+```
+
+첫 배포라도 기존 web root 디렉터리가 있으면 스크립트가 이를 `.old`로 옮긴다.
+postcheck가 실패하면 새 번들을 `.failed`에 보존하고 기존 디렉터리를 복구한다.
+기존 디렉터리가 없으면 자동 복구 대상이 없으므로 새 web root를 그대로 남긴다.
+두 경우 모두 배포 로그와 파일 권한을 조사한 뒤 원인을 고치고 다시 배포한다.
 기존 서비스의 console이나 다른 LXC를 rollback 대상으로 사용하지 않는다.
 
 ### 정책 UI 활성화 전 검사와 재배포

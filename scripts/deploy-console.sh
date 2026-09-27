@@ -51,6 +51,9 @@ if [ "$candidate_build_requested" -eq 1 ]; then
   "${candidate_build_env[@]}" npm run --silent build
 fi
 
+# The caller may use umask 077 for protected config and logs. Only the public
+# frontend bundle needs to be readable by the unprivileged nginx worker.
+chmod -R a+rX dist
 tar -czf /tmp/pickle-console-dist.tgz -C dist .
 pct exec "$CTID" -- bash -c "mkdir -p $WEB_ROOT.new && rm -rf $WEB_ROOT.new/*"
 pct push "$CTID" /tmp/pickle-console-dist.tgz /tmp/pickle-console-dist.tgz

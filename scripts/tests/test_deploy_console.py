@@ -3,6 +3,7 @@
 
 import os
 from pathlib import Path
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -12,7 +13,8 @@ DEPLOY = Path(__file__).resolve().parents[1] / 'deploy-console.sh'
 
 
 class DeployConsoleTest(unittest.TestCase):
-    def run_deploy(self, flags=None, fail_verify=False, hostname='pickle-app'):
+    def run_deploy(self, flags=None, fail_verify=False, hostname='pickle-app',
+                   private_dist=False):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             console = root / 'console'
@@ -23,6 +25,8 @@ class DeployConsoleTest(unittest.TestCase):
             (console / 'scripts').mkdir()
             (console / 'dist').mkdir()
             (console / 'dist' / 'index.html').write_text('bundle')
+            if private_dist:
+                (console / 'dist' / 'index.html').chmod(0o600)
             (console / 'scripts' / 'verify.sh').write_text(
                 '#!/usr/bin/env bash\n'
                 'printf "verify:%s:%s:%s\\n" "${VITE_VM_NETWORK_POLICY_ENABLED-unset}" '
@@ -54,7 +58,11 @@ class DeployConsoleTest(unittest.TestCase):
             env.update(flags or {})
             result = subprocess.run(['bash', str(DEPLOY)], env=env, text=True,
                                     capture_output=True, check=False)
-            return result, trace.read_text().splitlines() if trace.exists() else []
+            lines = trace.read_text().splitlines() if trace.exists() else []
+            if private_dist:
+                mode = stat.S_IMODE((console / 'dist' / 'index.html').stat().st_mode)
+                lines.append(f'dist-index-mode:{mode:04o}')
+            return result, lines
 
     def test_candidate_build_follows_default_verification(self):
         result, lines = self.run_deploy({
@@ -73,6 +81,15 @@ class DeployConsoleTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('verify:unset:unset:', lines)
         self.assertFalse(any(line.startswith('npm:run --silent build') for line in lines))
+        self.assertTrue(any(line.startswith('pct:push ') for line in lines))
+
+    def test_static_bundle_is_readable_with_restrictive_input_mode(self):
+        result, lines = self.run_deploy({
+            'VITE_VM_NETWORK_POLICY_ENABLED': '0',
+            'VITE_PUBLIC_SOURCE_POLICY_ENABLED': '0',
+        }, private_dist=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('dist-index-mode:0644', lines)
         self.assertTrue(any(line.startswith('pct:push ') for line in lines))
 
     def test_failed_verify_never_builds_or_deploys(self):

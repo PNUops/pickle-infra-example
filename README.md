@@ -110,6 +110,8 @@ runbooks/         운영 절차                                    // 이 예시
 후보 LXC에는 `CTID`와 `EXPECTED_CT_HOSTNAME`을 함께 지정합니다. 실제 hostname과
 다르면 설치 전에 중단합니다. 후보의 백업·격리 복원 절차는
 `runbooks/isolated-core-bootstrap.md`에 있습니다.
+배포 스크립트는 정적 산출물 `dist/`를 nginx가 읽을 수 있게 조정합니다. 배포 로그는
+호출자가 별도 보호 경로에 둡니다.
 
 `create-pbs-vm.sh`는 명시한 UEFI loader와 vars template을 host capability 및 firmware
 descriptor와 대조합니다. cloud-init seed는 read-only virtio block으로 연결합니다.
