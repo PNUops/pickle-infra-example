@@ -105,8 +105,10 @@ def counters(payload: object, datastore: str) -> tuple[int, int, int]:
         raise ProbeFailure('Unexpected response structure')
     data = payload['data']
     if not set(data).issubset({'total', 'used', 'avail', 'gc-status', 'counts',
-                               'store', 'datastore', 'name'}):
+                               'store', 'datastore', 'name', 'backend-type'}):
         raise ProbeFailure('Unexpected datastore fields')
+    if 'backend-type' in data and data['backend-type'] != 'filesystem':
+        raise ProbeFailure('Unsupported datastore backend type')
     for key in ('store', 'datastore', 'name'):
         if key in data and data[key] != datastore:
             raise ProbeFailure('Response datastore identity does not match the example config')

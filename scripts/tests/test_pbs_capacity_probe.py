@@ -86,10 +86,16 @@ class CapacityProbeTests(unittest.TestCase):
         self.assertEqual(probe.counters({'data': {'total': 1000, 'used': 400,
                                                   'avail': 500, 'gc-status': {}, 'store': 'example-store'}}, 'example-store'),
                          (1000, 400, 500))
+        self.assertEqual(probe.counters({'data': {'total': 1000, 'used': 400,
+                                                  'avail': 500, 'backend-type': 'filesystem'}},
+                                        'example-store'), (1000, 400, 500))
 
     def test_rejects_missing_or_unexpected_fields(self):
         for response in ({'data': {'total': 1, 'used': 0}},
-                         {'data': {'total': 1, 'used': 0, 'avail': 1, 'path': '/tmp'}}):
+                         {'data': {'total': 1, 'used': 0, 'avail': 1, 'path': '/tmp'}},
+                         *({'data': {'total': 1000, 'used': 400, 'avail': 500,
+                                     'backend-type': kind}}
+                           for kind in ('other', None, True, 1, {}))):
             with self.subTest(response=response), self.assertRaises(probe.ProbeFailure):
                 probe.counters(response, 'example-store')
 
