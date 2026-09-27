@@ -8,6 +8,8 @@ python3 scripts/tests/test_settings_bootstrap.py
 python3 -B scripts/tests/test_backup_storage.py
 python3 -B scripts/tests/test_candidate_core_vzdump_hook.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_core_pbs_monitor.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_pbs_capacity_probe.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_pbs_capacity_monitor.py
 python3 scripts/tests/test_isolated_core.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_isolated_services.py
 python3 scripts/tests/test_db_pbs_backup.py
