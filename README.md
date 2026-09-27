@@ -102,7 +102,7 @@ runbooks/         운영 절차                                    // 이 예시
 | 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 예약 용량 기록) |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`(기본 설정 검증 후 요청한 Vite 기능 플래그로 최종 빌드), `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `register-image.py`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
-| 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py` |
+| 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `candidate-core-vzdump-hook.sh`, `core-pbs-monitor.py`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py` |
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
 
@@ -158,6 +158,14 @@ DB/PBS 도구는 Python 3와 `proxmox-backup-client`, source의 PostgreSQL 18 cl
 다른 호스트의 monitor는 현재 PBS 증거로 10분 경고와 15분 실패를 판단합니다. timer와
 메일은 별도 설치 및 활성화가 필요합니다. 키 보관, 보존 정책과 전체 서비스 복원 시험은
 [DB/PBS 런북](runbooks/db-pbs-backup.md)에 있습니다. 사용자 VM 정기 백업은 이 도구의 대상이 아닙니다.
+
+`candidate-core-vzdump-hook.sh`는 예시 후보 노드 pve-node-2의 CT 1200/1201/1202/1204를
+PBS로 백업하기 전 노드·스토리지·정족수·설정·실행 상태를 확인합니다. 등록 절차는
+[후보 코어 백업 런북](runbooks/candidate-core-backup.md)에 있습니다.
+`core-pbs-monitor.py`는 pve-node-3의 읽기 전용 PBS storage에서 네 CT의 일일 복구점과
+보호된 수동 복구점을 확인하고 장애·복구 상태 변화를 알립니다. 설치 절차는
+[독립 감시 런북](runbooks/core-pbs-monitor.md)에 있습니다. CTID, 설정 해시, 암호화
+fingerprint와 날짜는 예시 값이며 실제 환경에 맞게 검증해 채워야 합니다.
 
 스모크는 목이 아니라 살아 있는 시스템에 실제 요청을 보냅니다. `smoke-provisioning.sh`는
 회원가입부터 인증, 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기, SSH 도달 확인,
@@ -238,6 +246,11 @@ DB 백업 테스트는 PBS 응답을 대신하는 메모리 객체로 snapshot �
 | 호스트 이름 | `pve-node`, `gpu-node`, `dept-node`, `pve-node-2`, `pve-node-3` |
 | 비Proxmox 노드 주소·접속명 | `192.0.2.20`, `dept-node.example.ac.kr` |
 | Proxmox 노드 후보 주소 | `192.0.2.30`, `192.0.2.31` |
+| 코어 PBS 예시 CTID | `1200`, `1201`, `1202`, `1204` |
+| 코어 PBS 예시 storage·작업 이름 | `pbs-example-core-write`, `pbs-example-core-read`, `example-core-daily` |
+| 코어 PBS 예시 설정 해시·암호화 fingerprint | 동일 숫자 64자리의 합성 SHA-256 문자열과 `aa` 32쌍 |
+| 코어 PBS 예시 복구점·시행 날짜 | `2025-01-01` 수동 복구점, `2025-01-02` 첫 일일 백업 시행 |
+| 코어 PBS 예시 메일 설정 경로 | `/etc/pickle-example/mail.json` |
 | 비Proxmox 노드 하드웨어 모델 | 아키텍처만 남기고 제조사·모델명 생략 |
 
 `192.0.2.0/24`와 `198.51.100.0/24`, `203.0.113.0/24`는 RFC 5737이 문서화 용도로 예약한

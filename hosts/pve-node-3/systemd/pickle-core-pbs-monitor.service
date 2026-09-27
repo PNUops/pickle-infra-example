@@ -1,0 +1,15 @@
+[Unit]
+Description=Check pve-node-3 core LXC PBS backup freshness
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+StateDirectory=pickle-core-pbs-monitor
+StateDirectoryMode=0700
+TimeoutStartSec=120
+ExecStart=/usr/bin/python3 /usr/local/libexec/pickle/core-pbs-monitor.py --first-due-date 2025-01-02 --deadline 04:30
