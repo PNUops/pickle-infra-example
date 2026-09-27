@@ -241,10 +241,10 @@ WGCONF
 fi
 systemctl enable -q wg-quick@wg0
 
-# 3e. nftables — peer-only ingress. :22 (the shim) is reachable ONLY over wg0
-# from the Lightsail transport IP; everything else is dropped. Network-layer
-# half of contract condition #2 (the shim's REQUIRE policy + 100.64.0.2 bind
-# are the app-layer half).
+# 3e. nftables — peer-only ingress. :22 (the shim) is reachable only over wg0
+# from the Lightsail transport IP; all other :22 ingress is dropped. The shim binds
+# 100.64.0.2 and requires a valid PROXY v2 header from that peer, so vmbr1
+# neighbors cannot supply forged client IPs or bypass the header requirement.
 nft_tmp=$(mktemp)
 cat > "$nft_tmp" <<'NFT'
 #!/usr/sbin/nft -f
