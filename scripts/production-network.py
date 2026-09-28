@@ -37,7 +37,8 @@ STARTUP_WAIT_INTERVAL = 1.0
 GUEST_START_DELAY_TIMEOUT = 120
 GUEST_STARTALL_TIMEOUT = 600
 HOOKS = {"raw": ("raw", "PREROUTING"), "mangle": ("mangle", "PREROUTING"),
-         "input": ("filter", "INPUT"), "forward": ("filter", "FORWARD"), "nat": ("nat", "POSTROUTING")}
+         "input": ("filter", "INPUT"), "forward": ("filter", "FORWARD"),
+         "nat": ("nat", "POSTROUTING"), "dnat": ("nat", "PREROUTING")}
 BASELINE_FILES = ["/etc/network/interfaces", "/etc/hosts", "/etc/resolv.conf", "/etc/ssh/sshd_config",
                   "/etc/ssh/sshd_config.d/10-pickle.conf", "/etc/pve/corosync.conf"]
 
@@ -333,7 +334,7 @@ def guard_fingerprints():
 def clear_chains():
     for binary in ("iptables", "ip6tables"):
         for name, (table, hook) in HOOKS.items():
-            if name == "nat" and binary == "ip6tables":
+            if name in ("nat", "dnat") and binary == "ip6tables":
                 continue
             rule = ["-m", "comment", "--comment", COMMENT, "-j", CHAINS[name]]
             while run([binary, "-w", "10", "-t", table, "-C", hook, *rule], check=False).returncode == 0:
@@ -460,6 +461,16 @@ def guest_firewall_check():
                 raise GuestFirewallNotReady("PVE guest firewall chain is not ready")
 
 
+def assert_no_interim_dnat():
+    """A missing option must not leave an owned pre-routing exposure behind."""
+    dnat_hook = ["-A", "PREROUTING", "-m", "comment", "--comment", COMMENT,
+                 "-j", CHAINS["dnat"]]
+    current = [shlex.split(line) for line in run(["iptables", "-t", "nat", "-S", "PREROUTING"]).stdout.splitlines()]
+    assert dnat_hook not in current, "unexpected owned DNAT hook without configuration"
+    assert run(["iptables", "-t", "nat", "-S", CHAINS["dnat"]], check=False).returncode != 0, \
+        "unexpected owned DNAT chain without configuration"
+
+
 def validate_current(config, node, state):
     """Commit validation is read-only; it cannot invalidate its controller proof."""
     cluster_check(config)
@@ -476,6 +487,8 @@ def validate_current(config, node, state):
     assert sysctl("net.ipv4.ip_forward") == ("1" if active else "0")
     assert sysctl("net.ipv6.conf.all.forwarding") == "0"
     plan = firewall_plan(config, node, tuple(state["accept_mark"]), active)
+    if "interim_ingress" not in config:
+        assert_no_interim_dnat()
     for name, specification in config["vnets"].items():
         rows = json.loads(run(["ip", "-j", "-4", "address", "show", "dev", name]).stdout)
         addresses = {item["local"] for row in rows for item in row.get("addr_info", [])}

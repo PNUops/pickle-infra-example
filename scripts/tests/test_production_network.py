@@ -552,6 +552,92 @@ class ProductionNetworkTests(unittest.TestCase):
         self.assertNotIn(['-i', 'pguest', '-o', 'vmbr0', '-j', 'RETURN'], plan['iptables']['forward'])
         self.assertIn(['-i', 'pguest', '-o', 'pguest', '-j', 'RETURN'], plan['iptables']['forward'])
 
+    def test_interim_ingress_active_standby_and_original_tuple(self):
+        config = copy.deepcopy(CONFIG)
+        config['interim_ingress'] = {'source': '192.0.2.10', 'destination': '100.65.1.10'}
+        validate_config(config)
+        mark = (0x1bd20, 0xffffffff, 0x80000000)
+        active = firewall_plan(config, 'pve-a', mark, True)
+        standby = firewall_plan(config, 'pve-b', mark, False)
+        self.assertEqual(len(active['iptables']['dnat']), 2)
+        self.assertEqual(standby['iptables']['dnat'], [])
+        self.assertNotIn('dnat', active['ip6tables'])
+        self.assertNotIn('dnat', standby['ip6tables'])
+        for port in ('24080', '24443'):
+            self.assertIn(['-i', 'vmbr0', '-s', '192.0.2.10', '-d', '192.0.2.30',
+                           '-p', 'tcp', '--dport', port, '-j', 'DNAT',
+                           '--to-destination', '100.65.1.10:' + port], active['iptables']['dnat'])
+            forward = ['-i', 'vmbr0', '-o', 'pinfra', '-s', '192.0.2.10', '-d', '100.65.1.10',
+                       '-p', 'tcp', '--dport', port, '-m', 'conntrack', '--ctstate', 'NEW',
+                       '--ctorigdst', '192.0.2.30', '--ctorigdstport', port, '-j', 'RETURN']
+            self.assertIn(forward, active['iptables']['forward'])
+            self.assertNotIn(forward, standby['iptables']['forward'])
+            self.assertIn('ct original ip daddr 192.0.2.30', nft_filter_rule(forward, 'ipv4'))
+            self.assertIn('ct original proto-dst ' + port, nft_guard_text(config, 'pve-a', mark, True, 'guard'))
+            self.assertIn(['-d', '192.0.2.31', '-p', 'tcp', '--dport', port,
+                           '-j', 'DROP'], standby['iptables']['input'])
+        self.assertNotIn('dnat', firewall_plan(CONFIG, 'pve-a', mark, True)['iptables'])
+
+    def test_interim_ingress_rejects_unowned_endpoints_and_shape(self):
+        for ingress in (None, {}, {'source': '192.0.2.10', 'destination': '100.65.1.10', 'port': 80},
+                        {'source': '100.66.1.10', 'destination': '100.65.1.10'},
+                        {'source': '192.0.2.30', 'destination': '100.65.1.10'},
+                        {'source': '100.64.0.30', 'destination': '100.65.1.10'},
+                        {'source': '198.51.100.2', 'destination': '100.65.1.10'},
+                        {'source': '192.0.2.10', 'destination': '100.65.0.1'},
+                        {'source': '192.0.2.10', 'destination': '100.65.1.20'},
+                        {'source': '100.65.1.10', 'destination': '100.65.1.10'},
+                        {'source': True, 'destination': '100.65.1.10'},
+                        {'source': 3221225994, 'destination': '100.65.1.10'},
+                        {'source': '192.0.2.10 ', 'destination': '100.65.1.10'},
+                        {'source': '192.0.2.10', 'destination': True},
+                        {'source': '192.0.2.10', 'destination': 1681981706},
+                        {'source': '192.0.2.10', 'destination': '100.65.1.10 '}):
+            with self.subTest(ingress=ingress):
+                config = copy.deepcopy(CONFIG)
+                config['interim_ingress'] = ingress
+                with self.assertRaises((AssertionError, ValueError, KeyError)):
+                    validate_config(config)
+
+    def test_interim_dnat_hook_lifecycle_is_ipv4_only(self):
+        module = load_script('production-network')
+        config = copy.deepcopy(CONFIG)
+        config['interim_ingress'] = {'source': '192.0.2.10', 'destination': '100.65.1.10'}
+        plan = firewall_plan(config, 'pve-a', (0x1bd20, 0xffffffff, 0x80000000), True)
+        with patch.object(module, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+            module.install_chains(plan)
+        ipv4_batches = [item.kwargs['stdin'] for item in run.call_args_list
+                        if item.args and item.args[0] == ['iptables-restore', '--noflush', '--wait', '10']]
+        ipv6_batches = [item.kwargs['stdin'] for item in run.call_args_list
+                        if item.args and item.args[0] == ['ip6tables-restore', '--noflush', '--wait', '10']]
+        nat_batch = next(batch for batch in ipv4_batches if batch.startswith('*nat\n'))
+        self.assertIn('-I PREROUTING 1 -m comment --comment example-production-network -j PKL-PROD-DNAT', nat_batch)
+        self.assertFalse(any('PKL-PROD-DNAT' in batch for batch in ipv6_batches))
+        with patch.object(module, 'run', return_value=subprocess.CompletedProcess([], 1, '', '')) as run:
+            module.clear_chains()
+        self.assertFalse(any(item.args and item.args[0][:1] == ['ip6tables'] and
+                             'PKL-PROD-DNAT' in item.args[0] for item in run.call_args_list))
+
+    def test_absent_interim_config_rejects_residual_owned_dnat(self):
+        module = load_script('production-network')
+        clean = subprocess.CompletedProcess([], 1, '', '')
+        with patch.object(module, 'run', side_effect=[
+                subprocess.CompletedProcess([], 0, '', ''), clean]):
+            module.assert_no_interim_dnat()
+        with patch.object(module, 'run', return_value=subprocess.CompletedProcess(
+                [], 0, '-A PREROUTING -m comment --comment example-production-network -j PKL-PROD-DNAT\n', '')):
+            with self.assertRaisesRegex(AssertionError, 'DNAT hook'):
+                module.assert_no_interim_dnat()
+        with patch.object(module, 'run', side_effect=[
+                subprocess.CompletedProcess([], 0, '', ''),
+                subprocess.CompletedProcess([], 0, '-N PKL-PROD-DNAT\n', '')]):
+            with self.assertRaisesRegex(AssertionError, 'DNAT chain'):
+                module.assert_no_interim_dnat()
+        with patch.object(module, 'run', side_effect=[
+                subprocess.CompletedProcess([], 0,
+                    '-A PREROUTING -p tcp --dport 24443 -j DNAT --to-destination 100.65.1.10:24443\n', ''), clean]):
+            module.assert_no_interim_dnat()
+
     def test_active_owner_allows_only_configured_pbs_backup_tuple(self):
         config = copy.deepcopy(CONFIG)
         config['backup_service'] = {'source': '100.65.1.21', 'destination': '203.0.113.40', 'port': 8007}
