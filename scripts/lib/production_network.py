@@ -12,6 +12,7 @@ CHAINS = {
     "input": "PKL-PROD-IN",
     "forward": "PKL-PROD-FWD",
     "nat": "PKL-PROD-NAT",
+    "dnat": "PKL-PROD-DNAT",
 }
 
 
@@ -63,6 +64,24 @@ def validate_config(config):
         host_addresses = {ipaddress.IPv4Address(value) for node in config["nodes"].values()
                           for key, value in node.items() if key in ("campus", "mesh", "bmc_address") and value}
         assert destination not in host_addresses
+    if "interim_ingress" in config:
+        ingress = config["interim_ingress"]
+        assert isinstance(ingress, dict) and set(ingress) == {"source", "destination"}
+        assert type(ingress["source"]) is str and type(ingress["destination"]) is str
+        source = ipaddress.IPv4Address(ingress["source"])
+        destination = ipaddress.IPv4Address(ingress["destination"])
+        assert str(source) == ingress["source"] and str(destination) == ingress["destination"]
+        infra = ipaddress.IPv4Network(config["vnets"]["pinfra"]["cidr"])
+        assert destination == ipaddress.IPv4Address(config["service_sources"]["proxy"])
+        assert destination in infra and destination not in (infra.network_address, infra.broadcast_address,
+                                                            ipaddress.IPv4Address(config["vnets"]["pinfra"]["gateway"]))
+        assert source != destination
+        assert not (source.is_unspecified or source.is_multicast or source.is_loopback
+                    or source.is_link_local or source == ipaddress.IPv4Address("255.255.255.255"))
+        assert all(source not in network for network in networks)
+        host_addresses = {ipaddress.IPv4Address(value) for node in config["nodes"].values()
+                          for key, value in node.items() if key in ("campus", "mesh", "bmc_address") and value}
+        assert source not in host_addresses
     return config
 
 
@@ -126,8 +145,8 @@ def firewall_plan(config, node_name, accept_mark, active):
     node = config["nodes"][node_name]
     peer = next(value for name, value in config["nodes"].items() if name != node_name)
     uplink, mesh = config["uplink"], config["mesh_interface"]
-    v4 = {name: [] for name in CHAINS}
-    v6 = {name: [] for name in CHAINS if name != "nat"}
+    v4 = {name: [] for name in CHAINS if name != "dnat" or "interim_ingress" in config}
+    v6 = {name: [] for name in CHAINS if name not in ("nat", "dnat")}
     # Admit only the intended encrypted VTEP before host INPUT policy is evaluated.
     local_vxlan = ["-p", "udp", "--dport", "4789", "-m", "addrtype", "--dst-type", "LOCAL"]
     v4["raw"] += [["-i", mesh, "-s", peer["mesh"], *local_vxlan, "-j", "RETURN"],
@@ -153,6 +172,15 @@ def firewall_plan(config, node_name, accept_mark, active):
                     ["-i", "pguest", "-j", "DROP"],
                     ["-i", "pinfra", "-s", config["service_sources"]["api"], "-p", "tcp", "--dport", "8006", "-j", "RETURN"],
                     ["-i", "pinfra", "-p", "tcp", "-m", "multiport", "--dports", "22,8006,3128,111", "-j", "DROP"]]
+    ingress = config.get("interim_ingress")
+    if ingress is not None:
+        for port in (24080, 24443):
+            v4["input"].append(["-d", node["campus"], "-p", "tcp",
+                                "--dport", str(port), "-j", "DROP"])
+            if active:
+                v4["dnat"].append(["-i", uplink, "-s", ingress["source"], "-d", node["campus"],
+                                   "-p", "tcp", "--dport", str(port), "-j", "DNAT",
+                                   "--to-destination", f'{ingress["destination"]}:{port}'])
     v6["input"] += [["-i", name, "-j", "DROP"] for name in config["vnets"]]
     for family in (v4, v6):
         family["forward"] += [["-i", "pguest", "-o", "pguest", "-j", "RETURN"],
@@ -165,6 +193,12 @@ def firewall_plan(config, node_name, accept_mark, active):
         if active:
             v4["forward"].append(["-i", name, "-o", uplink, "-j", "RETURN"])
             v4["nat"].append(["-s", config["vnets"][name]["cidr"], "-o", uplink, "-j", "MASQUERADE"])
+    if ingress is not None and active:
+        for port in (24080, 24443):
+            v4["forward"].append(["-i", uplink, "-o", "pinfra", "-s", ingress["source"],
+                                  "-d", ingress["destination"], "-p", "tcp", "--dport", str(port),
+                                  "-m", "conntrack", "--ctstate", "NEW", "--ctorigdst", node["campus"],
+                                  "--ctorigdstport", str(port), "-j", "RETURN"])
     v4["forward"].append(["-i", "pguest", "-o", "pinfra", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"])
     for source in ("proxy", "sshgw", "relay"):
         v4["forward"].append(["-i", "pinfra", "-o", "pguest", "-s", config["service_sources"][source], "-j", "RETURN"])
@@ -209,6 +243,13 @@ def nft_filter_rule(rule, family):
         elif option == "--sport":
             assert protocol in ("tcp", "udp")
             words += [protocol, "sport", "{ " + ", ".join(value.split(",")) + " }"]
+        elif option == "--ctorigdst":
+            assert family == "ipv4"
+            ipaddress.IPv4Address(value)
+            words += ["ct original ip daddr", value]
+        elif option == "--ctorigdstport":
+            assert protocol in ("tcp", "udp") and value.isdecimal() and 1 <= int(value) <= 65535
+            words += ["ct original proto-dst", value]
         elif option == "--icmp-type":
             assert protocol == "icmp" and value == "echo-request"
             words += ["icmp type", "echo-request"]

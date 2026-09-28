@@ -139,6 +139,9 @@ PBS 준비 도구는 Ubuntu 22.04 amd64의 libvirt와 네트워크를 유지하�
 mesh `100.64.0.*` 예시를 구분합니다. 실제 배포 전에는 이 예약 주소를 해당 환경에 맞게 교체합니다.
 PVE와 NetBird의 기존 firewall을 유지하며, guest 정책을 우회하는 mark와 VLAN frame을
 별도 guard로 처리합니다.
+선택 설정 `interim_ingress`는 edge의 확인된 IPv4에서 활성 gateway owner의 campus
+TCP 24080/24443으로 들어온 연결만 `pinfra` proxy의 같은 포트로 전달합니다. Standby는
+해당 포트를 열지 않으며 proxy guest firewall은 별도로 설정해야 합니다.
 기본 실행은 사전 검사이고 실제 적용은 아직 수행하지 않았습니다. 생성된 SDN 파일을 수동으로
 편집하지 않는 부팅·rollback 절차는 [운영 네트워크 런북](runbooks/production-network.md)에 있습니다.
 

@@ -118,6 +118,21 @@ IP 할당은 플랫폼 DB와 cloud-init이 소유한다. 이 zone에는 DHCP와 
 
 ## 방화벽 경계
 
+### 임시 edge ingress (선택 설정)
+
+`interim_ingress`는 `source`와 `destination` 두 IPv4 필드만 받는다. 이 예시의
+source `192.0.2.10`은 edge 호스트 주소, destination `100.65.1.10`은
+`service_sources.proxy` 주소다. 실제 환경에서는 확인한 edge 출구 주소와
+proxy의 `pinfra` 주소를 사용한다. 포트는 TCP 24080과 24443으로 고정된다.
+
+활성 gateway owner에서만 uplink의 정확한 source, 자기 campus 목적지와 포트를
+proxy의 동일 포트로 DNAT한다. Standby는 `PKL-PROD-DNAT` 체인과 hook을
+소유하되 `RETURN`만 두며, 두 노드는 로컬 campus의 두 포트를 INPUT에서
+DROP한다. FORWARD의 신규 연결 예외는 conntrack 원본 목적지와 포트까지
+확인하고 `RETURN`하여 PVE guest firewall 판단을 계속 받는다. Proxy guest
+firewall과 listener는 별도로 준비해야 한다. IPv6 DNAT은 생성하지 않는다.
+설정을 제거했는데 소유 DNAT 체인이나 hook이 남으면 현재 상태 검증이 실패한다.
+
 VM별 IN/OUT 정책은 기존 `pve-firewall` backend와 플랫폼 API가 소유한다. 이 도구는
 per-VM allowlist를 만들거나 PVE/NetBird firewall을 비활성화하지 않는다. 새
 `proxmox-firewall` backend로 전환하지도 않는다.
