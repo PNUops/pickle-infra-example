@@ -98,7 +98,7 @@ runbooks/         운영 절차                                    // 이 예시
 
 | 분류 | 스크립트 |
 |---|---|
-| 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh`, `bootstrap-isolated-core.sh`, `bootstrap-isolated-services.sh` |
+| 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh`, `bootstrap-isolated-core.sh`, `bootstrap-isolated-services.sh`, `bootstrap-candidate-llm.sh` |
 | 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 예약 용량 기록) |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`(기본 설정 검증 후 요청한 Vite 기능 플래그로 최종 빌드), `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `register-image.py`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
@@ -155,6 +155,17 @@ API는 `isolated` profile, 시작을 막는 marker와 비활성 job/정책/vendo
 disabled 상태로 둡니다. 카탈로그, 기존 데이터 이관과 공개 진입은 후속 작업입니다. 실제 설치와 전체 서비스 복구 검증은
 [격리 core 런북](runbooks/isolated-core-bootstrap.md)의 순서와 소유권 확인을 따릅니다.
 
+후보 LLM 게이트웨이는 `examples/candidate-llm.json`에 대상 노드와 새 CTID, proxy 주소,
+proxy CT 설정 파일, Debian 템플릿 및 바이너리·유닛 경로와 SHA-256을 명시합니다. `--config`만 주면 계획을
+출력하고 `--apply`를 추가해야 생성합니다. 적용 전에 게스트 소유권과 빈 CTID·volume,
+클러스터의 활성 PVE 작업·HA 리소스 부재, proxy가 실행 중인지와 단일 `net0`, 네트워크 및 저장소 여유를 확인합니다. 첫 부팅
+직후 SSH를 중지·mask하지만 게스트 방화벽은 APT 설치 뒤에 켜지므로 그 사이에는 기존
+격리망 경계에 의존합니다. 실패하면 소유권을 다시 확인해 제한 시간 안에 CT 정지를 시도하고
+결과를 기록합니다. 게스트와 volume은 보존합니다. 완료해도
+`onboot=0`과 LLM 서비스 disabled/inactive 상태로 남습니다. 자격증명 복원, 활성화,
+트래픽 전환과 롤백은 별도 검토 단계입니다. 입력과 확인 순서는
+[후보 LLM 게이트웨이 런북](runbooks/candidate-llm-gateway.md)에 있습니다.
+
 DB/PBS 도구는 Python 3와 `proxmox-backup-client`, source의 PostgreSQL 18 client를
 사용합니다. 기본 실행은 계획 출력이며 실제 백업은 `--run`으로 시작합니다. DB dump를
 암호화하여 업로드하고 실제 복원한 파일의 hash를 대조한 뒤 별도 검증 receipt를 게시합니다.
@@ -201,7 +212,9 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 `inventory-readiness.md`(IP pool 한 건 등록과 MAINTENANCE 노드의 VM 방화벽 opt-in 준비),
 `template-replication.md`(중지 VM template의 검증된 VMA archive 복제와 실패 정리),
 `isolated-core-bootstrap.md`(새 API/콘솔과 별도 DB LXC의 private TLS 연결 및 기동 제한),
-`isolated-service-core.md`(새 후보 proxy/SSH gateway LXC의 방화벽 우선 준비와 서비스 정지 인계), `pbs-egress.md`(DB LXC의 PBS TCP 8007 egress와 state-guarded 재적용),
+`isolated-service-core.md`(새 후보 proxy/SSH gateway LXC의 방화벽 우선 준비와 서비스 정지 인계),
+`candidate-llm-gateway.md`(새 후보 LLM 게이트웨이 LXC의 닫힌 상태 준비와 활성화 경계),
+`pbs-egress.md`(DB LXC의 PBS TCP 8007 egress와 state-guarded 재적용),
 `db-pbs-backup.md`(플랫폼 DB의 암호화 PBS 백업, 독립 복구점 감시 및 같은 서비스의 수동 복원),
 `gpu-node-vllm.md`(GPU 노드 vLLM 서빙 운영 — 시작·종료, 모델·플래그 교체와 롤백, 장애
 복구, 재부팅), `proxmox-node-intake.md`(Proxmox 노드 후보 인수 절차 초안 — 초기화 전
