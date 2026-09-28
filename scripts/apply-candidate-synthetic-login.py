@@ -11,6 +11,7 @@ import socket
 import ssl
 import stat
 import subprocess
+import time
 
 
 STAGE = Path('/root/pickle-synthetic-login-ingress')
@@ -20,6 +21,20 @@ BACKUP = STAGE / 'ct1200-inner-health.before.conf'
 LOCK = Path('/run/lock/pickle-synthetic-login-ingress.lock')
 BASE_SHA = '4a457f2d58fe16f8d11af4b6be6f3a4c8e8c73ac52b8d9010eb8152964c3346c'
 TRIAL_SHA = '81c3205d89587ed8538243a6996f32cbd2631bb446cbf81d15a4cec65d68b185'
+MATRIX_DEADLINE_SECONDS = 10.0
+MATRIX_RETRY_SECONDS = 0.25
+
+
+class MatrixMismatch(RuntimeError):
+    """A completed probe returned a status outside the expected route matrix."""
+
+    def __init__(self, message, *, retryable=False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+class MatrixTimeout(RuntimeError):
+    """Fresh connections never converged on the installed configuration."""
 
 
 def require(condition, message):
@@ -88,33 +103,62 @@ def probe(path, source, host='staging.example.com', method='GET'):
 
 
 def matrix(trial):
-    require(probe('/__ingress_probe', '203.0.113.14') == '200',
-            'existing health route failed')
-    require(probe('/', '203.0.113.14') == '404', 'root opened')
-    require(probe('/api/v1/admin', '203.0.113.14') == '404', 'admin route opened')
-    require(probe('/api/v1/vms', '203.0.113.14') == '404', 'VM route opened')
-    require(probe('/api/v1/llm-keys', '203.0.113.14') == '404', 'LLM route opened')
-    require(probe('/api/auth/login', '203.0.113.14') == '404',
-            'unversioned auth route opened')
-    require(probe('/__ingress_probe', '198.51.100.99') == '403',
-            'unlisted client opened')
-    require(probe('/__ingress_probe', '203.0.113.14', host='other.example') == '421',
-            'wrong Host opened')
+    allowed = '203.0.113.14'
+    default_host = 'staging.example.com'
+    checks = [
+        ('/__ingress_probe', allowed, default_host, 'GET', '200'),
+        ('/', allowed, default_host, 'GET', '404'),
+        ('/api/v1/admin', allowed, default_host, 'GET', '404'),
+        ('/api/v1/vms', allowed, default_host, 'GET', '404'),
+        ('/api/v1/llm-keys', allowed, default_host, 'GET', '404'),
+        ('/api/auth/login', allowed, default_host, 'GET', '404'),
+        ('/__ingress_probe', '198.51.100.99', default_host, 'GET', '403'),
+        ('/__ingress_probe', allowed, 'other.example', 'GET', '421'),
+    ]
     if trial:
-        require(probe('/login', '203.0.113.14') == '200', 'login index unavailable')
-        require(probe('/login', '203.0.113.14', method='HEAD') == '200',
-                'login HEAD unavailable')
-        require(probe('/api/v1/meta/status', '203.0.113.14') == '200',
-                'API status unavailable')
-        require(probe('/login', '203.0.113.14', method='POST') == '404',
-                'login POST opened')
-        require(probe('/api/v1/auth/login', '203.0.113.14') == '404',
-                'auth GET opened')
-        require(probe('/api/v1/me', '203.0.113.14', method='POST') == '404',
-                'me POST opened')
+        checks.extend([
+            ('/login', allowed, default_host, 'GET', '200'),
+            ('/login', allowed, default_host, 'HEAD', '200'),
+            ('/api/v1/meta/status', allowed, default_host, 'GET', '200'),
+            ('/login', allowed, default_host, 'POST', '404'),
+            ('/api/v1/auth/login', allowed, default_host, 'GET', '404'),
+            ('/api/v1/me', allowed, default_host, 'POST', '404'),
+        ])
     else:
-        require(probe('/login', '203.0.113.14') == '404',
-                'login remains open after recovery')
+        checks.append(('/login', allowed, default_host, 'GET', '404'))
+    for path, source, host, method, expected in checks:
+        actual = probe(path, source, host=host, method=method)
+        if actual != expected:
+            old_health_worker = (trial and actual == '404' and
+                                 (path, method) in (('/login', 'GET'),
+                                                    ('/login', 'HEAD'),
+                                                    ('/api/v1/meta/status', 'GET')))
+            old_trial_worker = (not trial and actual == '200' and
+                                (path, method) == ('/login', 'GET'))
+            raise MatrixMismatch(f'{method} {path} from {source} Host {host}: '
+                                 f'expected {expected}, got {actual}',
+                                 retryable=old_health_worker or old_trial_worker)
+
+
+def wait_matrix(trial):
+    deadline = time.monotonic() + MATRIX_DEADLINE_SECONDS
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            matrix(trial)
+            return attempts
+        except MatrixMismatch as error:
+            if not error.retryable:
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                current_sha = digest(TARGET.read_bytes())
+                raise MatrixTimeout(
+                    f'new connections did not converge within '
+                    f'{MATRIX_DEADLINE_SECONDS:g}s after {attempts} attempts; '
+                    f'last mismatch: {error}; installed_sha256={current_sha}') from error
+            time.sleep(min(MATRIX_RETRY_SECONDS, remaining))
 
 
 def recover():
@@ -127,10 +171,11 @@ def recover():
     run('nginx', '-t')
     run('nginx', '-s', 'reload')
     pinned(TARGET, BASE_SHA, 0o644)
-    matrix(False)
+    attempts = wait_matrix(False)
     print(json.dumps({'mode': 'recover', 'target_sha256': BASE_SHA,
                       'health_only_new_connections': True,
-                      'existing_sessions_not_revoked': True}, sort_keys=True))
+                      'existing_sessions_not_revoked': True,
+                      'matrix_attempts': attempts}, sort_keys=True))
 
 
 def apply():
@@ -151,16 +196,21 @@ def apply():
         run('nginx', '-t')
         run('nginx', '-s', 'reload')
         pinned(TARGET, TRIAL_SHA, 0o644)
-        matrix(True)
+        attempts = wait_matrix(True)
     except BaseException as error:
         try:
             recover()
         except BaseException as rollback_error:
-            raise RuntimeError(f'apply failed: {error}; recovery failed: '
-                               f'{rollback_error}') from error
-        raise RuntimeError(f'apply failed: {error}; health-only restored') from error
+            current_sha = digest(TARGET.read_bytes())
+            raise RuntimeError(f'apply failed ({type(error).__name__}): {error}; '
+                               f'recovery failed ({type(rollback_error).__name__}): '
+                               f'{rollback_error}; installed_sha256={current_sha}') from error
+        raise RuntimeError(f'apply failed ({type(error).__name__}): {error}; '
+                           f'health-only restored for new connections; '
+                           f'installed_sha256={digest(TARGET.read_bytes())}') from error
     print(json.dumps({'mode': 'apply', 'target_sha256': TRIAL_SHA,
-                      'backup_sha256': BASE_SHA, 'probe_matrix': True}, sort_keys=True))
+                      'backup_sha256': BASE_SHA, 'probe_matrix': True,
+                      'matrix_attempts': attempts}, sort_keys=True))
 
 
 def main():

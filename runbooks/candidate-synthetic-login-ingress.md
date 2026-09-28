@@ -80,6 +80,14 @@ python3 -B /root/pickle-synthetic-login-ingress/apply-candidate-synthetic-login.
 
 도구는 원본을 root:0600으로 보관하고 후보를 원자적으로 교체한 후 `nginx -t`,
 graceful reload, health·로그인·API status·차단 경로 probe와 설치 해시를 확인한다.
+reload 직후 이전 worker가 새 연결을 수락하면 정상 후보 파일이 설치돼도 첫 `/login`
+probe가 404일 수 있다. 적용 중 `/login` GET/HEAD와 `/api/v1/meta/status` GET의
+404만 0.25초 간격으로 최대 10초 재시도한다. root·관리·VM·LLM 경로가 열리거나
+출발지/Host 거부가 깨진 경우와 upstream 503 등 다른 불일치는 즉시 원복한다.
+각 probe는 새 TLS 연결을 사용한다. 복구 때는 이전 trial worker의 `/login` 200만
+재시도한다. 허용된 불일치가 deadline을 넘으면 마지막 경로·방법·기대/실제 코드와
+당시 설치 파일 SHA-256을 포함한 timeout으로 실패한다. TLS 연결, 인증서, 소켓 등
+probe 오류는 timeout으로 바꾸지 않고 즉시 실패한다.
 적용 중 예외가 나면 원본으로 되돌려 재검증한다. 프로세스가 강제 종료되면
 `apply`를 반복하지 말고 `recover`로 현재 해시를 확인하며 복구한다. 정상 복구
 후 다시 시험할 때 `apply`는 보존된 guest 원본이 root:0600이고 원본 해시가
@@ -118,7 +126,9 @@ sha256sum /etc/nginx/conf.d/pickle-interim-tls.conf
 
 복구 도구는 원본 백업 SHA와 현재 파일이 health-only 또는 이 시험 설정의 정확한
 SHA인지 확인한 후 원본을 원자적으로 복원하고 `nginx -t`, graceful reload,
-health 200·root 404·로그인 404와 접근 거부를 재검증한다. 이후 외부 새 연결에서도
+health 200·root 404·로그인 404와 접근 거부가 새 연결에서 최대 10초 안에
+수렴하는지 재검증한다. 불일치가 계속되면 원본 파일 SHA를 유지한 채 마지막
+실제 응답과 설치 SHA를 보고한다. 수렴한 뒤에는 외부 새 연결에서도 별도로
 health-only 결과를 확인한다. 이 결과와 도구의 JSON은 **새 연결 기준**이다.
 기존에 수락된 TLS/keepalive 세션은 nginx의 `worker_shutdown_timeout 3600s`에
 따라 최대 1시간 이전 login 경로를 유지할 수 있다. 세션이나 conntrack을 강제로
