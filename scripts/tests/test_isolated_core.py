@@ -383,6 +383,9 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
                       core.postgresql_dropin(config()))
 
     def test_nginx_uses_official_stable_signed_repository_and_explicit_pin(self):
+        self.assertEqual(core.NGINX_DROPIN,
+                         '[Unit]\nRequires=isolated-core-firewall.service networking.service\n'
+                         'After=isolated-core-firewall.service networking.service\n')
         self.assertEqual(core.NGINX_SIGNING_FINGERPRINT,
                          '573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62')
         self.assertIn('https://nginx.org/packages/debian trixie nginx', core.NGINX_REPOSITORY)

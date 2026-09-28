@@ -46,6 +46,11 @@ JobRunr와 정책 producer는 꺼진 상태이며 정상 기동은 개발 시더
   show dev eth0` 결과에서 설정된 IPv4와 MTU를 정확히 확인하며, 불일치하면 네트워크를
   고치지 않고 PostgreSQL 시작을 실패시킨다. 부팅 검증은 `systemctl is-active`만으로
   끝내지 말고 private `5432` 연결과 App의 `verify-full` query까지 확인한다.
+- App 게스트의 nginx drop-in은 `isolated-core-firewall.service`와
+  `networking.service`를 모두 `Requires`/`After`로 요구한다. private 주소가
+  붙기 전에 nginx가 해당 주소의 TCP 80에 bind하면 `Cannot assign requested address`로
+  실패할 수 있다. 부팅 검증은 `systemctl is-active nginx.service`와 proxy에서
+  App의 index 및 `/api/v1/meta/status` GET을 확인한다.
 
 ## 버전 기준
 
@@ -183,7 +188,8 @@ bash scripts/bootstrap-isolated-core.sh --config /root/isolated-core/config.json
 4. 게스트마다 전용 nft table을 적용한다. DB는 app의 TCP 5432, 앱은 전용 proxy의
    TCP 80만 새 연결로 받는다. API TCP 8080은 loopback에만 bind한다.
 5. stock `nftables.service`는 새 게스트에서 mask하고 전용 firewall unit만 table을
-   관리한다. nginx, PostgreSQL, API는 이 unit을 Requires/After로 요구한다. nginx에도
+   관리한다. nginx, PostgreSQL, API는 이 unit을 Requires/After로 요구한다. nginx는
+   `networking.service`도 Requires/After로 요구한다. nginx에도
    proxy socket 주소 allow/deny를 두어 원본 IP header 신뢰가 방화벽 하나에만 의존하지 않는다.
 6. app에서 `sslmode=verify-full`과 SCRAM으로 새 DB에 실제 연결하고 TLS 세션임을 확인한다.
    이 검사는 애플리케이션 테이블을 만들지 않는다.
