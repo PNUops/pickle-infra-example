@@ -345,6 +345,8 @@ host all all ::/0 reject
 
 
 NETWORKING_DROPIN = '[Unit]\nRequires=isolated-core-firewall.service\nAfter=isolated-core-firewall.service\n'
+NGINX_DROPIN = ('[Unit]\nRequires=isolated-core-firewall.service networking.service\n'
+                'After=isolated-core-firewall.service networking.service\n')
 def postgresql_dropin(c: Config) -> str:
     return ('[Unit]\nRequires=isolated-core-firewall.service networking.service\n'
             'After=isolated-core-firewall.service networking.service\n'
@@ -716,7 +718,7 @@ class Bootstrap:
         self.put(ctid, '/etc/nginx/conf.d/isolated-core.conf', nginx(c))
         r.guest(ctid, ['install', '-d', '/etc/systemd/system/nginx.service.d'], label='proxy dependency directory')
         self.put(ctid, '/etc/systemd/system/nginx.service.d/10-isolated-core.conf',
-                 '[Unit]\nRequires=isolated-core-firewall.service\nAfter=isolated-core-firewall.service\n')
+                 NGINX_DROPIN)
         # Append only on this newly created guest, outside the PVE-managed hosts block.
         r.guest(ctid, ['python3', '-c',
                       "import pathlib,sys; p=pathlib.Path('/etc/hosts'); p.open('a').write('\\n'+sys.argv[1]+' '+sys.argv[2]+'\\n')",
