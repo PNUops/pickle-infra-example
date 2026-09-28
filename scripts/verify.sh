@@ -12,6 +12,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_pbs_capacity_probe.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_pbs_capacity_monitor.py
 python3 scripts/tests/test_isolated_core.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_isolated_services.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_candidate_llm.py
 python3 scripts/tests/test_db_pbs_backup.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_production_network.py
 python3 -B scripts/tests/test_qdevice_activation.py
