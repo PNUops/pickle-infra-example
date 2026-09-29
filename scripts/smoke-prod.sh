@@ -21,8 +21,11 @@
 #   - any data mutation beyond the optional --allow-provision cycle
 #
 # The --allow-provision cycle uses REAL host capacity (prod == the dev host
-# today) and, as written, the dev mock-mail verification path — on a real-SMTP
-# prod, seed a pre-verified probe group/account instead.
+# today). Its requester is a scratch user written straight into LXC 101's
+# database (lib/auth.sh mk_verified_user; needs python3 with bcrypt), not signed
+# up: signup's verification token only travels by mail, dev already runs the
+# production mail profile, and the token is stored hashed. On a prod whose
+# database this host cannot reach, use a pre-verified probe account instead.
 # ==========================================================================
 set -uo pipefail
 
@@ -30,11 +33,6 @@ ALLOW_PROVISION=0
 [ "${1:-}" = "--allow-provision" ] && ALLOW_PROVISION=1
 
 BASE="${BASE:-https://pickle.pusan.ac.kr/api/v1}"
-# Signup requires consent to every current terms version (422 otherwise).
-# Built once from the public endpoint so version bumps never break the smoke.
-CONSENTS_JSON=$(curl -fsS "$BASE/meta/terms" 2>/dev/null | jq -c '[.[] | {docType, version}]' 2>/dev/null)
-[ -n "$CONSENTS_JSON" ] || CONSENTS_JSON='[]'
-
 CTID="${CTID:-101}"
 HC="$(dirname "$0")/health-check.sh"
 B=$(mktemp); trap 'rm -f "$B"' EXIT
@@ -50,6 +48,18 @@ req(){ local n="$1" e="$2"; shift 2; local c
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-" 2>/dev/null; }
 # shellcheck source=scripts/lib/auth.sh
 . "$(dirname "$0")/lib/auth.sh"
+# mk_verified_user (lib/auth.sh) writes the --allow-provision requester through
+# these two. pgx feeds the statement on stdin: `su -c` re-parses its command
+# string, and a statement passed there loses anything that shell expands.
+pgq(){ pct exec "$CTID" -- su - postgres -c "psql -d pickle_dev -qtAc \"$1\"" 2>/dev/null | tr -d '[:space:]'; }
+pgx(){
+  local out
+  if ! out=$(pct exec "$CTID" -- su - postgres -c \
+      "psql -q -d pickle_dev -v ON_ERROR_STOP=1 -f -" <<<"$1" 2>&1); then
+    printf 'pgx failed: %s\n%s\n' "${1%%$'\n'*}" "$out" >&2
+    return 1
+  fi
+}
 
 echo "== [0] infra health snapshot (health-check.sh) =="
 if [ -x "$HC" ]; then
@@ -84,20 +94,15 @@ if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
   echo "== [3] provision → destroy cycle (--allow-provision; REAL capacity) =="
   TS=$(date +%s)-$RANDOM
   VM=""; VNAME=""
-  # requester: fresh signup via dev mock-mail verification. Real-SMTP prod: swap
-  # for a pre-verified probe account and skip the mock-mail token read.
+  # requester: a verified scratch user written straight into the database (see
+  # the header). Without a token every step below fails on 401 and the cycle
+  # stops at the precondition check, before any VM exists.
   OEMAIL="prodsmoke-${TS}@pusan.ac.kr"; OPW="prodsmoke-${TS}!"
-  curl -sS -o /dev/null --max-time 20 -X POST "$BASE/auth/signup" -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$OEMAIL\",\"password\":\"$OPW\",\"name\":\"prod smoke\",\"consents\":$CONSENTS_JSON}"
-  sleep 2
-  TOK=$(pct exec "$CTID" -- sh -c "grep -o 'token=[A-Za-z0-9_-]*' /var/lib/pickle/mock-mail.log | tail -1 | cut -d= -f2" 2>/dev/null)
-  if [ -n "$TOK" ]; then
-    curl -sS -o /dev/null --max-time 20 -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' -d "{\"token\":\"$TOK\"}"
+  if MADE=$(mk_verified_user "$BASE" "$OEMAIL" "$OPW" "prod smoke"); then
+    OAT=${MADE%% *}; ok "scratch owner created and signed in"
   else
-    ko "no mock-mail token (real-SMTP prod: use a pre-verified probe account)"
+    OAT=""; ko "scratch owner created and signed in"
   fi
-  req "owner login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$OEMAIL\",\"password\":\"$OPW\"}"
-  OAT=$(jq -r '.accessToken // empty' "$B")
   req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"prodsmoke\",\"kind\":\"PROJECT\"}"
   GID=$(jq -r '.id // empty' "$B")
   # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
