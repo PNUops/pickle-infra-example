@@ -25,8 +25,6 @@ set -uo pipefail
 BASE="${BASE:-https://pickle.pusan.ac.kr/api/v1}"
 # Signup requires consent to every current terms version (422 otherwise).
 # Built once from the public endpoint so version bumps never break the smoke.
-CONSENTS_JSON=$(curl -fsS "$BASE/meta/terms" 2>/dev/null | jq -c '[.[] | {docType, version}]' 2>/dev/null)
-[ -n "$CONSENTS_JSON" ] || CONSENTS_JSON='[]'
 
 RELAY="${RELAY:-198.51.100.10}"          # raw Lightsail IP (works pre/post DNS flip)
 CTID="${CTID:-101}"                      # pickle-api LXC (DB + env live here)
@@ -74,25 +72,33 @@ denied(){ local q="select count(*) from audit_logs where action='sshgw.route_den
 mklocalkey(){ ssh-keygen -q -t ed25519 -N '' -C '' -f "$1"; TMPFILES+=("$1" "$1.pub"); }
 fp_of(){ ssh-keygen -lf "$1" | awk '{print $2}'; }
 
-# mk_user EMAIL PW NAME → echoes "<accessToken> <userId>" (signup→verify→login).
+# mk_user EMAIL PW NAME → echoes "<accessToken> <userId> <userId_DB>"
+# (signup→verify→login). The id comes back twice because the two sides of this
+# script want different values: the API takes the public UUID (grant payloads),
+# while audit_logs.actor_id — like every foreign key — still holds the internal
+# bigint. Callers keep the plain name for the API id and the _DB suffix for SQL.
 mk_user(){ mk_verified_user "$BASE" "$@"; }
-# reg_key TOKEN PW NAME PUBKEYLINE → echoes keyId (paste-registration).
-reg_key(){ curl -sS -o "$B" -X POST "$BASE/me/ssh-keys" -H "Authorization: Bearer $1" -H 'Content-Type: application/json' -d "$(jq -nc --arg n "$3" --arg k "$4" '{name:$n,publicKey:$k}')"; jq -r '.id // empty' "$B"; }
+# issue_key TOKEN KEYFILE → issues THIS VM's key for that account, writes the
+# private half to KEYFILE and echoes the fingerprint. Keys are per (user, VM)
+# now, so there is nothing to paste and nothing to issue before the VM exists.
+issue_key(){ curl -sS -o "$B" -X POST "$BASE/vms/$VM/ssh-key" -H "Authorization: Bearer $1" >/dev/null; jq -r '.privateKey // empty' "$B" > "$2"; chmod 600 "$2"; jq -r '.key.fingerprint // empty' "$B"; }
+# key_status TOKEN → HTTP status of an issue attempt, for the refusal checks.
+issue_status(){ curl -sS -o "$B" -w '%{http_code}' -X POST "$BASE/vms/$VM/ssh-key" -H "Authorization: Bearer $1"; }
 # addmember EMAIL ROLE (as group OWNER). Asserted (201): a silently failed add
 # would make the membership-scoped checks below vacuous — a VIEWER/MEMBER that
 # was never added is denied as a plain non-member and the test still "passes".
 addmember(){ req "add member ($1)" 201 -X POST "$BASE/workspaces/$GID/members" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"role\":\"MEMBER\"}"; }
 # addgrant USERID ROLE — put somebody on THIS VM's access list. Group membership
 # admits nobody to a VM on its own; every rung below is granted per resource.
-addgrant(){ req "grant $2 on the vm (user $1)" 201 -X POST "$BASE/vms/$VM/access" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"granteeType\":\"USER\",\"userId\":$1,\"role\":\"$2\"}"; }
+addgrant(){ req "grant $2 on the vm (user $1)" 201 -X POST "$BASE/vms/$VM/access" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"granteeType\":\"USER\",\"userId\":\"$1\",\"role\":\"$2\"}"; }
 
 # ---- state to restore on exit ----
-VM=""; VNAME=""; VM_DELETED=0; ORIG_HK_B64=""; ORIG_KILL=""
+VM=""; VM_DB=""; VNAME=""; VM_DELETED=0; ORIG_HK_B64=""; ORIG_KILL=""
 cleanup(){
   local rc=$?
   # ssh_host_key is multi-line (one entry per host-key type); back it up/restore
   # it as base64 so whitespace survives (pgq's tr -d space would corrupt it).
-  [ -n "$ORIG_HK_B64" ] && [ -n "$VM" ] && pgx "update vms set ssh_host_key=convert_from(decode('$ORIG_HK_B64','base64'),'UTF8') where id=$VM"
+  [ -n "$ORIG_HK_B64" ] && [ -n "$VM_DB" ] && pgx "update vms set ssh_host_key=convert_from(decode('$ORIG_HK_B64','base64'),'UTF8') where id=$VM_DB"
   [ -n "$ORIG_KILL" ] && pgx "update settings set value='$ORIG_KILL'::jsonb where key='ssh_gateway_enabled'"
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
     echo "-- cleanup: force-deleting leftover VM $VM --"
@@ -150,8 +156,8 @@ fi
 
 echo "== provision (owner O creates group + VM) =="
 OWNER_EMAIL="sgw-owner-${TS}@example.com"; OWNER_PW="sgw-pass-${TS}!"
-read -r OAT OUID _ < <(mk_user "$OWNER_EMAIL" "$OWNER_PW" "SGW Owner")
-[ -n "$OAT" ] && [ -n "$OUID" ] && ok "owner user id=$OUID" || { ko "owner signup"; exit 1; }
+read -r OAT OUID OUID_DB < <(mk_user "$OWNER_EMAIL" "$OWNER_PW" "SGW Owner")
+{ [ -n "$OAT" ] && [ -n "$OUID" ] && [ -n "$OUID_DB" ]; } && ok "owner user id=$OUID" || { ko "owner signup"; exit 1; }
 req "group" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"sgw\",\"kind\":\"PROJECT\"}" || exit 1
 GID=$(jq -r .id "$B")
 # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
@@ -171,12 +177,22 @@ req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $OAT" || exit 
 FSEL='(map(select(.name=="basic"))[0] // .[0])'
 FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); MM=$(jq -r "$FSEL.memoryMb // empty" "$B"); DG=$(jq -r "$FSEL.diskGb // empty" "$B")
 [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)" || { ko "no ACTIVE vm-flavor"; exit 1; }
-req "request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"ssh gateway e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || exit 1
+# Every id the API speaks is a UUID, so each one goes into the payload quoted;
+# only the spec numbers (vcpu/memory/disk) stay bare.
+req "request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"displayName\":\"SSH 게이트웨이 e2e $TS\",\"workspaceId\":\"$GID\",\"orgId\":\"$OID\",\"purpose\":\"ssh gateway e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":\"$TID\",\"flavorId\":\"$FID\",\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || exit 1
 RID=$(jq -r .id "$B")
-req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"sgw\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"nodeId\":null}}" || exit 1
+req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"sgw\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":\"$TID\",\"nodeId\":null}}" || exit 1
 req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $OAT" || exit 1
 VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
 [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || { ko "vm id (empty list)"; exit 1; }
+# Two ids for one VM, and they are not interchangeable: VM is the UUID the API
+# speaks (URLs, JSON), VM_DB is the internal key every direct statement below
+# runs on — including the host-key swap the whole pin scenario depends on.
+# Resolve it once, here, and refuse to go on without it: an empty value would
+# turn `where id=` into a syntax error much later, and the cleanup trap would
+# then quietly fail to restore the original host key.
+VM_DB=$(pgq "select id from vms where public_id='$VM'")
+[ -n "$VM_DB" ] && ok "internal vm id resolved ($VM_DB)" || { ko "no vms row for public_id $VM"; exit 1; }
 
 echo "== poll RUNNING =="
 DL=$((SECONDS+900)); ST=""
@@ -184,20 +200,22 @@ while :; do curl -sS -o "$B" "$BASE/vms/$VM" -H "Authorization: Bearer $OAT"; ST
   [ "$ST" = "RUNNING" ] && break; { [ "$ST" = "ERROR" ] || [ "$ST" = "NEEDS_ADMIN" ]; } && { ko "provision $ST"; break; }
   [ "$SECONDS" -ge "$DL" ] && { ko "not RUNNING (last=$ST)"; break; }; sleep 10; done
 [ "$ST" = "RUNNING" ] && ok "VM RUNNING ip=$VIP" || exit 1
-SLUG=$(pgq "select hostname from vms where id=$VM")
+SLUG=$(pgq "select hostname from vms where id=$VM_DB")
 [ -n "$SLUG" ] && ok "slug(hostname)=$SLUG" || { ko "slug"; exit 1; }
 # base64 so the multi-line value round-trips intact (pgq strips whitespace).
-ORIG_HK_B64=$(pgq "select encode(convert_to(ssh_host_key,'UTF8'),'base64') from vms where id=$VM")
+ORIG_HK_B64=$(pgq "select encode(convert_to(ssh_host_key,'UTF8'),'base64') from vms where id=$VM_DB")
 [ -n "$ORIG_HK_B64" ] && ok "host key collected at provisioning" || ko "no vms.ssh_host_key (HOSTKEY step?)"
 for _ in $(seq 1 18); do nc -z -w5 "$VIP" 22 2>/dev/null && break; sleep 5; done
 
-# --- 1. server-side key generate + private-key download ---
-echo "== [1] create key (server-side generate) =="
-req "generate key" 201 -X POST "$BASE/me/ssh-keys/generate" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d '{"name":"pickle-smoke"}' || exit 1
-KID=$(jq -r .id "$B"); OFPR=$(jq -r .fingerprint "$B")
-[ "$(jq -r .privateKeyStored "$B")" = true ] && ok "generated key privateKeyStored=true fp=$OFPR" || ko "privateKeyStored not true"
-req "download private key" 200 "$BASE/me/ssh-keys/$KID/private-key" -H "Authorization: Bearer $OAT" || exit 1
+# --- 1. issue this VM's key + re-download the private half ---
+echo "== [1] issue the VM's key =="
+req "issue key" 201 -X POST "$BASE/vms/$VM/ssh-key" -H "Authorization: Bearer $OAT" || exit 1
+OFPR=$(jq -r .key.fingerprint "$B")
 OKEY=$(mktemp); TMPFILES+=("$OKEY"); jq -r .privateKey "$B" > "$OKEY"; chmod 600 "$OKEY"
+[ -n "$OFPR" ] && ok "issued fp=$OFPR file=$(jq -r .fileName "$B")" || ko "no fingerprint in the issue response"
+req "issuing twice conflicts" 409 -X POST "$BASE/vms/$VM/ssh-key" -H "Authorization: Bearer $OAT" || ko "second issue did not conflict"
+req "re-download private key" 200 "$BASE/vms/$VM/ssh-key/private-key" -H "Authorization: Bearer $OAT" || exit 1
+[ "$(jq -r .key.fingerprint "$B")" = "$OFPR" ] && ok "re-download returns the same key" || ko "re-download fingerprint differs"
 
 # --- 2. connect with the key ---
 echo "== [2] publickey SSH via relay =="
@@ -208,7 +226,7 @@ echo "$OUT" | grep -q PICKLE-SGW-OK && ok "publickey SSH reached VM shell" || ko
 echo "== [3] audit: sshgw.session actor_id = real user =="
 sleep 1
 ACT=$(pgq "select actor_id from audit_logs where action='sshgw.session' and detail->>'slug'='$SLUG' order by id desc limit 1")
-[ "$ACT" = "$OUID" ] && ok "sshgw.session actor_id=$ACT is the real user" || ko "session actor_id=$ACT want $OUID"
+[ "$ACT" = "$OUID_DB" ] && ok "sshgw.session actor_id=$ACT is the real user" || ko "session actor_id=$ACT want $OUID_DB"
 
 # --- session audit: real client IP preserved end-to-end (not tunnel/gw addr) ---
 echo "== session audit: client IP preserved =="
@@ -234,8 +252,8 @@ hk_mismatch_count(){ pct exec 102 -- sh -c \
   "journalctl -u sshpiperd --no-pager 2>/dev/null | grep -c 'upstream host key mismatch'" \
   2>/dev/null | tr -d '[:space:]'; }
 HKM_BEFORE=$(hk_mismatch_count)
-pgx "update vms set ssh_host_key='$BOGUS_PUB' where id=$VM"
-PINNED=$(pgq "select count(*) from vms where id=$VM and ssh_host_key='$BOGUS_PUB'")
+pgx "update vms set ssh_host_key='$BOGUS_PUB' where id=$VM_DB"
+PINNED=$(pgq "select count(*) from vms where id=$VM_DB and ssh_host_key='$BOGUS_PUB'")
 [ "${PINNED:-0}" = 1 ] && ok "bogus host key stored on the vm row" || ko "bogus host key not stored — the pin was never swapped"
 OUT=$(kssh "$OKEY" "$SLUG" 'echo SHOULDNOTREACH')
 if echo "$OUT" | grep -q SHOULDNOTREACH; then ko "mismatched host key still connected (pin not enforced)"
@@ -258,8 +276,8 @@ else
     && ok "gateway logged an upstream host-key mismatch (${HKM_BEFORE} → ${HKM_AFTER})" \
     || { ko "no new upstream host-key mismatch in the gateway log (${HKM_BEFORE} → ${HKM_AFTER}) — the SSH died before the pin"; echo "$OUT" | head -c 300; echo; }
 fi
-pgx "update vms set ssh_host_key=convert_from(decode('$ORIG_HK_B64','base64'),'UTF8') where id=$VM"
-RESTORED=$(pgq "select count(*) from vms where id=$VM and ssh_host_key is not null and ssh_host_key<>'$BOGUS_PUB'")
+pgx "update vms set ssh_host_key=convert_from(decode('$ORIG_HK_B64','base64'),'UTF8') where id=$VM_DB"
+RESTORED=$(pgq "select count(*) from vms where id=$VM_DB and ssh_host_key is not null and ssh_host_key<>'$BOGUS_PUB'")
 [ "${RESTORED:-0}" = 1 ] && ok "original host key restored on the vm row" || ko "host key not restored — later cases run against a bogus pin"
 
 # --- 4. unregistered key → SSHGW_KEY_UNKNOWN ---
@@ -267,13 +285,14 @@ echo "== [4] unregistered key → deny =="
 UNREG=$(mktemp -u); mklocalkey "$UNREG"; UNREG_FP=$(fp_of "$UNREG.pub")
 kssh "$UNREG" "$SLUG" 'echo X' | grep -q '^X$' && ko "unregistered key routed" || { sleep 1; [ "$(denied SSHGW_KEY_UNKNOWN "$UNREG_FP")" -ge 1 ] 2>/dev/null && ok "unregistered key denied (SSHGW_KEY_UNKNOWN)" || ko "no SSHGW_KEY_UNKNOWN audit for unreg fp"; }
 
-# --- 5. non-member's registered key → SSHGW_KEY_NOT_MEMBER ---
-echo "== [5] non-member key → deny =="
+# --- 5. a non-member cannot obtain this VM's key at all ---
+# Keys are per (user, VM), so the refusal now happens one step earlier than it
+# used to: there is no account-wide key to register and then be turned away with.
+echo "== [5] non-member cannot issue this VM's key =="
 NM_PW="nm-pw-${TS}!"
-read -r NMAT _ < <(mk_user "sgw-nm-${TS}@example.com" "$NM_PW" "SGW NonMember")
-NMKEY=$(mktemp -u); mklocalkey "$NMKEY"; NM_FP=$(fp_of "$NMKEY.pub")
-reg_key "$NMAT" "$NM_PW" "nm-key" "$(cat "$NMKEY.pub")" >/dev/null
-kssh "$NMKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "non-member routed" || { sleep 1; [ "$(denied SSHGW_KEY_NOT_MEMBER "$NM_FP")" -ge 1 ] 2>/dev/null && ok "non-member denied (SSHGW_KEY_NOT_MEMBER)" || ko "no SSHGW_KEY_NOT_MEMBER audit for non-member"; }
+read -r NMAT _ _ < <(mk_user "sgw-nm-${TS}@example.com" "$NM_PW" "SGW NonMember")
+NM_ST=$(issue_status "$NMAT")
+[ "$NM_ST" = 404 ] && ok "non-member issue masked as 404" || ko "non-member issue returned $NM_ST, want 404"
 
 # --- 6. in the group, not on the VM's list → SSHGW_KEY_NOT_MEMBER ---
 # The gateway asks the access list, not the group. Somebody the owner invited to
@@ -283,17 +302,38 @@ echo "== [6] group member absent from the access list → deny =="
 VW_PW="vw-pw-${TS}!"
 read -r VWAT VW_ID _ < <(mk_user "sgw-unlisted-${TS}@example.com" "$VW_PW" "SGW Unlisted")
 addmember "sgw-unlisted-${TS}@example.com"
-VWKEY=$(mktemp -u); mklocalkey "$VWKEY"; VW_FP=$(fp_of "$VWKEY.pub")
-reg_key "$VWAT" "$VW_PW" "vw-key" "$(cat "$VWKEY.pub")" >/dev/null
-kssh "$VWKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "unlisted member routed" || { sleep 1; [ "$(denied SSHGW_KEY_NOT_MEMBER "$VW_FP")" -ge 1 ] 2>/dev/null && ok "unlisted member denied (SSHGW_KEY_NOT_MEMBER)" || ko "no SSHGW_KEY_NOT_MEMBER audit for the unlisted member"; }
+# A workspace member can see the VM listed, so the refusal is an honest 403
+# rather than the 404 an outsider gets, the same split every VM op draws.
+VW_ST=$(issue_status "$VWAT")
+[ "$VW_ST" = 403 ] && ok "unlisted member issue refused with 403" || ko "unlisted member issue returned $VW_ST, want 403"
+# Other things answer 403 too, so the Problem code is asserted rather than the
+# status alone: without it the check would pass on any refusal at all.
+code_is WORKSPACE_ROLE_INSUFFICIENT "  refused by the role gate"
 
 # The same person, once listed, reaches the shell — otherwise the denial above
 # would also pass if the gateway were simply broken for everyone but the owner.
-echo "== [7] the same key after the owner adds them to the list =="
+echo "== [7] once listed, they can issue a key and reach the shell =="
 addgrant "$VW_ID" MEMBER
+VWKEY=$(mktemp); TMPFILES+=("$VWKEY")
+VW_FP=$(issue_key "$VWAT" "$VWKEY")
+[ -n "$VW_FP" ] && ok "listed member issued their own key fp=$VW_FP" || ko "listed member could not issue a key"
 sleep 1
 try_connect PICKLE-LISTED kssh "$VWKEY" "$SLUG" 'echo PICKLE-LISTED' >/dev/null \
   && ok "listed member routed to the VM" || ko "listed member still refused"
+
+# Two people on one VM hold two different keys — the pair is the unit, not the VM.
+[ "$VW_FP" != "$OFPR" ] && ok "each member holds their own key for this VM" || ko "two members share one fingerprint"
+
+# --- 7b. grant revoked → the key they already downloaded stops working ---
+# The row is deliberately NOT deleted when a grant ends; the gateway is the one
+# choke point that refuses it, and this is the check that says so.
+echo "== [7b] revoke the grant → their key is refused =="
+GRANT_ID=$(pgq "select public_id from resource_access_grants where resource_type='VM' and resource_id=$VM_DB and user_id=(select id from users where email='sgw-unlisted-${TS}@example.com')")
+req "revoke the grant" 204 -X DELETE "$BASE/vms/$VM/access/$GRANT_ID" -H "Authorization: Bearer $OAT" || ko "revoke grant"
+sleep 1
+kssh "$VWKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "revoked member still routed" || { sleep 1; [ "$(denied SSHGW_KEY_NOT_MEMBER "$VW_FP")" -ge 1 ] 2>/dev/null && ok "revoked member denied (SSHGW_KEY_NOT_MEMBER)" || ko "no SSHGW_KEY_NOT_MEMBER audit after revocation"; }
+[ "$(pgq "select count(*) from vm_ssh_keys where fingerprint_sha256='$VW_FP'")" = 1 ] \
+  && ok "the key row survives the revocation (the gateway is the gate)" || ko "the key row was deleted on revocation"
 
 # --- 8. password default-deny (ssh_password_enabled=false) → SSHGW_PASSWORD_DISABLED ---
 echo "== [8] password default-deny =="
@@ -343,24 +383,41 @@ req "regenerate password" 200 -X POST "$BASE/vms/$VM/password/regenerate" -H "Au
 NEWPW=$(jq -r .password "$B")
 [ -n "$NEWPW" ] && [ "$NEWPW" != "$VMPW" ] && ok "password changed on regenerate" || ko "regenerate did not change password"
 sleep 1
-[ "$(pgq "select count(*) from audit_logs where action='vm.password_regenerate' and target_id=$VM")" -ge 1 ] 2>/dev/null && ok "vm.password_regenerate audited" || ko "no vm.password_regenerate audit"
+# audit_logs.target_id is the one column that speaks the public id: it is text
+# now and records what the API handed out, so this lookup takes $VM, not $VM_DB.
+[ "$(pgq "select count(*) from audit_logs where action='vm.password_regenerate' and target_id='$VM'")" -ge 1 ] 2>/dev/null && ok "vm.password_regenerate audited" || ko "no vm.password_regenerate audit"
 try_connect PICKLE-NEWPW-OK pssh "$NEWPW" "$SLUG" 'echo PICKLE-NEWPW-OK' >/dev/null && ok "new password works" || ko "new password failed"
 # sshd is confirmed up by the line above, so a refused old password here is a
 # genuine auth rejection, not a not-ready blip.
 pssh "$VMPW" "$SLUG" 'echo X' | grep -q '^X$' && ko "old password still works after regenerate" || ok "old password rejected"
 VMPW="$NEWPW"
 
-# --- 11. delete key → immediate deny (same key that worked in [2]) ---
-echo "== [11] delete key → immediate deny =="
-req "delete key" 204 -X DELETE "$BASE/me/ssh-keys/$KID" -H "Authorization: Bearer $OAT" || ko "delete key"
-kssh "$OKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "deleted key still routed" || { sleep 1; [ "$(denied SSHGW_KEY_UNKNOWN "$OFPR")" -ge 1 ] 2>/dev/null && ok "deleted key denied immediately (SSHGW_KEY_UNKNOWN)" || ko "no SSHGW_KEY_UNKNOWN audit for the deleted key fp"; }
+# --- 11a. re-issue → the key that worked in [2] stops working ---
+# Re-issue is what a user reaches for when a private key leaks, so the old one
+# has to die the moment the new one exists.
+echo "== [11a] re-issue → the old key is refused =="
+req "re-issue key" 200 -X POST "$BASE/vms/$VM/ssh-key/reissue" -H "Authorization: Bearer $OAT" || ko "re-issue key"
+NEW_FPR=$(jq -r .key.fingerprint "$B")
+NEWKEY=$(mktemp); TMPFILES+=("$NEWKEY"); jq -r .privateKey "$B" > "$NEWKEY"; chmod 600 "$NEWKEY"
+[ "$NEW_FPR" != "$OFPR" ] && ok "re-issue produced a different key" || ko "re-issue returned the same fingerprint"
+sleep 1
+kssh "$OKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "the superseded key still routed" || { sleep 1; [ "$(denied SSHGW_KEY_UNKNOWN "$OFPR")" -ge 1 ] 2>/dev/null && ok "superseded key denied (SSHGW_KEY_UNKNOWN)" || ko "no SSHGW_KEY_UNKNOWN audit for the superseded key"; }
+try_connect PICKLE-REISSUED kssh "$NEWKEY" "$SLUG" 'echo PICKLE-REISSUED' >/dev/null \
+  && ok "the re-issued key reaches the shell" || ko "the re-issued key does not work"
+
+# --- 11b. delete key → immediate deny ---
+echo "== [11b] delete key → immediate deny =="
+req "delete key" 204 -X DELETE "$BASE/vms/$VM/ssh-key" -H "Authorization: Bearer $OAT" || ko "delete key"
+kssh "$NEWKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "deleted key still routed" || { sleep 1; [ "$(denied SSHGW_KEY_UNKNOWN "$NEW_FPR")" -ge 1 ] 2>/dev/null && ok "deleted key denied immediately (SSHGW_KEY_UNKNOWN)" || ko "no SSHGW_KEY_UNKNOWN audit for the deleted key fp"; }
+req "status after deletion" 200 "$BASE/vms/$VM/ssh-key" -H "Authorization: Bearer $OAT" || ko "status after deletion"
+[ "$(jq -r '.key' "$B")" = null ] && ok "status reports no key after deletion" || ko "status still reports a key"
 
 # --- per-VM gateway block → deny, with its own audit reason ---
 echo "== per-VM gateway block → deny =="
-pgx "update vms set ssh_gateway_blocked=true where id=$VM"
+pgx "update vms set ssh_gateway_blocked=true where id=$VM_DB"
 sleep 1
 pssh "$VMPW" "$SLUG" 'echo X' | grep -q '^X$' && ko "blocked VM still reachable" || { sleep 1; [ "$(denied SSHGW_VM_BLOCKED)" -ge 1 ] 2>/dev/null && ok "per-VM block denies SSH (SSHGW_VM_BLOCKED)" || ko "no SSHGW_VM_BLOCKED audit"; }
-pgx "update vms set ssh_gateway_blocked=false where id=$VM"
+pgx "update vms set ssh_gateway_blocked=false where id=$VM_DB"
 
 # --- unknown slug → deny (unique per run so the audit query is unambiguous) ---
 echo "== unknown slug → deny =="
