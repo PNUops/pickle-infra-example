@@ -24,6 +24,12 @@
 # several callers read the shared `$B` after logging in and would find the MFA
 # exchange there instead of what they expected.
 
+# When this run started, as the platform host's clock reads it. The LXC that
+# holds the database shares the host's kernel and so its clock. Set once, when a
+# smoke sources this file and before it creates anything; disable_scratch_user
+# touches only accounts created at or after it.
+SMOKE_RUN_STARTED="${SMOKE_RUN_STARTED:-$(date -u '+%Y-%m-%d %H:%M:%S+00')}"
+
 # TOTP over the enrolled secret. Computed with stdlib python3 because oathtool
 # is not installed on pve-node by design -- the same implementation
 # smoke-account-ops uses for its enrolment phase, kept in one place now that a
@@ -298,10 +304,11 @@ smoke_client_ip() {
 # Call it from the path that runs on failure too, and only after the VM cleanup:
 # a disabled owner cannot act on its own VM any more.
 #
-# Only an account created in the last day is touched, so a wrong argument cannot
-# close a real user's account. An address with no such account is not an error
-# (the run may have failed before creating it); an account that is still ACTIVE
-# afterwards is.
+# Only an account created since this run started (SMOKE_RUN_STARTED) is
+# touched, so a wrong argument cannot close a real user's account or one an
+# earlier run left behind. An address with no such account is not an error (the
+# run may have failed before creating it); an account of this run that is still
+# ACTIVE afterwards is.
 #
 # Requires `pgq` and `pgx` from the calling script.
 disable_scratch_user() {
@@ -313,7 +320,7 @@ disable_scratch_user() {
             set status = 'DISABLED', disabled_at = now(), disabled_reason = '$reason',
                 token_version = token_version + 1
           where email = '$email' and status = 'ACTIVE'
-            and created_at > now() - interval '1 day'
+            and created_at >= '$SMOKE_RUN_STARTED'::timestamptz
          returning id),
        c as (
          insert into user_status_changes (user_id, from_status, to_status, actor_id, reason, changed_at)
@@ -321,10 +328,10 @@ disable_scratch_user() {
        update refresh_tokens set revoked_at = now()
         where revoked_at is null
           and user_id in (select id from users
-                           where email = '$email' and created_at > now() - interval '1 day')" || return 1
-  left=$(pgq "select count(*) from users where email = '$email' and status = 'ACTIVE'")
+                           where email = '$email' and created_at >= '$SMOKE_RUN_STARTED'::timestamptz)" || return 1
+  left=$(pgq "select count(*) from users where email = '$email' and status = 'ACTIVE' and created_at >= '$SMOKE_RUN_STARTED'::timestamptz")
   if [ "$left" != 0 ]; then
-    echo "disable_scratch_user: $email is still ACTIVE (count=${left:-unknown})" >&2
+    echo "disable_scratch_user: $email from this run is still ACTIVE (count=${left:-unknown})" >&2
     return 1
   fi
 }
