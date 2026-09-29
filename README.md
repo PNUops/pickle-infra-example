@@ -195,12 +195,15 @@ SHA와 nginx 문법·응답을 검사하고, `recover`는 health-only 상태를 
 DB에 직접 만든 인증된 사용자로 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기,
 SSH 도달 확인, 전원 왕복, 삭제, DB 정합 검증까지 한 번에 통과시킵니다. 회원가입과 메일 인증
 경로는 이 스모크가 확인하지 않습니다(인증 메일이 실제 메일함으로 가서 토큰을 읽을 수 없습니다).
-`smoke-http-publish.sh`, `smoke-dashboards-notify.sh`, `smoke-ssh-gateway.sh`도 같은 이유로
-사용자를 DB에 직접 만들고, 끝날 때 실패한 실행에서도 그 사용자를 비활성화합니다. 로그인 제한
-카운터는 그 사용자와 이 호스트 주소의 행만 지웁니다. `smoke-dashboards-notify.sh`는 메일 발송을
-메일함이 아니라 `notifications` 행이 `SENT`가 되었는지로 확인하고, 공지는 실행이 만든 워크스페이스
-하나에만 보내므로 받는 사람은 스모크 사용자 한 명입니다. `smoke-prod.sh`는 읽기 전용이고 인자를
-받지 않습니다. VM 생성부터 삭제까지는 `smoke-provisioning.sh`가 확인합니다.
+`smoke-http-publish.sh`, `smoke-dashboards-notify.sh`, `smoke-ssh-gateway.sh`,
+`smoke-account-ops.sh`, `smoke-web-terminal.sh`도 같은 이유로 사용자를 DB에 직접 만듭니다.
+로그인 제한 카운터는 그 사용자와 이 호스트 주소의 행만 지웁니다.
+
+스모크가 만든 계정은 끝날 때(실패 경로 포함, VM 정리 뒤) 지우거나 비활성화합니다. 이 샘플의
+주소는 소문자 예시 도메인(`@example.com`)이고, 실제 환경에서는 메일이 반송되지 않고 운영자가
+받는 도메인으로 바꿔 씁니다. 스모크의 공지와 알림은 자기 워크스페이스 구성원과 시드 관리자에게만
+가고, 메일 발송은 `notifications` 행의 `SENT`로 확인합니다. `smoke-prod.sh`는 읽기 전용이고
+인자를 받지 않습니다. VM 생성부터 삭제까지는 `smoke-provisioning.sh`가 확인합니다.
 `smoke-llm-key-lifecycle.sh`는 LLM gateway까지 배포한 뒤 평문 키를 출력하지 않고 실제
 1-token 호출과 snapshot 기반 정지·재개·폐기 반영을 확인합니다. 이 일반 lifecycle은
 OpenRouter 사업 account가 없어도 실행할 수 있도록 금액 한도를 0으로 둔 TOKEN 축 smoke입니다.
