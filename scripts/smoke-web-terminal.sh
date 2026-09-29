@@ -270,8 +270,10 @@ U3="smoke-term-view-$TS@example.com"; SCRATCH_EMAILS+=("$U3")
 read -r U3T _ <<<"$(mk_user "$U3" 'terminal-viewer-1' '터미널뷰어')"
 U4="smoke-term-out-$TS@example.com"; SCRATCH_EMAILS+=("$U4")
 read -r U4T _ <<<"$(mk_user "$U4" 'terminal-outsider-1' '터미널외부')"
-req "add U2 to group 201" 201 -X POST "$BASE/workspaces/$GID/members" -H "$(auth "$U1T")" -H 'Content-Type: application/json' -d "{\"email\":\"$U2\",\"role\":\"MEMBER\"}"
-req "add U3 to group 201" 201 -X POST "$BASE/workspaces/$GID/members" -H "$(auth "$U1T")" -H 'Content-Type: application/json' -d "{\"email\":\"$U3\",\"role\":\"MEMBER\"}"
+# Through the invitation endpoint: an ACTIVE account answers ADDED and joins as
+# MEMBER at once. Each outcome is asserted, since a 200 can also mean INVITED.
+req "add U2 and U3 to group 200" 200 -X POST "$BASE/workspaces/$GID/invitations" -H "$(auth "$U1T")" -H 'Content-Type: application/json' -d "{\"entries\":[{\"email\":\"$U2\"},{\"email\":\"$U3\"}]}"
+O=$(jq -r '[.results[].outcome] | join(",")' "$B"); [ "$O" = "ADDED,ADDED" ] && ok "U2 and U3 added (ADDED)" || ko "U2 and U3 added (outcomes=${O:-none})"
 
 # The seeded list: whoever requested the VM, and nobody else.
 req "access list seeded with the requester" 200 "$BASE/vms/$VM/access" -H "$(auth "$U1T")"

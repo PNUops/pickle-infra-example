@@ -87,7 +87,17 @@ issue_status(){ curl -sS -o "$B" -w '%{http_code}' -X POST "$BASE/vms/$VM/ssh-ke
 # addmember EMAIL ROLE (as group OWNER). Asserted (201): a silently failed add
 # would make the membership-scoped checks below vacuous — a VIEWER/MEMBER that
 # was never added is denied as a plain non-member and the test still "passes".
-addmember(){ req "add member ($1)" 201 -X POST "$BASE/workspaces/$GID/members" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"role\":\"MEMBER\"}"; }
+# Members join through the invitation endpoint (the direct add was removed in
+# contract v0.88.0). An item for an ACTIVE account answers ADDED and the account
+# is a member at once, as MEMBER: the endpoint takes no role, and MEMBER is what
+# the direct add used here. The outcome is asserted as well as the status,
+# because a 200 also carries INVITED or ALREADY_MEMBER, and neither would make
+# the membership checks below mean anything.
+addmember(){
+  req "add member ($1)" 200 -X POST "$BASE/workspaces/$GID/invitations" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"entries\":[{\"email\":\"$1\"}]}" || return 1
+  local out; out=$(jq -r '.results[0].outcome // empty' "$B")
+  [ "$out" = ADDED ] && ok "  $1 joined as a member (ADDED)" || { ko "  $1 not added (outcome=${out:-none})"; return 1; }
+}
 # addgrant USERID ROLE — put somebody on THIS VM's access list. Group membership
 # admits nobody to a VM on its own; every rung below is granted per resource.
 addgrant(){ req "grant $2 on the vm (user $1)" 201 -X POST "$BASE/vms/$VM/access" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"granteeType\":\"USER\",\"userId\":\"$1\",\"role\":\"$2\"}"; }

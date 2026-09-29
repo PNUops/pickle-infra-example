@@ -322,7 +322,10 @@ if has_phase protect; then
   # add a MEMBER who must be blocked from stopping
   U5="smoke-acct-mem-$TS@example.com"; SCRATCH_EMAILS+=("$U5")
   read -r U5T U5ID _ <<<"$(mk_user "$U5" 'member-password-10' '중지보호구성원')"
-  req "  add to group 201" 201 -X POST "$BASE/workspaces/$PGID4/members" -H "$(auth "$U4T")" -H 'Content-Type: application/json' -d "{\"email\":\"$U5\",\"role\":\"MEMBER\"}"
+  # Through the invitation endpoint: an ACTIVE account answers ADDED and joins
+  # as MEMBER at once. The outcome is asserted, since a 200 can also mean INVITED.
+  req "  add to group 200" 200 -X POST "$BASE/workspaces/$PGID4/invitations" -H "$(auth "$U4T")" -H 'Content-Type: application/json' -d "{\"entries\":[{\"email\":\"$U5\"}]}"
+  O=$(jq -r '.results[0].outcome // empty' "$B"); [ "$O" = ADDED ] && ok "  member added (ADDED)" || ko "  member added (outcome=${O:-none})"
   # Put them on this VM's list at the rung that may power it. Without the entry
   # the shutdown is refused for having no access at all, and the assertion below
   # would pass while proving nothing about stop protection.
