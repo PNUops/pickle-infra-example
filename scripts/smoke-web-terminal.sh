@@ -54,6 +54,9 @@ login(){ curl -sS -o "$B" -X POST "$BASE/auth/login" -H 'Content-Type: applicati
 . "$(dirname "$0")/lib/auth.sh"
 auth(){ echo "Authorization: Bearer $1"; }
 
+# mk_user EMAIL PW NAME → "<accessToken> <publicId> <internalId>", from the
+# shared factory. This script only wants the public UUID (the access grants
+# below hand it to the API), so callers discard the third field.
 mk_user(){ mk_verified_user "$BASE" "$@"; }
 
 # Access tokens live 15 minutes; this run is longer than that, because half of
@@ -117,7 +120,9 @@ open_live_session(){
 }
 
 declare -a SCRATCH_EMAILS=()
-VM=""; VM_DELETED=1; SAT=""; KILL_INITIAL=""
+# VM is the UUID the API speaks; VM_DB is the internal key the direct statements
+# run on. They are set together further down and are never interchangeable.
+VM=""; VM_DB=""; VM_DELETED=1; SAT=""; KILL_INITIAL=""
 cleanup(){
   local rc=$?
   # restore the kill switch to its pre-run value
@@ -138,7 +143,7 @@ cleanup(){
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
     echo "-- cleanup: removing leftover VM $VM --"
     local at; at=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || at=""
-    local vname; vname=$(pgq "select name from vms where id=$VM")
+    local vname; vname=$(pgq "select name from vms where id=$VM_DB")
     # curl succeeds on a rejection as readily as on a 202; without the code the
     # trap reports a cleanup it never performed and a real guest stays up.
     local dc
@@ -220,13 +225,15 @@ req "kill switch on (200)" 200 -X PUT "$BASE/admin/settings/web_terminal_enabled
 # that is heap order, not catalog order — it silently moved from Ubuntu to Rocky
 # once the catalog grew. The bridge resolves the guest account from the VM row, so
 # any image works; pin the pick anyway so a guest-side failure is reproducible.
-TPL=$(pgq "select id from os_images where status='ACTIVE' order by id limit 1")
+TPL=$(pgq "select public_id from os_images where status='ACTIVE' order by id limit 1")
 # The state the bootstrap runbook leaves behind — catalog rows registered but
 # none enabled yet — makes this empty, and an empty id is interpolated into the
 # payload as "imageId":, which is not JSON. The request then fails as a bare
 # 400 that says nothing about the catalog, so state the reason here instead.
 [ -n "$TPL" ] || { ko "no ACTIVE OS image to request with (enable one in the catalog)"; exit 1; }
-ORG=$(pgq "select id from orgs limit 1")
+# Both lookups take the public id, not the internal one: these two values only
+# ever travel into a request payload, and the API speaks UUIDs.
+ORG=$(pgq "select public_id from orgs limit 1")
 [ -n "$ORG" ] || { ko "no org to request against"; exit 1; }
 # os-images is a pure OS catalog — the spec axis is vm_flavors, and
 # POST /requests requires the chosen flavorId. Read the presets off the API
@@ -243,24 +250,34 @@ read -r U1T _ <<<"$(mk_user "$U1" "$U1PW" '터미널소유자')"
 req "create team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
   -d "{\"kind\":\"PROJECT\",\"name\":\"smoke-term-$TS\"}"
 GID=$(jq -r '.id' "$B")
+# Every id the API speaks is a UUID, so each one goes into the payload quoted;
+# only the spec numbers (vcpu/memory/disk) stay bare.
 req "vm request 201" 201 -X POST "$BASE/requests" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
-  -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$ORG,\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":$TPL,\"flavorId\":$FID,\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"specReason\":null}}"
+  -d "{\"type\":\"VM\",\"displayName\":\"웹 터미널 e2e $TS\",\"workspaceId\":\"$GID\",\"orgId\":\"$ORG\",\"purpose\":\"터미널 스모크\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":\"$TPL\",\"flavorId\":\"$FID\",\"reqVcpu\":$TPL_VCPU,\"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"specReason\":null}}"
 RID=$(jq -r '.id // empty' "$B"); [ -n "$RID" ] || { ko "request not created — abort"; exit 1; }
 req "approve 200" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "$(auth "$SAT")" \
   -H 'Content-Type: application/json' \
-  -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"터미널 스모크\",\"vm\":{\"grantedVcpu\":$TPL_VCPU,\"grantedMemoryMb\":$TPL_MEM,\"grantedDiskGb\":$TPL_DISK,\"grantedImageId\":$TPL,\"nodeId\":null}}"
-VM=$(pgq "select id from vms where request_id=$RID"); [ -n "$VM" ] || { ko "no VM row — abort"; exit 1; }
+  -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"터미널 스모크\",\"vm\":{\"grantedVcpu\":$TPL_VCPU,\"grantedMemoryMb\":$TPL_MEM,\"grantedDiskGb\":$TPL_DISK,\"grantedImageId\":\"$TPL\",\"nodeId\":null}}"
+# vms.request_id is a foreign key and still holds the internal bigint, so the
+# request's UUID has to be resolved before it can find the row. Resolve the VM's
+# two ids in the same breath, and abort on either — an empty one would only
+# surface later as a bare `where id=` syntax error, or as a cleanup trap that
+# silently fails to name the VM it is meant to delete.
+RID_DB=$(pgq "select id from requests where public_id='$RID'")
+[ -n "$RID_DB" ] || { ko "no requests row for public_id $RID — abort"; exit 1; }
+VM_DB=$(pgq "select id from vms where request_id=$RID_DB"); [ -n "$VM_DB" ] || { ko "no VM row — abort"; exit 1; }
+VM=$(pgq "select public_id from vms where id=$VM_DB"); [ -n "$VM" ] || { ko "vm row carries no public id — abort"; exit 1; }
 VM_DELETED=0
 echo "  waiting for RUNNING (vm=$VM)…"
 ST=""
-for _ in $(seq 1 60); do ST=$(pgq "select status from vms where id=$VM"); [ "$ST" = RUNNING ] && break; sleep 10; done
+for _ in $(seq 1 60); do ST=$(pgq "select status from vms where id=$VM_DB"); [ "$ST" = RUNNING ] && break; sleep 10; done
 [ "$ST" = RUNNING ] && ok "vm RUNNING" || { ko "vm RUNNING (got $ST) — abort"; exit 1; }
 # cloud-init keeps settling after RUNNING and restarts sshd in that window, so an
 # immediate connect can hit `connection refused` (RUNNING ≠ sshd
 # ready). Poll :22 from the bridge LXC (which has the vmbr2 vantage) until it
 # accepts, bounded — a real user connects after the VM-created mail, by which
 # time sshd has settled; the smoke reproduces that by waiting.
-VM_IP=$(pgq "select a.ip from vms v join ip_allocations a on v.ip_allocation_id=a.id where v.id=$VM")
+VM_IP=$(pgq "select a.ip from vms v join ip_allocations a on v.ip_allocation_id=a.id where v.id=$VM_DB")
 SSHD_READY=0
 for _ in $(seq 1 30); do
   if pct exec 102 -- bash -c "timeout 3 bash -c '</dev/tcp/${VM_IP}/22' 2>/dev/null"; then SSHD_READY=1; break; fi
@@ -297,7 +314,7 @@ SEEDED=$(jq -r '[.grants[] | select(.role=="OWNER")] | length' "$B")
 # U3 stays unlisted for the denial assertions further down; U2 gets the rung
 # that carries terminal access.
 req "grant U2 MEMBER on this VM 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
-  -d "{\"granteeType\":\"USER\",\"userId\":$U2ID,\"role\":\"MEMBER\"}"
+  -d "{\"granteeType\":\"USER\",\"userId\":\"$U2ID\",\"role\":\"MEMBER\"}"
 U2GRANT=$(jq -r '.id' "$B")
 [ -n "$U2GRANT" ] && [ "$U2GRANT" != null ] && ok "  grant id returned" || { ko "  grant id returned"; exit 1; }
 
@@ -420,15 +437,15 @@ if open_live_session "$U2T" 300; then
   AUD_RVK=$(pgq "select count(*) from audit_logs where action='terminal.session_end' and detail::text like '%$LIVE_SID%' and detail::text like '%REVALIDATION_DENIED%'")
   [ "${AUD_RVK:-0}" -ge 1 ] && ok "  and it ended as REVALIDATION_DENIED" || ko "  session_end reason for the revoked session"
   req "re-grant U2 MEMBER 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
-    -d "{\"granteeType\":\"USER\",\"userId\":$U2ID,\"role\":\"MEMBER\"}"
+    -d "{\"granteeType\":\"USER\",\"userId\":\"$U2ID\",\"role\":\"MEMBER\"}"
 else
   ko "U2 could not hold a live session — removal convergence unchecked"
 fi
 # ssh_gateway_blocked is a vms COLUMN (V13, sys-admin per-VM block), not a
 # vm_settings row — the mint gate + sshgw route both read vm.isSshGatewayBlocked().
-pgx "update vms set ssh_gateway_blocked=true where id=$VM"
+pgx "update vms set ssh_gateway_blocked=true where id=$VM_DB"
 mint "$VM" "$U2T"; [ "$MINT_CODE" = 403 ] && ok "admin-blocked VM denied (403)" || ko "admin-blocked VM denied (got $MINT_CODE)"
-pgx "update vms set ssh_gateway_blocked=false where id=$VM"
+pgx "update vms set ssh_gateway_blocked=false where id=$VM_DB"
 
 # session caps: pending tickets count toward the per-user cap (3)
 mint "$VM" "$U2T"; mint "$VM" "$U2T"; mint "$VM" "$U2T"
@@ -484,15 +501,15 @@ AUD_PWEND=$(pgq "select count(*) from audit_logs where action='terminal.session_
 refresh_tokens
 req "shutdown 202" 202 -X POST "$BASE/vms/$VM/shutdown" -H "$(auth "$U1T")"
 echo "  waiting for STOPPED…"
-for _ in $(seq 1 30); do ST=$(pgq "select status from vms where id=$VM"); [ "$ST" = STOPPED ] && break; sleep 5; done
+for _ in $(seq 1 30); do ST=$(pgq "select status from vms where id=$VM_DB"); [ "$ST" = STOPPED ] && break; sleep 5; done
 if [ "$ST" = STOPPED ]; then
   mint "$VM" "$U2T"; [ "$MINT_CODE" = 409 ] && ok "STOPPED mint → 409" || ko "STOPPED mint (got $MINT_CODE)"
 else ko "vm did not stop (got $ST)"; fi
 
 # ── teardown ─────────────────────────────────────────────────────────────
-VNAME=$(pgq "select name from vms where id=$VM")
+VNAME=$(pgq "select name from vms where id=$VM_DB")
 req "force-delete VM 202" 202 -X POST "$BASE/admin/vms/$VM/force-delete" -H "$(auth "$SAT")" \
   -H 'Content-Type: application/json' -d "{\"confirmName\":\"$VNAME\",\"overrideProtection\":true}"
 echo "  waiting for destroy…"
-for _ in $(seq 1 30); do ST=$(pgq "select status from vms where id=$VM"); [ "$ST" = DELETED ] && break; sleep 5; done
+for _ in $(seq 1 30); do ST=$(pgq "select status from vms where id=$VM_DB"); [ "$ST" = DELETED ] && break; sleep 5; done
 [ "$ST" = DELETED ] && { ok "vm destroyed"; VM_DELETED=1; } || ko "vm destroyed (got $ST)"

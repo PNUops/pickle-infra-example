@@ -28,6 +28,9 @@ CONSENTS_JSON=$(curl -fsS "$BASE/meta/terms" 2>/dev/null | jq -c '[.[] | {docTyp
 [ -n "$CONSENTS_JSON" ] || CONSENTS_JSON='[]'
 
 CTID="${CTID:-101}"
+# The id every "this does not exist" case is asked for. Public ids are UUIDs, so
+# a made-up decimal would fail on the shape (400) before reaching the lookup.
+NO_SUCH_ID="00000000-0000-0000-0000-000000000000"
 PHASES="${PHASES:-account admin group protect sweep mfa terms maint roles}"
 TS=$(date +%s)-$RANDOM
 B=$(mktemp); TMPFILES=("$B")
@@ -61,14 +64,20 @@ login(){ curl -sS -o "$B" -X POST "$BASE/auth/login" -H 'Content-Type: applicati
 . "$(dirname "$0")/lib/auth.sh"
 auth(){ echo "Authorization: Bearer $1"; }
 
-# mk_user EMAIL PW NAME → "<accessToken> <publicId> <internalId>", from the
-# shared factory. It writes the account rather than signing up: this deployment
-# mails for real and the verification token is stored hashed, so the spool this
-# used to read has been empty since the profile changed.
+# mk_user EMAIL PW NAME → "<accessToken> <userId> <userId_DB>", from the shared
+# factory, which writes the account rather than signing up: this deployment mails
+# for real and the verification token is stored hashed, so the spool this used to
+# read has been empty since the profile changed. The id comes back twice because the two
+# sides of this script want different values: the API takes the public UUID
+# (admin user URLs, grant payloads), while every foreign key — user_status_changes
+# .user_id, workspace_members.user_id — still holds the internal bigint. Callers
+# keep the plain name for the API id and the _DB suffix for SQL.
 mk_user(){ mk_verified_user "$BASE" "$@"; }
 
 declare -a SCRATCH_EMAILS=()
-VM=""; VM_DELETED=1; SAT=""
+# VM is the UUID the API speaks; VM_DB is the internal key the direct statements
+# run on. They are set together in the protect phase and never interchangeable.
+VM=""; VM_DB=""; VM_DELETED=1; SAT=""
 cleanup(){
   local rc=$?
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
@@ -77,8 +86,8 @@ cleanup(){
     # the logical setting may still be on; owner-only, so clear via DB as root.
     # No qm --protection 0 here: the destroy pipeline clears the always-on PVE
     # flag itself — clearing it out-of-band would mask a broken clear step.
-    pgx "delete from vm_settings where vm_id=$VM and key='deletion_protection'"
-    local vname; vname=$(pgq "select name from vms where id=$VM")
+    pgx "delete from vm_settings where vm_id=$VM_DB and key='deletion_protection'"
+    local vname; vname=$(pgq "select name from vms where id=$VM_DB")
     # Last chance to avoid leaving a real guest and its address allocated, so
     # the response code decides what is printed: curl succeeds on a 403 or a
     # 500 just as it does on a 202, and a swallowed rejection here reads as
@@ -163,19 +172,23 @@ has_phase(){ case " $PHASES " in *" $1 "*) return 0;; *) return 1;; esac; }
 # once the catalog grew. Nothing here depends on the distribution, but a run that
 # picks a different image every time makes any guest-side failure unreproducible,
 # so pin the pick to the oldest registered row.
-TPL=$(pgq "select id from os_images where status='ACTIVE' order by id limit 1")
+TPL=$(pgq "select public_id from os_images where status='ACTIVE' order by id limit 1")
 # The state the bootstrap runbook leaves behind — catalog rows registered but
 # none enabled yet — makes this empty, and an empty id is interpolated into the
 # payload as "imageId":, which is not JSON. The request then fails as a bare
 # 400 that says nothing about the catalog, so state the reason here instead.
 [ -n "$TPL" ] || { ko "no ACTIVE OS image to request with (enable one in the catalog)"; exit 1; }
-ORG=$(pgq "select id from orgs limit 1")
+# Both lookups take the public id, not the internal one: these two values only
+# ever travel into a request payload, and the API speaks UUIDs.
+ORG=$(pgq "select public_id from orgs limit 1")
 [ -n "$ORG" ] || { ko "no org to request against"; exit 1; }
-req_payload(){ # $1=workspaceId $2=purpose
-  printf '{"type":"VM","workspaceId":%s,"orgId":%s,"purpose":"%s","courseOrProject":null,"extraNote":null,"reqStartDate":null,"reqEndDate":null,"reqIndefinite":true,"vm":{"imageId":%s,"flavorId":%s,"reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"specReason":null}}' "$1" "$ORG" "$2" "$TPL" "$FLAVOR" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
+req_payload(){ # $1=workspaceId $2=purpose (also the resource name)
+  # displayName is required since a request names the resource it asks for.
+  # This suite has no better name to give than the purpose it already passes.
+  printf '{"type":"VM","displayName":"%s","workspaceId":"%s","orgId":"%s","purpose":"%s","courseOrProject":null,"extraNote":null,"reqStartDate":null,"reqEndDate":null,"reqIndefinite":true,"vm":{"imageId":"%s","flavorId":"%s","reqVcpu":%s,"reqMemoryMb":%s,"reqDiskGb":%s,"specReason":null}}' "$2" "$1" "$ORG" "$2" "$TPL" "$FLAVOR" "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK"
 }
 approve_payload(){
-  printf '{"grantedStartDate":null,"grantedEndDate":null,"comment":"스모크 승인","vm":{"grantedVcpu":%s,"grantedMemoryMb":%s,"grantedDiskGb":%s,"grantedImageId":%s,"nodeId":null}}' "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK" "$TPL"
+  printf '{"grantedStartDate":null,"grantedEndDate":null,"comment":"스모크 승인","vm":{"grantedVcpu":%s,"grantedMemoryMb":%s,"grantedDiskGb":%s,"grantedImageId":"%s","nodeId":null}}' "$TPL_VCPU" "$TPL_MEM" "$TPL_DISK" "$TPL"
 }
 
 SAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW") || SAT=""
@@ -245,11 +258,11 @@ fi
 if has_phase admin; then
   echo "── admin: user list / detail / disable / enable"
   U2="smoke-acct-adm-$TS@example.com"; SCRATCH_EMAILS+=("$U2")
-  read -r U2T U2ID _ <<<"$(mk_user "$U2" 'target-password-10' '비활성화대상')"
+  read -r U2T U2ID U2ID_DB <<<"$(mk_user "$U2" 'target-password-10' '비활성화대상')"
   req "admin user list 200" 200 "$BASE/admin/users?q=smoke-acct-adm-$TS" -H "$(auth "$SAT")"
   N=$(jq -r '.totalElements' "$B"); [ "$N" = 1 ] && ok "  search hits exactly 1" || ko "  search hits exactly 1 (got $N)"
   req "admin user detail 200" 200 "$BASE/admin/users/$U2ID" -H "$(auth "$SAT")"
-  req "self-disable 409" 409 -X POST "$BASE/admin/users/$(pgq "select id from users where email='$SYSADMIN_EMAIL'")/disable" \
+  req "self-disable 409" 409 -X POST "$BASE/admin/users/$(pgq "select public_id from users where email='$SYSADMIN_EMAIL'")/disable" \
     -H "$(auth "$SAT")" -H 'Content-Type: application/json' -d '{"reason":"스모크 자기 비활성화 시도"}'
   req "disable 200" 200 -X POST "$BASE/admin/users/$U2ID/disable" -H "$(auth "$SAT")" \
     -H 'Content-Type: application/json' -d '{"reason":"스모크 테스트 비활성화"}'
@@ -261,7 +274,7 @@ if has_phase admin; then
   req "enable 200" 200 -X POST "$BASE/admin/users/$U2ID/enable" -H "$(auth "$SAT")"
   U2T2=$(login "$U2" 'target-password-10')
   [ -n "$U2T2" ] && ok "  re-enabled login works" || ko "  re-enabled login works"
-  H=$(pgq "select count(*) from user_status_changes where user_id=$U2ID")
+  H=$(pgq "select count(*) from user_status_changes where user_id=$U2ID_DB")
   [ "$H" = 2 ] && ok "  status history rows = 2" || ko "  status history rows = 2 (got $H)"
 fi
 
@@ -269,7 +282,8 @@ fi
 if has_phase group; then
   echo "── group: delete + request-cancel + personal 409"
   U3="smoke-acct-grp-$TS@example.com"; SCRATCH_EMAILS+=("$U3")
-  read -r U3T U3ID _ <<<"$(mk_user "$U3" 'group-password-10' '그룹스모크')"
+  # only the internal id is wanted here — this phase never sends a user id to the API
+  read -r U3T _ U3ID_DB <<<"$(mk_user "$U3" 'group-password-10' '그룹스모크')"
   req "create team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U3T")" \
     -H 'Content-Type: application/json' \
     -d "{\"kind\":\"PROJECT\",\"name\":\"smoke-acct-team-$TS\"}"
@@ -279,7 +293,10 @@ if has_phase group; then
     -H 'Content-Type: application/json' -d "$(req_payload "$GID" '그룹삭제 취소 검증용')"
   RID=$(jq -r '.id' "$B")
   req "delete team 204" 204 -X DELETE "$BASE/workspaces/$GID" -H "$(auth "$U3T")"
-  RST=$(pgq "select status from requests where id=$RID")
+  # The request id crossed the API as a UUID; the row is keyed by the internal id.
+  RID_DB=$(pgq "select id from requests where public_id='$RID'")
+  [ -n "$RID_DB" ] || ko "  no requests row for public_id $RID (cancel check unverified)"
+  RST=$(pgq "select status from requests where id=${RID_DB:-0}")
   [ "$RST" = "CANCELED" ] && ok "  submitted request canceled" || ko "  submitted request canceled (got $RST)"
   req "  deleted workspace is gone (404)" 404 "$BASE/workspaces/$GID" -H "$(auth "$U3T")"
   req "  name reusable (201)" 201 -X POST "$BASE/workspaces" -H "$(auth "$U3T")" \
@@ -287,8 +304,10 @@ if has_phase group; then
     -d "{\"kind\":\"PROJECT\",\"name\":\"smoke-acct-team-$TS\"}"
   GID2=$(jq -r '.id' "$B")
   req "  cleanup second team 204" 204 -X DELETE "$BASE/workspaces/$GID2" -H "$(auth "$U3T")"
-  PGID=$(pgq "select g.id from workspaces g join workspace_members gm on gm.workspace_id=g.id
-              where gm.user_id=$U3ID and g.kind='PERSONAL' and g.deleted_at is null")
+  # Public id out (it goes into the URL), internal id in (workspace_members.user_id
+  # is a foreign key and still bigint).
+  PGID=$(pgq "select g.public_id from workspaces g join workspace_members gm on gm.workspace_id=g.id
+              where gm.user_id=$U3ID_DB and g.kind='PERSONAL' and g.deleted_at is null")
   req "  personal workspace delete 409" 409 -X DELETE "$BASE/workspaces/$PGID" -H "$(auth "$U3T")"
   C=$(jq -r '.code' "$B"); [ "$C" = "WORKSPACE_PERSONAL_UNDELETABLE" ] && ok "  code WORKSPACE_PERSONAL_UNDELETABLE" || ko "  code ($C)"
 fi
@@ -298,7 +317,7 @@ if has_phase protect; then
   echo "── protect: deletion/stop protection on a real VM (provisions one)"
   U4="smoke-acct-vm-$TS@example.com"; SCRATCH_EMAILS+=("$U4")
   U4PW='vmowner-password-1'
-  read -r U4T _ <<<"$(mk_user "$U4" "$U4PW" 'VM보호스모크')"
+  read -r U4T _ _ <<<"$(mk_user "$U4" "$U4PW" 'VM보호스모크')"
   # membership tests need an invitable group — PERSONAL membership is immutable
   req "create protect team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U4T")" \
     -H 'Content-Type: application/json' \
@@ -307,18 +326,26 @@ if has_phase protect; then
   req "vm request 201" 201 -X POST "$BASE/requests" -H "$(auth "$U4T")" \
     -H 'Content-Type: application/json' -d "$(req_payload "$PGID4" '보호 스모크')"
   RID4=$(jq -r '.id // empty' "$B")
-  [ -n "$RID4" ] || { ko "protect phase aborted — request not created"; RID4=0; }
+  [ -n "$RID4" ] || { ko "protect phase aborted — request not created"; RID4="$NO_SUCH_ID"; }
   req "approve 200" 200 -X POST "$BASE/admin/requests/$RID4/approve" -H "$(auth "$SAT")" \
     -H 'Content-Type: application/json' -d "$(approve_payload)"
-  VM=$(pgq "select id from vms where request_id=$RID4")
-  if [ -z "$VM" ]; then ko "protect phase aborted — no VM row"; VM=""; VM_DELETED=1; fi
+  # vms.request_id is a foreign key and still holds the internal bigint, so the
+  # request's UUID has to be resolved before it can find the row. The VM then
+  # carries both ids: VM for the API calls below, VM_DB for the direct ones.
+  RID4_DB=$(pgq "select id from requests where public_id='$RID4'")
+  VM=""; VM_DB=""
+  if [ -n "$RID4_DB" ]; then
+    VM_DB=$(pgq "select id from vms where request_id=$RID4_DB")
+    [ -n "$VM_DB" ] && VM=$(pgq "select public_id from vms where id=$VM_DB")
+  fi
+  if [ -z "$VM" ] || [ -z "$VM_DB" ]; then ko "protect phase aborted — no VM row"; VM=""; VM_DB=""; VM_DELETED=1; fi
   [ -n "$VM" ] && VM_DELETED=0
   if [ -n "$VM" ]; then
   echo "  waiting for RUNNING (vm=$VM)…"
-  for _ in $(seq 1 60); do ST=$(pgq "select status from vms where id=$VM"); [ "$ST" = RUNNING ] && break; sleep 10; done
+  for _ in $(seq 1 60); do ST=$(pgq "select status from vms where id=$VM_DB"); [ "$ST" = RUNNING ] && break; sleep 10; done
   [ "$ST" = RUNNING ] && ok "vm RUNNING" || { ko "vm RUNNING (got $ST)"; }
-  VMID=$(pgq "select proxmox_vmid from vms where id=$VM")
-  VNAME=$(pgq "select name from vms where id=$VM")
+  VMID=$(pgq "select proxmox_vmid from vms where id=$VM_DB")
+  VNAME=$(pgq "select name from vms where id=$VM_DB")
 
   # always-on invariant: a freshly provisioned VM is hypervisor-protected
   QP=$(qm config "$VMID" 2>/dev/null | grep -c '^protection: 1')
@@ -341,14 +368,14 @@ if has_phase protect; then
   # the shutdown is refused for having no access at all, and the assertion below
   # would pass while proving nothing about stop protection.
   req "  grant MEMBER on the vm 201" 201 -X POST "$BASE/vms/$VM/access" -H "$(auth "$U4T")" -H 'Content-Type: application/json' \
-    -d "{\"granteeType\":\"USER\",\"userId\":$U5ID,\"role\":\"MEMBER\"}"
+    -d "{\"granteeType\":\"USER\",\"userId\":\"$U5ID\",\"role\":\"MEMBER\"}"
   req "  member shutdown blocked 409" 409 -X POST "$BASE/vms/$VM/shutdown" -H "$(auth "$U5T")"
   C=$(jq -r '.code' "$B"); [ "$C" = "VM_STOP_PROTECTED" ] && ok "  code VM_STOP_PROTECTED" || ko "  code ($C)"
   req "  owner shutdown allowed 202" 202 -X POST "$BASE/vms/$VM/shutdown" -H "$(auth "$U4T")"
 
   req "display_name set (200)" 200 -X PATCH "$BASE/vms/$VM/settings" -H "$(auth "$U4T")" -H 'Content-Type: application/json' -d '{"settings":{"display_name":"보호 스모크 VM"}}'
   req "  vm list carries displayName" 200 "$BASE/vms" -H "$(auth "$U4T")"
-  DN=$(jq -r ".content[] | select(.id==$VM) | .displayName" "$B")
+  DN=$(jq -r --arg v "$VM" '.content[] | select(.id==$v) | .displayName' "$B")
   [ "$DN" = "보호 스모크 VM" ] && ok "  displayName round-trip" || ko "  displayName round-trip ($DN)"
   req "admin vms carries orgName" 200 "$BASE/admin/vms?q=$VNAME" -H "$(auth "$SAT")"
   ON=$(jq -r '.content[0].orgName // empty' "$B"); [ -n "$ON" ] && ok "  orgName present ($ON)" || ko "  orgName present"
@@ -367,22 +394,22 @@ if has_phase protect; then
   # proxmox.task-poll-timeout, which is how long the claim can legitimately be held.
   SETTLED=0
   for _ in $(seq 1 42); do
-    PO=$(pgq "select coalesce(power_operation_id::text,'') from vms where id=$VM")
-    ST=$(pgq "select status from vms where id=$VM")
+    PO=$(pgq "select coalesce(power_operation_id::text,'') from vms where id=$VM_DB")
+    ST=$(pgq "select status from vms where id=$VM_DB")
     [ -z "$PO" ] && [ "$ST" = STOPPED ] && { SETTLED=1; break; }
     sleep 10
   done
   # Assert the same proposition the loop breaks on. A failed shutdown clears the
-  # claim but keeps the status RUNNING, so testing the claim alone would call
-  # that settled.
+  # claim but keeps the status RUNNING (VmPowerJobs.recordFailure: "keep the
+  # status, the poller converges"), so testing $PO alone would call that settled.
   [ "$SETTLED" = 1 ] && ok "  power operation settled before delete" \
     || ko "  power operation not settled (op=${PO:-none} status=${ST:-none})"
   req "self-delete now accepted 202" 202 -X DELETE "$BASE/vms/$VM" -H "$(auth "$U4T")"
   # immediate destroy for the smoke: pull the grace forward and let the sweeper
   # fire — a completed destroy proves the pipeline's clear-then-delete works
-  pgx "update vms set delete_scheduled_for=now() where id=$VM"
+  pgx "update vms set delete_scheduled_for=now() where id=$VM_DB"
   echo "  waiting for destroy sweep…"
-  for _ in $(seq 1 42); do ST=$(pgq "select status from vms where id=$VM"); [ "$ST" = DELETED ] && break; sleep 10; done
+  for _ in $(seq 1 42); do ST=$(pgq "select status from vms where id=$VM_DB"); [ "$ST" = DELETED ] && break; sleep 10; done
   [ "$ST" = DELETED ] && { ok "vm destroyed clean (pipeline cleared always-on protection)"; VM_DELETED=1; } || ko "vm destroyed clean (got $ST)"
   fi
 fi
@@ -404,7 +431,7 @@ fi
 if has_phase mfa; then
   echo "── mfa: enroll → step-up login → recovery → admin reset"
   U6="smoke-acct-mfa-$TS@example.com"; SCRATCH_EMAILS+=("$U6")
-  read -r U6T _ <<<"$(mk_user "$U6" 'mfa-password-1234' '2단계스모크')"
+  read -r U6T _ _ <<<"$(mk_user "$U6" 'mfa-password-1234' '2단계스모크')"
   req "mfa begin 200" 200 -X POST "$BASE/me/mfa/totp" -H "$(auth "$U6T")" \
     -H 'Content-Type: application/json' -d '{"password":"mfa-password-1234"}'
   SECRET=$(jq -r '.secret' "$B")
@@ -440,7 +467,7 @@ if has_phase mfa; then
   req "  recovery code single-use 401" 401 -X POST "$BASE/auth/mfa" \
     -H 'Content-Type: application/json' -d "{\"mfaToken\":\"$MT3\",\"recoveryCode\":\"$RC\"}"
   # admin rescue
-  U6ID=$(pgq "select id from users where email='$U6'")
+  U6ID=$(pgq "select public_id from users where email='$U6'")
   req "admin mfa-reset 200" 200 -X POST "$BASE/admin/users/$U6ID/mfa-reset" -H "$(auth "$SAT")"
   T=$(login "$U6" 'mfa-password-1234')
   [ -n "$T" ] && ok "  post-reset login is direct (no challenge)" || ko "  post-reset login direct"
@@ -457,7 +484,7 @@ if has_phase terms; then
     -H 'Content-Type: application/json' \
     -d "{\"email\":\"smoke-acct-nc-$TS@example.com\",\"password\":\"whatever-pass-10\",\"name\":\"미동의\",\"consents\":[]}"
   U7="smoke-acct-tos-$TS@example.com"; SCRATCH_EMAILS+=("$U7")
-  read -r U7T _ <<<"$(mk_user "$U7" 'terms-password-10' '약관스모크')"
+  read -r U7T _ _ <<<"$(mk_user "$U7" 'terms-password-10' '약관스모크')"
   req "my consents 200" 200 "$BASE/me/consents" -H "$(auth "$U7T")"
   NC=$(jq -r 'length' "$B"); [ "$NC" = 2 ] && ok "  signup recorded 2 consents" || ko "  consents (got $NC)"
   # version bump → pendingConsents → re-consent (cleaned up afterwards)
@@ -482,7 +509,7 @@ fi
 if has_phase maint; then
   echo "── maint: maintenance mode / banner / contact"
   U8="smoke-acct-mnt-$TS@example.com"; SCRATCH_EMAILS+=("$U8")
-  read -r U8T _ <<<"$(mk_user "$U8" 'maint-password-10' '점검스모크')"
+  read -r U8T _ _ <<<"$(mk_user "$U8" 'maint-password-10' '점검스모크')"
   req "meta status 200 (off)" 200 "$BASE/meta/status"
   [ "$(jq -r '.maintenance' "$B")" = "false" ] && ok "  maintenance=false baseline" || ko "  baseline not false"
   req "maintenance on (200)" 200 -X PUT "$BASE/admin/settings/maintenance_mode" -H "$(auth "$SAT")" \
@@ -559,7 +586,7 @@ if has_phase roles; then
   req "  system summary 200" 200 "$BASE/admin/system-summary" -H "$(auth "$SMT")"
   req "  settings write 403" 403 -X PUT "$BASE/admin/settings/banner_message" -H "$(auth "$SMT")" \
     -H 'Content-Type: application/json' -d '{"value":"nope"}'
-  req "  force-delete 403 (role gate)" 403 -X POST "$BASE/admin/vms/999999/force-delete" -H "$(auth "$SMT")" \
+  req "  force-delete 403 (role gate)" 403 -X POST "$BASE/admin/vms/$NO_SUCH_ID/force-delete" -H "$(auth "$SMT")" \
     -H 'Content-Type: application/json' -d '{"confirmName":"nope"}'
   req "  role change 403" 403 -X PATCH "$BASE/admin/users/$U9ID" -H "$(auth "$SMT")" \
     -H 'Content-Type: application/json' -d '{"role":"USER"}'
