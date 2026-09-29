@@ -131,8 +131,16 @@ cleanup(){
     # A user who filed a request keeps their row by design (the not-exists guard
     # above skips them), so residue is not a failure — but it must be visible,
     # otherwise a cleanup that silently stops working looks identical.
+    # A kept row is still a working account, so it is closed instead: this runs
+    # after the VM cleanup above, and nothing acts as the user after it.
     local left; left=$(pgq "select count(*) from users where email='$e'")
-    [ "${left:-0}" = 0 ] || echo "-- cleanup: scratch user $e retained (owns a request row) --"
+    if [ "${left:-0}" != 0 ]; then
+      if disable_scratch_user "$e"; then
+        echo "-- cleanup: scratch user $e retained (owns a request row) and disabled --"
+      else
+        echo "-- cleanup: scratch user $e retained and NOT disabled --" >&2; F=$((F+1))
+      fi
+    fi
   done
   # never leave the live env in maintenance mode / with smoke banner rows
   pgx "update settings set value='false'::jsonb where key='maintenance_mode' and value='true'::jsonb"
