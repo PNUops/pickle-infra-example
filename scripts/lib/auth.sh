@@ -170,7 +170,7 @@ login_token() {
 # Signup sends a real verification mail on this deployment -- it runs the prod
 # profile -- and these addresses are fabricated, so every run would post bounces
 # to a real domain. Reading the token back is not an option either: it is stored
-# hashed, and the mock spool that two of these scripts still read stopped filling
+# hashed, and the mock spool that two of these scripts once read stopped filling
 # on 2026-08-18 when the profile changed. They had been making unverified
 # accounts ever since, and because the helper echoes three fields, an empty token
 # shifted them and handed callers an internal id where a public one was expected.

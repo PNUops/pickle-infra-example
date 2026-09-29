@@ -195,6 +195,10 @@ SHA와 nginx 문법·응답을 검사하고, `recover`는 health-only 상태를 
 DB에 직접 만든 인증된 사용자로 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기,
 SSH 도달 확인, 전원 왕복, 삭제, DB 정합 검증까지 한 번에 통과시킵니다. 회원가입과 메일 인증
 경로는 이 스모크가 확인하지 않습니다(인증 메일이 실제 메일함으로 가서 토큰을 읽을 수 없습니다).
+`smoke-http-publish.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh --allow-provision`도 같은
+이유로 사용자를 DB에 직접 만듭니다. `smoke-dashboards-notify.sh`는 메일 발송을 메일함이 아니라
+`notifications` 행이 `SENT`가 되었는지로 확인합니다. 이 스모크의 전체 공지(`ALL`)는 dev의 모든
+활성 사용자에게 실제 메일로 나갑니다.
 `smoke-llm-key-lifecycle.sh`는 LLM gateway까지 배포한 뒤 평문 키를 출력하지 않고 실제
 1-token 호출과 snapshot 기반 정지·재개·폐기 반영을 확인합니다. 이 일반 lifecycle은
 OpenRouter 사업 account가 없어도 실행할 수 있도록 금액 한도를 0으로 둔 TOKEN 축 smoke입니다.
