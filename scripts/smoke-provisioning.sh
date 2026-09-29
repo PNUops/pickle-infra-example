@@ -5,7 +5,7 @@
 # (198.19.0.1) and can reach guest VMs on :22; LXC 101 cannot. The API must
 # already run the real provisioning pipeline rather than a mock job.
 #
-# Journey: signup -> verify (token from mock-mail log via pct) -> login ->
+# Journey: scratch user (verified, straight into the DB) -> login ->
 # team workspace -> vm request with display name dev-smoke-<ts> (the VM name is
 # generated from it, giving the e2e VM the mandatory dev- prefix) ->
 # vm request -> ORG_ADMIN approve -> poll RUNNING (real pipeline, <= 15 min,
@@ -21,14 +21,11 @@
 # tokens only), so no CSRF handling is needed.
 #
 # Usage: smoke-provisioning.sh [BASE_URL]   (default https://pickle.pusan.ac.kr)
-# Requires: curl, jq, nc, qm, and pct access to CTID 101.
+# Requires: curl, jq, nc, qm, python3 with bcrypt (for the scratch user's
+# password hash), and pct access to CTID 101.
 set -uo pipefail # no -e: cleanup and the summary must run even after failures
 
 BASE="${1:-https://pickle.pusan.ac.kr}/api/v1"
-# Signup requires consent to every current terms version (422 otherwise).
-# Built once from the public endpoint so version bumps never break the smoke.
-CONSENTS_JSON=$(curl -fsS "$BASE/meta/terms" 2>/dev/null | jq -c '[.[] | {docType, version}]' 2>/dev/null)
-[ -n "$CONSENTS_JSON" ] || CONSENTS_JSON='[]'
 
 CTID="${CTID:-101}"
 TS=$(date +%s)
@@ -36,6 +33,19 @@ USER_EMAIL="smoke-${TS}@pusan.ac.kr"
 USER_PW="smoke-pass-${TS}!"
 # shellcheck source=scripts/lib/auth.sh
 . "$(dirname "$0")/lib/auth.sh"
+
+# mk_verified_user (lib/auth.sh) writes the scratch user through these two.
+# pgx feeds the statement on stdin: `su -c` re-parses its command string, and a
+# statement passed there loses anything that shell expands.
+pgq(){ pct exec "$CTID" -- su - postgres -c "psql -d pickle_dev -qtAc \"$1\"" 2>/dev/null | tr -d '[:space:]'; }
+pgx(){
+  local out
+  if ! out=$(pct exec "$CTID" -- su - postgres -c \
+      "psql -q -d pickle_dev -v ON_ERROR_STOP=1 -f -" <<<"$1" 2>&1); then
+    printf 'pgx failed: %s\n%s\n' "${1%%$'\n'*}" "$out" >&2
+    return 1
+  fi
+}
 
 # seed passwords live in the LXC's api.env (rotated 2026-07-12 — the repo
 # defaults are dead); env vars still override for non-standard setups
@@ -59,6 +69,7 @@ WORKSPACE_ID=""
 FLAVOR_ID=""
 REQ_ID=""
 VM_ID=""
+VM_ID_DB=""
 VM_NAME=""
 VM_IP=""
 
@@ -150,7 +161,13 @@ db() {
   pct exec "$CTID" -- su - postgres -c "psql -d pickle_dev -tAc \"$1\""
 }
 
-db_vm_status() { db "select status from vms where id = $VM_ID" | tr -d '[:space:]'; }
+# Direct SQL runs on the internal key, never on the id the API handed back —
+# see the VM_ID_DB resolution in phase_request_approve. An unresolved id must
+# not reach a statement: `where id = ` is a syntax error far from its cause.
+db_vm_status() {
+  [ -n "$VM_ID_DB" ] || return 0
+  db "select status from vms where id = $VM_ID_DB" | tr -d '[:space:]'
+}
 
 # wait_db_deleted <timeout-sec>: poll the vms row until DELETED. DB is the
 # ground truth here — the API detail view is not specified for destroyed VMs.
@@ -171,27 +188,18 @@ wait_db_deleted() {
 
 # ── phase 1: user account, reference data, dev-smoke group ──
 phase_account() {
-  step "signup" 202 -X POST "$BASE/auth/signup" -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$USER_EMAIL\",\"password\":\"$USER_PW\",\"name\":\"프로비저닝 스모크\",\"consents\":$CONSENTS_JSON}" || return 1
-
-  sleep 2
-  # tokens are withheld from the journal (bearer secrets); the dev mock mailer
-  # spools full bodies to a service-user-only file instead
-  local token
-  token=$(pct exec "$CTID" -- sh -c \
-    "grep -o 'token=[A-Za-z0-9_-]*' /var/lib/pickle/mock-mail.log 2>/dev/null | tail -1 | cut -d= -f2")
-  if [ -z "$token" ]; then
-    ko "verification token extraction from CTID $CTID mock-mail spool"
+  # The user is written straight into the database rather than signed up. Signup
+  # hands out its verification token only by mail, and dev runs the production
+  # mail profile: the token goes to a real mailbox and the mock-mail spool this
+  # phase used to read stays empty, so every run stopped here before creating
+  # anything. The other smokes moved to the same helper for the same reason.
+  local made
+  if ! made=$(mk_verified_user "$BASE" "$USER_EMAIL" "$USER_PW" "프로비저닝 스모크"); then
+    ko "scratch user created and signed in"
     return 1
   fi
-  ok "verification token extracted"
-
-  step "verify-email" 200 -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' \
-    -d "{\"token\":\"$token\"}" || return 1
-
-  step "user login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$USER_EMAIL\",\"password\":\"$USER_PW\"}" || return 1
-  USER_AT=$(jq -r .accessToken "$BODY")
+  USER_AT=${made%% *}
+  ok "scratch user created and signed in"
 
   step "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $USER_AT" || return 1
   TEMPLATE_ID=$(jq -r '.[0].id // empty' "$BODY")
@@ -233,13 +241,15 @@ phase_account() {
 
 # ── phase 2: vm request + ORG_ADMIN approval ──
 phase_request_approve() {
+  # Every id the API speaks is a UUID, so each one goes into the payload quoted;
+  # only the spec numbers (vcpu/memory/disk) stay bare.
   step "create vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $USER_AT" \
     -H 'Content-Type: application/json' -d "{
-      \"type\":\"VM\",\"workspaceId\":$WORKSPACE_ID,\"orgId\":$ORG_ID,
+      \"type\":\"VM\",\"workspaceId\":\"$WORKSPACE_ID\",\"orgId\":\"$ORG_ID\",
       \"purpose\":\"프로비저닝 스모크 테스트 (실제 프로비저닝 검증)\",\"courseOrProject\":null,
       \"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,
       \"displayName\":\"dev-smoke-$TS\",
-      \"vm\":{\"imageId\":$TEMPLATE_ID,\"flavorId\":$FLAVOR_ID,\"reqVcpu\":$TPL_VCPU,
+      \"vm\":{\"imageId\":\"$TEMPLATE_ID\",\"flavorId\":\"$FLAVOR_ID\",\"reqVcpu\":$TPL_VCPU,
       \"reqMemoryMb\":$TPL_MEM,\"reqDiskGb\":$TPL_DISK,\"specReason\":null}}" || return 1
   REQ_ID=$(jq -r .id "$BODY")
 
@@ -251,13 +261,23 @@ phase_request_approve() {
     -H "Authorization: Bearer $ADMIN_AT" -H 'Content-Type: application/json' -d "{
       \"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"스모크 승인\",
       \"vm\":{\"grantedVcpu\":$TPL_VCPU,\"grantedMemoryMb\":$TPL_MEM,
-      \"grantedDiskGb\":$TPL_DISK,\"grantedImageId\":$TEMPLATE_ID,\"nodeId\":null}}" || return 1
+      \"grantedDiskGb\":$TPL_DISK,\"grantedImageId\":\"$TEMPLATE_ID\",\"nodeId\":null}}" || return 1
 
   step "vm visible in list" 200 "$BASE/vms?workspaceId=$WORKSPACE_ID" -H "Authorization: Bearer $USER_AT" || return 1
   VM_ID=$(jq -r '.content[0].id // empty' "$BODY")
   VM_NAME=$(jq -r '.content[0].name // empty' "$BODY")
   if [ -z "$VM_ID" ] || [ -z "$VM_NAME" ]; then
     ko "vm id/name extraction from list"
+    return 1
+  fi
+  # Two ids for one VM, and they are not interchangeable: VM_ID is the UUID the
+  # API speaks (URLs, JSON), VM_ID_DB is the internal key every direct query and
+  # every foreign key (ip_allocations.vm_id, provisioning_tasks.vm_id) uses.
+  # Resolve it once, here, and fail loudly — an empty value would only surface
+  # much later as a bare `where id = ` syntax error.
+  VM_ID_DB=$(db "select id from vms where public_id = '$VM_ID'" | tr -d '[:space:]')
+  if [ -z "$VM_ID_DB" ]; then
+    ko "no vms row for public_id $VM_ID — the DB-side checks cannot run"
     return 1
   fi
   ok "vm created: id=$VM_ID name=$VM_NAME"
@@ -407,9 +427,14 @@ post_verify() {
     ok "qm list: $VM_NAME absent"
   fi
 
+  if [ -z "$VM_ID_DB" ]; then
+    ko "internal vm id was never resolved — the DB ground-truth checks are unverified"
+    return 1
+  fi
+
   local total released
-  total=$(db "select count(*) from ip_allocations where vm_id = $VM_ID" | tr -d '[:space:]')
-  released=$(db "select count(*) from ip_allocations where vm_id = $VM_ID and status = 'RELEASED'" | tr -d '[:space:]')
+  total=$(db "select count(*) from ip_allocations where vm_id = $VM_ID_DB" | tr -d '[:space:]')
+  released=$(db "select count(*) from ip_allocations where vm_id = $VM_ID_DB and status = 'RELEASED'" | tr -d '[:space:]')
   if [ "${total:-0}" -ge 1 ] && [ "$total" = "$released" ]; then
     ok "ip_allocations: $released/$total RELEASED"
   else
@@ -425,7 +450,7 @@ post_verify() {
   fi
 
   local undone
-  undone=$(db "select count(*) from provisioning_tasks where vm_id = $VM_ID and status <> 'DONE'" | tr -d '[:space:]')
+  undone=$(db "select count(*) from provisioning_tasks where vm_id = $VM_ID_DB and status <> 'DONE'" | tr -d '[:space:]')
   if [ "${undone:-1}" = "0" ]; then
     ok "provisioning_tasks: all DONE"
   else
