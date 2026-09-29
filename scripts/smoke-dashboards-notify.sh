@@ -3,14 +3,18 @@
 # Dashboards-notifications full-journey e2e — run on pve-node as root. Provisions a real dev VM, then walks
 # the surface: in-app notifications + mail delivery (dispatcher; read back from
 # the notifications table, since dev sends real mail),
-# announcements (scopes + delivery log), expiry pipeline (DB-forced end_date →
+# announcements (workspace scope + delivery log), expiry pipeline (DB-forced end_date →
 # JobRunr `vm-expiry` trigger via the dashboard API → auto-stop → VM_EXPIRED →
 # admin period extension → restart), settings editor, ops registries (tasks /
 # drift / ip / summaries), audit views, and a conditional failed-task retry.
 # Force-deletes the VM at the end (teardown always runs once the VM exists).
 #
-# The ALL-scope announcement reaches every active account, and dev sends real
-# mail, so each run mails every active user of the deployment.
+# No announcement leaves this run's own workspace. dev sends real mail, and an
+# ALL or ORG announcement would mail every active account or every member of
+# the seed organisation, so both announcements posted here are WORKSPACE-scoped
+# to the workspace this run creates, whose only member is its scratch user. The
+# one ALL request left is the ORG_ADMIN one, refused with 403 before any row is
+# written.
 #
 # Requires: curl, jq, python3 with bcrypt (for the scratch user's password hash),
 # pct (CTID 101 = pickle-api + pickle_dev + JobRunr dash :8000).
@@ -27,7 +31,7 @@ TS=$(date +%s)-$RANDOM
 # e2e account rules: email domain @example.com; the personal-group slug is the
 # email local part, so the team-group slug must differ from it (dashteam- vs dash-).
 EM="dash-${TS}@example.com"; PW="dash-pass-${TS}!"
-ATITLE="e2e all-notice ${TS}"; OTITLE="e2e org-notice ${TS}"
+ATITLE="e2e sys-notice ${TS}"; OTITLE="e2e org-admin-notice ${TS}"
 
 for cmd in curl jq pct; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "missing required command: $cmd (run on pve-node as root)"; exit 2; }
@@ -55,7 +59,35 @@ if [ -z "$ORGADMIN_PW" ] || [ -z "$SYSADMIN_PW" ] || [ -z "$JRU" ] || [ -z "$JRP
   echo "FATAL: seed admin / JobRunr dashboard credentials not found in CTID $CTID api.env"; exit 2
 fi
 
-B=$(mktemp); trap 'rm -f "$B"' EXIT
+B=$(mktemp)
+# What the run changed outside its own rows, put back on every exit. The
+# settings phase writes vm_expiry_notice_days; SETTING_SAVED says whether the
+# previous value was read, and SETTING_ORIG holds it ('' = there was no row).
+SETTING_SAVED=0; SETTING_ORIG=""
+on_exit(){
+  local rc=$?
+  if [ "$SETTING_SAVED" = 1 ]; then
+    if [ -n "$SETTING_ORIG" ]; then
+      pgx "update settings set value = '$SETTING_ORIG'::jsonb where key = 'vm_expiry_notice_days'" \
+        && echo "-- cleanup: vm_expiry_notice_days restored to $SETTING_ORIG --" \
+        || { echo "-- cleanup: vm_expiry_notice_days NOT restored (was $SETTING_ORIG) --" >&2; rc=1; }
+    else
+      pgx "delete from settings where key = 'vm_expiry_notice_days'" \
+        && echo "-- cleanup: vm_expiry_notice_days row removed again (there was none) --" \
+        || { echo "-- cleanup: vm_expiry_notice_days row NOT removed --" >&2; rc=1; }
+    fi
+  fi
+  # After the teardown, which force-deletes the VM with the administrator's
+  # token: the scratch user is closed last.
+  if disable_scratch_user "$EM"; then
+    echo "-- cleanup: scratch user $EM disabled --"
+  else
+    echo "-- cleanup: scratch user $EM NOT disabled --" >&2; rc=1
+  fi
+  rm -f "$B"
+  exit "$rc"
+}
+trap on_exit EXIT
 P=0; F=0; S=0; N=0
 ok(){ N=$((N+1)); echo "PASS  [$N] $1"; P=$((P+1)); }
 ko(){ N=$((N+1)); echo "FAIL  [$N] $1"; F=$((F+1)); }
@@ -199,6 +231,8 @@ phase_notifications(){
   req "read-all" 200 -X POST "$BASE/notifications/read-all" -H "Authorization: Bearer $SAT"
   curl -sS -o "$B" "$BASE/notifications/unread-count" -H "Authorization: Bearer $SAT"
   jqc "unread-count zero after read-all" '.unreadCount == 0'
+  # SENT means the mail server accepted the approval mail. It says nothing about
+  # the mail's content, and nothing about delivery beyond that server.
   local approved="n.event = 'request.approved' and n.link_path = '/console/requests/$RID'"
   poll_sent "$approved" 120 \
     && ok "dispatcher sent 승인 메일 (notifications SENT, to=$EM)" \
@@ -212,30 +246,44 @@ phase_announcements(){
   # a status assertion alone would read as a pass with no token behind it.
   if ! XAT=$(login_token "$BASE" "$SYSADMIN_EMAIL" "$SYSADMIN_PW"); then ko "sysadmin login"; return 1; fi
   ok "sysadmin login"
-  req "ALL announcement (sys)" 201 -X POST "$BASE/admin/announcements" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' \
-    -d "{\"title\":\"$ATITLE\",\"body\":\"e2e 전체 공지 본문\",\"scope\":\"ALL\",\"orgId\":null,\"workspaceId\":null}" \
-    && jqc "ALL recipientCount >= 1" '.recipientCount >= 1'
+  # WORKSPACE scope, aimed at this run's workspace: the scratch user is its only
+  # member, so exactly one person is told. That is checked against the database
+  # before anything is posted, and recipientCount == 1 is asserted afterwards,
+  # not >= 1, so a scope that ever widened fails here instead of mailing people.
+  local reach
+  reach=$(pgq "select count(*) from workspace_members m join workspaces w on w.id = m.workspace_id join users u on u.id = m.user_id where w.public_id = '$GID' and u.status = 'ACTIVE'")
+  if [ "$reach" != 1 ]; then
+    ko "announcement would reach ${reach:-unknown} active members of workspace $GID, not 1; nothing posted"
+    return 1
+  fi
+  ok "announcement target workspace has exactly 1 active member"
+  req "WORKSPACE announcement (sys)" 201 -X POST "$BASE/admin/announcements" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' \
+    -d "{\"title\":\"$ATITLE\",\"body\":\"e2e 워크스페이스 공지 본문\",\"scope\":\"WORKSPACE\",\"orgId\":null,\"workspaceId\":\"$GID\"}" \
+    && jqc "sys announcement recipientCount == 1" '.recipientCount == 1'
   curl -sS -o "$B" "$BASE/notifications/unread-count" -H "Authorization: Bearer $SAT"
-  jqc "user unread-count bumped by ALL announcement" '.unreadCount >= 1'
+  jqc "user unread-count bumped by the announcement" '.unreadCount >= 1'
   curl -sS -o "$B" "$BASE/notifications?size=50" -H "Authorization: Bearer $SAT"
-  jqc "user inbox shows ALL announcement title" \
+  jqc "user inbox shows the announcement title" \
     '[.content[] | select(.event=="announcement" and .title==$t)] | length >= 1' --arg t "$ATITLE"
-  req "ORG announcement (orgadmin, own org)" 201 -X POST "$BASE/admin/announcements" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' \
-    -d "{\"title\":\"$OTITLE\",\"body\":\"e2e 기관 공지 본문\",\"scope\":\"ORG\",\"orgId\":null,\"workspaceId\":null}"
+  # An org administrator may announce to a workspace that holds resources in
+  # their organisation, which this one does while its VM exists.
+  req "WORKSPACE announcement (orgadmin, own org's workspace)" 201 -X POST "$BASE/admin/announcements" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' \
+    -d "{\"title\":\"$OTITLE\",\"body\":\"e2e 워크스페이스 공지 본문\",\"scope\":\"WORKSPACE\",\"orgId\":null,\"workspaceId\":\"$GID\"}" \
+    && jqc "orgadmin announcement recipientCount == 1" '.recipientCount == 1'
+  # The scope gate throws before the send budget is spent or a row is written.
   req "ALL by ORG_ADMIN -> 403" 403 -X POST "$BASE/admin/announcements" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' \
     -d "{\"title\":\"$ATITLE-forbidden\",\"body\":\"x\",\"scope\":\"ALL\",\"orgId\":null,\"workspaceId\":null}"
-  # delivery log (sys): the dispatcher must mark this run's announcement mail SENT
+  # delivery log (sys): the dispatcher must mark this run's announcement mail SENT.
+  # This reads the same notifications row a direct SQL check would, so it is the
+  # only delivery check here; on failure the row's own status is printed.
   local dl=$((SECONDS+120)) sent=0
   nudge_dispatcher || true
   while :; do
     curl -sS -o "$B" "$BASE/admin/notifications?event=announcement&email=$EM&size=50" -H "Authorization: Bearer $XAT"
     sent=$(jq -r --arg t "$ATITLE" '[.content[] | select(.title==$t and .status=="SENT")] | length' "$B" 2>/dev/null)
     [ "${sent:-0}" -ge 1 ] 2>/dev/null && break; [ "$SECONDS" -ge "$dl" ] && break; sleep 5; done
-  [ "${sent:-0}" -ge 1 ] 2>/dev/null && ok "delivery log SENT for ALL announcement (to=$EM)" || ko "no SENT delivery-log row for ALL announcement within 120s"
-  local announced="n.event = 'announcement' and n.title = '$ATITLE'"
-  poll_sent "$announced" 90 \
-    && ok "dispatcher sent announcement mail (notifications SENT, to=$EM)" \
-    || ko "announcement mail not SENT within 90s (to=$EM; rows: $(sent_states "$announced"))"
+  [ "${sent:-0}" -ge 1 ] 2>/dev/null && ok "delivery log SENT for workspace announcement (to=$EM)" \
+    || ko "no SENT delivery-log row for workspace announcement within 120s (rows: $(sent_states "n.event = 'announcement' and n.title = '$ATITLE'"))"
 }
 
 # ── 4. expiry: DB-forced end_date → vm-expiry job → auto-stop → extend → restart ──
@@ -274,6 +322,16 @@ phase_settings(){
   echo "== settings =="
   req "settings list" 200 "$BASE/admin/settings" -H "Authorization: Bearer $XAT" \
     && jqc "vm_expiry_notice_days present, editable" '[.[] | select(.key=="vm_expiry_notice_days" and .editable==true)] | length == 1'
+  # Read the current value first; on_exit puts it back whatever happens below.
+  SETTING_ORIG=$(pgq "select value::text from settings where key = 'vm_expiry_notice_days'")
+  local present; present=$(pgq "select count(*) from settings where key = 'vm_expiry_notice_days'")
+  if [ "$present" = 1 ] && [ -n "$SETTING_ORIG" ]; then
+    SETTING_SAVED=1; ok "vm_expiry_notice_days saved before the edit ($SETTING_ORIG)"
+  elif [ "$present" = 0 ]; then
+    SETTING_ORIG=""; SETTING_SAVED=1; ok "vm_expiry_notice_days has no row before the edit"
+  else
+    ko "could not read vm_expiry_notice_days before the edit; not editing it"; return 1
+  fi
   req "PUT vm_expiry_notice_days [14,7,1]" 200 -X PUT "$BASE/admin/settings/vm_expiry_notice_days" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' -d '{"value":[14,7,1]}' \
     && jqc "round-trip value [14,7,1]" '.value == [14,7,1]'
   req "PUT unknown key -> 404" 404 -X PUT "$BASE/admin/settings/smoke_e2e_no_such_key" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' -d '{"value":1}'
