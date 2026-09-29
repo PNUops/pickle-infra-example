@@ -75,6 +75,7 @@ Proxmox 노드는 [proxmox-node-intake.md](proxmox-node-intake.md)를 따르고(
 | WireGuard 전송 망 | `100.64.0.0/30`. 릴레이 `.1`, sshgw `.2` | `create-sshgw-lxc.sh`, `lightsail/wireguard/wg0.conf.template`(그 `AllowedIPs`는 게스트 망과 **api 주소**도 담으므로 항목이 틀리면 터널이 아니라 릴레이 sync가 깨진다), `lightsail/haproxy/haproxy.cfg.template`(`server sshgw 100.64.0.2:22`), `lightsail/nftables/nftables.conf`, `hosts/pve-node/interfaces`(`/30` 라우트와 `.1` FORWARD accept), `PICKLE_RELAY_SOURCE_IP` |
 | 주 진입 도메인 | `pickle.pusan.ac.kr` | `apply-main-domain-vhost.sh`의 `PICKLE_MAIN_DOMAIN`. `create-sshgw-lxc.sh`의 `PICKLE_TERMINAL_CONSOLE_ORIGIN`. **터미널 브리지는 이 origin만 받아들이고 그 컨테이너는 11단계보다 훨씬 앞인 6단계에서 만들어지므로** 여기 값이 낡으면 웹 터미널이 조용히 죽는다. `create-app-lxc.sh` 콘솔 vhost의 `server_name`, `health-check.sh`(`PICKLE_DEV_DOMAIN` 기본값과 Let's Encrypt 인증서 경로), 그리고 이 이름에서 200을 요구하는 `apply-tls-ciphers.sh`의 전후 단정. 스모크 테스트 기본값(`BASE`), pve-node의 `/etc/hosts` 헤어핀 항목 |
 | 플랫폼 루트 도메인 | `pusan.dev` | `PICKLE_ROOT_DOMAIN`(`apply-platform-inventory.sh`와 `apply-settings.sh`. 같은 값을 쓰는 것이 의도다), 프록시 에이전트 환경의 `PICKLE_PROXY_AGENT_WILDCARD_CERTS`(형식은 `<root>=<crt>:<key>`이고 에이전트는 그 루트에 대해 아무것도 렌더링하기 전에 이것이 필요하다. 프록시 에이전트 배포 런북(비공개 레포)), `ROOT`(`smoke-http-publish.sh`), `PLATFORM_ROOT_DOMAIN`(`health-check.sh`), 계열 경로 `/etc/letsencrypt/live/<루트>/{fullchain,privkey}.pem`(`certbot --cert-name <루트>` 가 정한다), Cloud DNS 관리 존과 certbot 서비스 계정의 범위 |
+| 플랫폼 루트 도메인의 소유 기관 | `예시 기관` | `PICKLE_ROOT_ORG`(`apply-platform-inventory.sh`, 필수. 기본값이 없다). `orgs.name` 과 정확히 한 행이 일치해야 하고, 그 행이 `domain_roots.org_id` 가 된다. **루트 아래 발급되는 이름이 전부 그 기관에 속하고 신청도 그 기관의 승인 큐에 선다.** 기관을 먼저 만들어 두지 않으면 이 단계가 실패한다 |
 | 사용자 SSH 호스트 | `ssh.example.dev` (DNS 전용 A 레코드에서 릴레이 고정 IP로) | 릴레이 기동 런북(비공개 레포) §5, api의 `PICKLE_SSH_HOST`(재정의 지점). **비어 있으면 api가 컴파일된 기본값으로 폴백한다.** meta 엔드포인트와 알림 문구 양쪽에서 그렇게 되므로, 설정하지 않은 변수는 실패하지 않고 틀린 호스트를 광고한다. 콘솔은 비인증 랜딩 페이지용 상수를 따로 갖고 있다 |
 | 릴레이 공개 호스트 (포트 포워딩) | `ssh.example.dev`. 위 사용자 SSH 호스트와 같은 이름이다. 둘 다 릴레이로 해석되기 때문이다 | `PICKLE_RELAY_PUBLIC_HOST`(`apply-platform-inventory.sh`, 필수. 기본값이 없고 이 열을 쓰는 API도 없다) |
 | 릴레이 고정 IP와 관리 SSH | `198.51.100.10`, 관리 sshd `:22`, 키 `$VAULT/lightsail-ssh.pem` | `RELAY_HOST`, `RELAY_SSH_PORT`, `RELAY_SSH_KEY`(`deploy-relay.sh`). **이름이 다른 두 번째 묶음** `PICKLE_RELAY_SSH_KEY`, `_USER`, `_PORT`(`apply-relay-token.sh`). `RELAY`(`smoke-ssh-gateway.sh`, 14단계 묶음). sshgw `wg0.conf`의 `Endpoint`. 릴레이 기동 런북(비공개 레포) |
@@ -261,9 +262,15 @@ Cloud DNS 서비스 계정 키만 있으면 되고 DNAT 가 살아 있을 필요
   (`delete from user_consents; delete from terms_versions; delete from settings;
   delete from os_images;`. 시더가 첫 기동에 빈 테이블을 채우고, 부트스트랩 스크립트는
   설계상 남의 행을 넘겨받지 않는다) → `apply-platform-inventory.sh`
-  (`PICKLE_RELAY_PUBLIC_HOST` 필수) → `apply-settings.sh` → `apply-terms.sh` →
-  `apply-os-catalog.sh` → OS 하나 활성화 → 킬 스위치 켜기 → `scripts/apply-relay-token.sh`
-  → 기관 생성(콘솔) → 스모크.
+  (`PICKLE_RELAY_PUBLIC_HOST` 와 `PICKLE_ROOT_ORG` 필수) → `apply-settings.sh` →
+  `apply-terms.sh` → `apply-os-catalog.sh` → OS 하나 활성화 → 킬 스위치 켜기 →
+  `scripts/apply-relay-token.sh` → 기관 생성(콘솔) → 스모크.
+- **위 순서는 그때의 실측이고 지금 그대로 따르면 멈춘다.** 도메인 루트 등록이 나중에
+  `apply-platform-inventory.sh` 에 붙으면서 그 스크립트가 `PICKLE_ROOT_ORG` 가 가리키는
+  `orgs` 행을 요구하게 됐는데, 위 순서는 기관을 맨 뒤에 만든다. 일치하는 행이 0개이거나 2개
+  이상이면 스크립트가 0이 아닌 코드로 끝나고, 그 실패는 백업을 뜬 뒤에 나므로 아무것도
+  담기지 않은 덤프를 가리키는 안내가 함께 나온다. **기관 생성을 `apply-platform-inventory.sh` 앞으로
+  옮긴다.** 콘솔이 아직 없으면 그 행만 데이터베이스에 직접 넣는다.
 - 새 환경이 `dev`와 `prod` 중 어느 프로파일로 도는지가 그 자체로 **정해지지 않은 기준**이다.
   두 번째 호스트가 어느 프로파일이어야 하는지를 아무것도 말하지 않고, 위의 정리 단계는
   오직 `dev` 때문에 존재한다. 이 단계 전에 프로파일을 정하고 그 결정을 기록한다. `prod`

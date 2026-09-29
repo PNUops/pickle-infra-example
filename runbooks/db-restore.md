@@ -134,12 +134,13 @@ OS 카탈로그 행도, 법적 문서도 없다. 그 행들은 다섯 개의 스
 
 ### 환경 변수: `apply-platform-inventory.sh`
 
-첫 번째만 기본값이 없어 반드시 설정해야 한다. 나머지는 이 환경의 값을 기본값으로 쓴다.
+처음 둘만 기본값이 없어 반드시 설정해야 한다. 나머지는 이 환경의 값을 기본값으로 쓴다.
 전부 설정 값이므로 이것들을 덮어쓰는 것이 이 스크립트로 두 번째 호스트를 다루는 방법이다.
 
 | 변수 | 예시 | 비고 |
 |---|---|---|
 | `PICKLE_RELAY_PUBLIC_HOST` | `ssh.example.dev` | **필수.** 호스트만 적는다(스킴과 포트 없이). 뻔한 자리표시자는 거부한다 |
+| `PICKLE_ROOT_ORG` | `예시 기관` | **필수.** `PICKLE_ROOT_DOMAIN` 아래 발급되는 이름이 이 기관에 속하고, 관리자 도메인 목록이 이 컬럼으로 좁혀진다. `orgs.name` 과 정확히 한 행이 일치해야 한다. 기본값을 두지 않는 이유는 그 기본값이 실재하는 기관 이름이기 때문이다. 그 이름의 기관이 있는 데이터베이스에서는 아무도 고르지 않은 기관으로 모든 이름이 들어가고, 없는 데이터베이스에서는 아무도 입력하지 않은 이름으로 늦게 실패한다 |
 | `PICKLE_APP_CTID` | `101` | PostgreSQL 과 api 가 도는 컨테이너 |
 | `PICKLE_PROXY_CTID` | `100` | 와일드카드 인증서 자료를 가진 컨테이너 |
 | `PICKLE_DB` | `pickle_dev` | |
@@ -162,6 +163,7 @@ OS 카탈로그 행도, 법적 문서도 없다. 그 행들은 다섯 개의 스
 
 ```bash
 PICKLE_RELAY_PUBLIC_HOST=ssh.example.dev \
+  PICKLE_ROOT_ORG='예시 기관' \
   bash /srv/pickle/infra/scripts/apply-platform-inventory.sh
 ```
 

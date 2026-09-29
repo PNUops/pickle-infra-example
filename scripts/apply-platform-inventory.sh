@@ -15,8 +15,8 @@
 # around: capacity is measured on the running host at every run and never read
 # from a literal here. Everything that is genuinely configuration (addresses,
 # names, bridge, storage, root domain) comes from the environment with a default
-# for this environment, and the one value with no safe default — the relay's
-# public host — is required.
+# for this environment. Two values have no safe default and are required: the
+# relay's public host, and the organisation that owns the root domain.
 #
 # Idempotent: every row is keyed by its name and updated in place, so a re-run
 # after a RAM or CPU change re-measures and corrects the node row. Columns that
@@ -30,7 +30,8 @@
 # failure part way leaves the database as it was.
 #
 # Usage:
-#   PICKLE_RELAY_PUBLIC_HOST=<relay's public host> bash scripts/apply-platform-inventory.sh
+#   PICKLE_RELAY_PUBLIC_HOST=<relay's public host> \
+#     PICKLE_ROOT_ORG=<기관 이름> bash scripts/apply-platform-inventory.sh
 #
 # Environment (required first, then defaults for this environment):
 #   PICKLE_RELAY_PUBLIC_HOST   REQUIRED. Address users are handed with a
@@ -39,6 +40,20 @@
 #                              only way to set it; blank means users receive a
 #                              port with nowhere to connect. Never defaulted —
 #                              the real public address does not live in a repo.
+#   PICKLE_ROOT_ORG            REQUIRED. 기관 이름 (orgs.name) that owns
+#                              PICKLE_ROOT_DOMAIN. Names issued under that root
+#                              take their organisation from this row, and the
+#                              administrator's domain listing is scoped on it,
+#                              so a root with no row here issues nothing. The
+#                              name is looked up rather than an id being typed:
+#                              ids differ between databases and a wrong one
+#                              would attach every name to somebody else's
+#                              institution. Never defaulted: a default is a real
+#                              institution's name, and it is wrong both ways.
+#                              A database carrying that row attaches every name
+#                              to an institution nobody chose; one that does not
+#                              fails at the lookup below, naming an institution
+#                              the operator never typed.
 #   PICKLE_APP_CTID            101      container running PostgreSQL + the api
 #   PICKLE_PROXY_CTID          100      container holding the wildcard material
 #   PICKLE_DB                  pickle_dev
@@ -57,15 +72,6 @@
 #   PICKLE_RELAY_SOURCE_IP     100.64.0.1     relay's tunnel-side address
 #   PICKLE_RELAY_PORT_BAND     10000-19999
 #   PICKLE_ROOT_DOMAIN         pusan.dev
-#   PICKLE_ROOT_ORG            기관 이름 (orgs.name) that owns PICKLE_ROOT_DOMAIN.
-#                              Names issued under that root take their
-#                              organisation from this row, and the
-#                              administrator's domain listing is scoped on it,
-#                              so a root with no row here issues nothing. The
-#                              name is looked up rather than an id being typed:
-#                              ids differ between databases and a wrong one
-#                              would attach every name to somebody else's
-#                              institution.
 #   PICKLE_WILDCARD_CERT       /etc/letsencrypt/live/<root>/fullchain.pem
 set -euo pipefail
 
@@ -106,7 +112,7 @@ RELAY_SOURCE_IP="${PICKLE_RELAY_SOURCE_IP:-100.64.0.1}"
 RELAY_PORT_BAND="${PICKLE_RELAY_PORT_BAND:-10000-19999}"
 
 ROOT_DOMAIN="${PICKLE_ROOT_DOMAIN:-pusan.dev}"
-ROOT_ORG="${PICKLE_ROOT_ORG:-부산대학교}"
+ROOT_ORG="${PICKLE_ROOT_ORG:-}"
 CERT_SCOPE="*.$ROOT_DOMAIN"
 # One certbot lineage per root domain, named after the root: the Let's Encrypt
 # wildcard issued by DNS-01 on the reverse proxy, the same lineage the proxy
@@ -193,6 +199,20 @@ case "$RELAY_PUBLIC_HOST" in
   *) die "PICKLE_RELAY_PUBLIC_HOST='$RELAY_PUBLIC_HOST' is not a resolvable name or address" ;;
 esac
 echo "  relay public host: $RELAY_PUBLIC_HOST"
+
+# Checked here rather than at the lookup below so the script stops before it
+# touches the database. The row it names decides which organisation owns every
+# name issued under $ROOT_DOMAIN, and the administrators' domain listing is
+# scoped on that column, so the wrong row is not a typo that shows up later —
+# it is a queue of requests arriving at the wrong institution.
+case "$ROOT_ORG" in
+  '' | *[!\ ]*) : ;;
+  *) die "PICKLE_ROOT_ORG is whitespace. It is matched against orgs.name literally, so this
+                reaches the lookup below and fails there, after the backup has been taken." ;;
+esac
+[ -n "$ROOT_ORG" ] || die "PICKLE_ROOT_ORG is unset. Names issued under $ROOT_DOMAIN take
+                their organisation from the row it names, and the administrators' domain
+                listing is scoped on it. Set it to the owning institution's orgs.name."
 
 case "$NODE_API_HOST" in
   https://*:*) : ;;
