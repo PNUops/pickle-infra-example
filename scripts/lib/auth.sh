@@ -182,13 +182,16 @@ login_token() {
 # different halves -- the API takes the public UUID, while foreign keys such as
 # `audit_logs.actor_id` still hold the internal bigint.
 #
+# The address is lowercased first. The api normalises the address it is given
+# at login, so a row written with capitals could never be signed in to.
+#
 # Requires `pgq` and `pgx` from the calling script.
 bcrypt_hash() {
   python3 -c "import bcrypt,sys; print(bcrypt.hashpw(sys.argv[1].encode(), bcrypt.gensalt(12)).decode())" "$1" 2>/dev/null
 }
 
 mk_verified_user() {
-  local base="$1" email="$2" password="$3" name="$4"
+  local base="$1" email="${2,,}" password="$3" name="$4"
   local hash body token
   hash=$(bcrypt_hash "$password")
   if [ -z "$hash" ]; then
@@ -302,7 +305,9 @@ smoke_client_ip() {
 #
 # Requires `pgq` and `pgx` from the calling script.
 disable_scratch_user() {
-  local email="$1" reason='스모크 확인용 임시 계정 정리' left
+  # Lowercased like mk_verified_user's address, or a capitalised argument would
+  # find no row and report success while the account stays ACTIVE.
+  local email="${1,,}" reason='스모크 확인용 임시 계정 정리' left
   pgx "with u as (
          update users
             set status = 'DISABLED', disabled_at = now(), disabled_reason = '$reason',
