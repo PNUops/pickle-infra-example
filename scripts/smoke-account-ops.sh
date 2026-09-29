@@ -119,6 +119,9 @@ cleanup(){
         delete from user_status_changes where user_id=uid or actor_id=uid;
         delete from email_verifications where user_id=uid;
         delete from refresh_tokens where user_id=uid;
+        -- No cascade on this FK (V70), and a destroyed VM deliberately keeps its
+        -- grants, so the user row cannot go until these do.
+        delete from resource_access_grants where user_id=uid;
         delete from workspace_members where user_id=uid;
         delete from workspaces g where g.id = any(gids) and g.kind='PERSONAL' and g.deleted_by is null
           and not exists (select 1 from workspace_members gm where gm.workspace_id=g.id)
@@ -349,13 +352,20 @@ if has_phase protect; then
   # only while power_operation_id is null. Without this wait the delete can reach a
   # VM still mid-transition and answer 409 "already being deleted", which names the
   # wrong cause. The reauthentication round trip used to supply this delay by accident.
-  for _ in $(seq 1 30); do
-    PO=$(pgq "select coalesce(power_operation_id::text,'') from vms where id=$VM_DB")
-    ST=$(pgq "select status from vms where id=$VM_DB")
-    [ -z "$PO" ] && [ "$ST" = STOPPED ] && break
-    sleep 5
+  # 42x10s matches the sibling waits and clears the api's own 300s
+  # proxmox.task-poll-timeout, which is how long the claim can legitimately be held.
+  SETTLED=0
+  for _ in $(seq 1 42); do
+    PO=$(pgq "select coalesce(power_operation_id::text,'') from vms where id=$VM")
+    ST=$(pgq "select status from vms where id=$VM")
+    [ -z "$PO" ] && [ "$ST" = STOPPED ] && { SETTLED=1; break; }
+    sleep 10
   done
-  [ -z "$PO" ] && ok "  power operation settled before delete" || ko "  power operation still running ($PO)"
+  # Assert the same proposition the loop breaks on. A failed shutdown clears the
+  # claim but keeps the status RUNNING, so testing the claim alone would call
+  # that settled.
+  [ "$SETTLED" = 1 ] && ok "  power operation settled before delete" \
+    || ko "  power operation not settled (op=${PO:-none} status=${ST:-none})"
   req "self-delete now accepted 202" 202 -X DELETE "$BASE/vms/$VM" -H "$(auth "$U4T")"
   # immediate destroy for the smoke: pull the grace forward and let the sweeper
   # fire — a completed destroy proves the pipeline's clear-then-delete works
