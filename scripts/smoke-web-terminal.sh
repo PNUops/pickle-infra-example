@@ -175,6 +175,9 @@ cleanup(){
         delete from email_verifications where user_id=uid;
         delete from refresh_tokens where user_id=uid;
         delete from vm_ssh_keys where user_id=uid;
+        -- No cascade on this FK (V70), and a destroyed VM deliberately keeps its
+        -- grants, so the user row cannot go until these do.
+        delete from resource_access_grants where user_id=uid;
         delete from workspace_members where user_id=uid;
         delete from workspaces g where g.id = any(gids) and g.kind='PERSONAL' and g.deleted_by is null
           and not exists (select 1 from workspace_members gm where gm.workspace_id=g.id)
