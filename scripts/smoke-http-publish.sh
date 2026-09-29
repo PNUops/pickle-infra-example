@@ -60,7 +60,7 @@ B=$(mktemp)
 # not leak a real guest + IP — force-delete best-effort, mirroring smoke-provisioning.
 VM=""; VM_DELETED=0
 cleanup(){
-  local rc=$?
+  local rc=$? cleanup_failed=""
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
     echo "-- cleanup: force-deleting leftover VM $VM --"
     local at
@@ -88,8 +88,12 @@ cleanup(){
     echo "-- cleanup: scratch user $USER_EMAIL disabled --"
   else
     echo "-- cleanup: scratch user $USER_EMAIL NOT disabled --" >&2; rc=1
+    cleanup_failed+=" scratch user $USER_EMAIL not disabled;"
   fi
   rm -f "$B"
+  # The summary is printed before this trap runs, so a cleanup failure would sit
+  # above it and scroll past; it is repeated as the very last line instead.
+  [ -z "$cleanup_failed" ] || echo "CLEANUP FAILED:$cleanup_failed"
   exit "$rc"
 }
 trap cleanup EXIT

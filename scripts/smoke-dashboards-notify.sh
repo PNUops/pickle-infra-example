@@ -65,16 +65,16 @@ B=$(mktemp)
 # previous value was read, and SETTING_ORIG holds it ('' = there was no row).
 SETTING_SAVED=0; SETTING_ORIG=""
 on_exit(){
-  local rc=$?
+  local rc=$? cleanup_failed=""
   if [ "$SETTING_SAVED" = 1 ]; then
     if [ -n "$SETTING_ORIG" ]; then
       pgx "update settings set value = '$SETTING_ORIG'::jsonb where key = 'vm_expiry_notice_days'" \
         && echo "-- cleanup: vm_expiry_notice_days restored to $SETTING_ORIG --" \
-        || { echo "-- cleanup: vm_expiry_notice_days NOT restored (was $SETTING_ORIG) --" >&2; rc=1; }
+        || { echo "-- cleanup: vm_expiry_notice_days NOT restored (was $SETTING_ORIG) --" >&2; rc=1; cleanup_failed+=" vm_expiry_notice_days not restored (was $SETTING_ORIG);"; }
     else
       pgx "delete from settings where key = 'vm_expiry_notice_days'" \
         && echo "-- cleanup: vm_expiry_notice_days row removed again (there was none) --" \
-        || { echo "-- cleanup: vm_expiry_notice_days row NOT removed --" >&2; rc=1; }
+        || { echo "-- cleanup: vm_expiry_notice_days row NOT removed --" >&2; rc=1; cleanup_failed+=" vm_expiry_notice_days row not removed;"; }
     fi
   fi
   # After the teardown, which force-deletes the VM with the administrator's
@@ -83,8 +83,12 @@ on_exit(){
     echo "-- cleanup: scratch user $EM disabled --"
   else
     echo "-- cleanup: scratch user $EM NOT disabled --" >&2; rc=1
+    cleanup_failed+=" scratch user $EM not disabled;"
   fi
   rm -f "$B"
+  # The summary is printed before this trap runs, so a cleanup failure would sit
+  # above it and scroll past; it is repeated as the very last line instead.
+  [ -z "$cleanup_failed" ] || echo "CLEANUP FAILED:$cleanup_failed"
   exit "$rc"
 }
 trap on_exit EXIT

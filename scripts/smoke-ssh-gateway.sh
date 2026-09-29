@@ -105,7 +105,7 @@ addgrant(){ req "grant $2 on the vm (user $1)" 201 -X POST "$BASE/vms/$VM/access
 # ---- state to restore on exit ----
 VM=""; VM_DB=""; VNAME=""; VM_DELETED=0; ORIG_HK_B64=""; ORIG_KILL=""
 cleanup(){
-  local rc=$?
+  local rc=$? cleanup_failed=""
   # ssh_host_key is multi-line (one entry per host-key type); back it up/restore
   # it as base64 so whitespace survives (pgq's tr -d space would corrupt it).
   [ -n "$ORIG_HK_B64" ] && [ -n "$VM_DB" ] && pgx "update vms set ssh_host_key=convert_from(decode('$ORIG_HK_B64','base64'),'UTF8') where id=$VM_DB"
@@ -139,9 +139,13 @@ cleanup(){
       echo "-- cleanup: scratch user sgw-${role}-${TS} disabled --"
     else
       echo "-- cleanup: scratch user sgw-${role}-${TS} NOT disabled --" >&2; rc=1
+      cleanup_failed+=" scratch user sgw-${role}-${TS} not disabled;"
     fi
   done
   rm -f "${TMPFILES[@]}"
+  # The summary is printed before this trap runs, so a cleanup failure would sit
+  # above it and scroll past; it is repeated as the very last line instead.
+  [ -z "$cleanup_failed" ] || echo "CLEANUP FAILED:$cleanup_failed"
   exit "$rc"
 }
 trap cleanup EXIT
