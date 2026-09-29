@@ -81,7 +81,25 @@ for cmd in curl jq nc qm pct; do
 done
 
 BODY=$(mktemp)
-trap 'rm -f "$BODY"' EXIT
+# On every exit, interrupted runs included: close the scratch user, then report.
+# In a normal run this fires after cleanup and post_verify at the bottom, so the
+# VM is gone by then; nothing that runs here acts as the user. INT and TERM are
+# routed through exit so the EXIT trap still fires when the run is stopped.
+on_exit() {
+  local rc=$?
+  if disable_scratch_user "$USER_EMAIL"; then
+    echo "-- cleanup: scratch user $USER_EMAIL disabled --"
+  else
+    echo "-- cleanup: scratch user $USER_EMAIL NOT disabled --" >&2
+    echo "CLEANUP FAILED: scratch user $USER_EMAIL not disabled"
+    rc=1
+  fi
+  rm -f "$BODY"
+  exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 ok() { echo "PASS  $1"; PASS=$((PASS + 1)); }
 ko() { echo "FAIL  $1"; FAIL=$((FAIL + 1)); }
@@ -497,13 +515,6 @@ fi
 cleanup
 post_verify
 residue_guard
-# Last, after the VM cleanup above: nothing after this point acts as the user.
-# The main flow has no early exit, so a failed run reaches this line too.
-if disable_scratch_user "$USER_EMAIL"; then
-  ok "scratch user disabled"
-else
-  ko "scratch user disabled"
-fi
 
 TOTAL=$((PASS + FAIL))
 echo "PROVISIONING SMOKE: $PASS/$TOTAL"
