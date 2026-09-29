@@ -142,7 +142,10 @@ GID=$(jq -r .id "$B")
 req "orgadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ORGADMIN_EMAIL\",\"password\":\"$ORGADMIN_PW\"}" || exit 1
 AAT=$(jq -r .accessToken "$B")
 # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
-req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT" || exit 1; OID=$(jq -r '.[0].id' "$B")
+req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT" || exit 1
+# The organisation is the seeded test one by name (lib/auth.sh smoke_org_id),
+# never "the first in the list": its administrators are who the request mails.
+if OID=$(smoke_org_id); then ok "request org = seeded test org ($OID)"; else ko "seeded test org not found"; exit 1; fi
 req "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $SAT" || exit 1
 # The catalog is returned in DISPLAY order (distribution, then release), so the
 # first row is a moving target: it was an Ubuntu row until Debian entered the

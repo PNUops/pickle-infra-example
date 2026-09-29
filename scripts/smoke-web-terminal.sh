@@ -233,8 +233,9 @@ TPL=$(pgq "select public_id from os_images where status='ACTIVE' order by id lim
 [ -n "$TPL" ] || { ko "no ACTIVE OS image to request with (enable one in the catalog)"; exit 1; }
 # Both lookups take the public id, not the internal one: these two values only
 # ever travel into a request payload, and the API speaks UUIDs.
-ORG=$(pgq "select public_id from orgs limit 1")
-[ -n "$ORG" ] || { ko "no org to request against"; exit 1; }
+# The organisation is the seeded test one by name (lib/auth.sh smoke_org_id),
+# never "the first in the list": its administrators are who the request mails.
+ORG=$(smoke_org_id) || { ko "seeded test org not found"; exit 1; }
 # os-images is a pure OS catalog — the spec axis is vm_flavors, and
 # POST /requests requires the chosen flavorId. Read the presets off the API
 # (the removed catalog default_* columns would error in psql).

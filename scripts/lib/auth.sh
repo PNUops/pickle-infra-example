@@ -328,3 +328,22 @@ disable_scratch_user() {
     return 1
   fi
 }
+
+# smoke_org_id → public id of the organisation the smokes file their requests
+# under: the seeded test organisation, found by the name the dev seeder gives it
+# (override with SMOKE_ORG_NAME). Picked by name rather than by position so the
+# answer does not move when organisations are added: a request's submission
+# notice goes to that organisation's administrators, and the wrong organisation
+# would mail somebody else's. Exactly one ACTIVE match is required; anything
+# else prints why and returns non-zero.
+#
+# Requires `pgq` from the calling script.
+smoke_org_id() {
+  local name="${SMOKE_ORG_NAME:-테스트 기관}" n
+  n=$(pgq "select count(*) from orgs where name = '$name' and status = 'ACTIVE'")
+  if [ "$n" != 1 ]; then
+    echo "smoke_org_id: expected exactly one ACTIVE organisation named '$name', found ${n:-none}" >&2
+    return 1
+  fi
+  pgq "select public_id from orgs where name = '$name' and status = 'ACTIVE'"
+}

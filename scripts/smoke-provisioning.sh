@@ -228,7 +228,13 @@ phase_account() {
     -d "{\"email\":\"$ORGADMIN_EMAIL\",\"password\":\"$ORGADMIN_PW\"}" || return 1
   OA_LOOKUP_AT=$(jq -r .accessToken "$BODY")
   step "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $OA_LOOKUP_AT" || return 1
-  ORG_ID=$(jq -r '.[0].id' "$BODY")
+  # The organisation is the seeded test one by name (lib/auth.sh smoke_org_id),
+  # never "the first in the list": its administrators are who the request mails.
+  if ! ORG_ID=$(smoke_org_id); then
+    ko "seeded test org not found"
+    return 1
+  fi
+  ok "request org = seeded test org ($ORG_ID)"
 
   # The VM's hostname is generated from the request's display name plus a random
   # suffix, so the request below sends dev-smoke-$TS as the display name and the
