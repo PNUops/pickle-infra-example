@@ -184,7 +184,7 @@ TPL_MEM=$(jq -r "$FSEL.memoryMb // empty" "$B"); TPL_DISK=$(jq -r "$FSEL.diskGb 
 # ───────────────────────── phase: account ─────────────────────────
 if has_phase account; then
   echo "── account: password change / reset / withdrawal"
-  U1="smoke-acct-acc-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U1")
+  U1="smoke-acct-acc-$TS@example.com"; SCRATCH_EMAILS+=("$U1")
   read -r U1T U1ID _ <<<"$(mk_user "$U1" 'first-password-10' '계정스모크')"
   [ -n "$U1T" ] && ok "scratch user created (id=$U1ID)" || ko "scratch user created"
 
@@ -207,7 +207,7 @@ if has_phase account; then
   req "reset request 202 (existing)" 202 -X POST "$BASE/auth/password-reset" \
     -H 'Content-Type: application/json' -d "{\"email\":\"$U1\"}"
   req "reset request 202 (unknown — uniform)" 202 -X POST "$BASE/auth/password-reset" \
-    -H 'Content-Type: application/json' -d "{\"email\":\"no-such-$TS@pusan.ac.kr\"}"
+    -H 'Content-Type: application/json' -d "{\"email\":\"no-such-$TS@example.com\"}"
   U1T3=$(login "$U1" 'second-password-10')
   [ -n "$U1T3" ] && ok "login after the change" || ko "login after the change"
 
@@ -233,7 +233,7 @@ fi
 # ───────────────────────── phase: admin ─────────────────────────
 if has_phase admin; then
   echo "── admin: user list / detail / disable / enable"
-  U2="smoke-acct-adm-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U2")
+  U2="smoke-acct-adm-$TS@example.com"; SCRATCH_EMAILS+=("$U2")
   read -r U2T U2ID _ <<<"$(mk_user "$U2" 'target-password-10' '비활성화대상')"
   req "admin user list 200" 200 "$BASE/admin/users?q=smoke-acct-adm-$TS" -H "$(auth "$SAT")"
   N=$(jq -r '.totalElements' "$B"); [ "$N" = 1 ] && ok "  search hits exactly 1" || ko "  search hits exactly 1 (got $N)"
@@ -257,7 +257,7 @@ fi
 # ───────────────────────── phase: group ─────────────────────────
 if has_phase group; then
   echo "── group: delete + request-cancel + personal 409"
-  U3="smoke-acct-grp-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U3")
+  U3="smoke-acct-grp-$TS@example.com"; SCRATCH_EMAILS+=("$U3")
   read -r U3T U3ID _ <<<"$(mk_user "$U3" 'group-password-10' '그룹스모크')"
   req "create team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U3T")" \
     -H 'Content-Type: application/json' \
@@ -285,7 +285,7 @@ fi
 # ───────────────────────── phase: protect (REAL PVE) ─────────────────────────
 if has_phase protect; then
   echo "── protect: deletion/stop protection on a real VM (provisions one)"
-  U4="smoke-acct-vm-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U4")
+  U4="smoke-acct-vm-$TS@example.com"; SCRATCH_EMAILS+=("$U4")
   U4PW='vmowner-password-1'
   read -r U4T _ <<<"$(mk_user "$U4" "$U4PW" 'VM보호스모크')"
   # membership tests need an invitable group — PERSONAL membership is immutable
@@ -320,7 +320,7 @@ if has_phase protect; then
     -H "$(auth "$SAT")" -H 'Content-Type: application/json' -d "{\"confirmName\":\"$VNAME\"}"
   req "stop_protection on (200)" 200 -X PATCH "$BASE/vms/$VM/settings" -H "$(auth "$U4T")" -H 'Content-Type: application/json' -d '{"settings":{"stop_protection":true}}'
   # add a MEMBER who must be blocked from stopping
-  U5="smoke-acct-mem-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U5")
+  U5="smoke-acct-mem-$TS@example.com"; SCRATCH_EMAILS+=("$U5")
   read -r U5T U5ID _ <<<"$(mk_user "$U5" 'member-password-10' '중지보호구성원')"
   req "  add to group 201" 201 -X POST "$BASE/workspaces/$PGID4/members" -H "$(auth "$U4T")" -H 'Content-Type: application/json' -d "{\"email\":\"$U5\",\"role\":\"MEMBER\"}"
   # Put them on this VM's list at the rung that may power it. Without the entry
@@ -382,7 +382,7 @@ fi
 # the administrator's own 2FA challenge.
 if has_phase mfa; then
   echo "── mfa: enroll → step-up login → recovery → admin reset"
-  U6="smoke-acct-mfa-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U6")
+  U6="smoke-acct-mfa-$TS@example.com"; SCRATCH_EMAILS+=("$U6")
   read -r U6T _ <<<"$(mk_user "$U6" 'mfa-password-1234' '2단계스모크')"
   req "mfa begin 200" 200 -X POST "$BASE/me/mfa/totp" -H "$(auth "$U6T")" \
     -H 'Content-Type: application/json' -d '{"password":"mfa-password-1234"}'
@@ -434,8 +434,8 @@ if has_phase terms; then
   BL=$(jq -r '.body | length' "$B"); [ "$BL" -gt 200 ] && ok "  body non-trivial ($BL chars)" || ko "  body length ($BL)"
   req "signup without consents 422" 422 -X POST "$BASE/auth/signup" \
     -H 'Content-Type: application/json' \
-    -d "{\"email\":\"smoke-acct-nc-$TS@pusan.ac.kr\",\"password\":\"whatever-pass-10\",\"name\":\"미동의\",\"consents\":[]}"
-  U7="smoke-acct-tos-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U7")
+    -d "{\"email\":\"smoke-acct-nc-$TS@example.com\",\"password\":\"whatever-pass-10\",\"name\":\"미동의\",\"consents\":[]}"
+  U7="smoke-acct-tos-$TS@example.com"; SCRATCH_EMAILS+=("$U7")
   read -r U7T _ <<<"$(mk_user "$U7" 'terms-password-10' '약관스모크')"
   req "my consents 200" 200 "$BASE/me/consents" -H "$(auth "$U7T")"
   NC=$(jq -r 'length' "$B"); [ "$NC" = 2 ] && ok "  signup recorded 2 consents" || ko "  consents (got $NC)"
@@ -460,7 +460,7 @@ fi
 # ───────────────────────── phase: maint ─────────────────────────
 if has_phase maint; then
   echo "── maint: maintenance mode / banner / contact"
-  U8="smoke-acct-mnt-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U8")
+  U8="smoke-acct-mnt-$TS@example.com"; SCRATCH_EMAILS+=("$U8")
   read -r U8T _ <<<"$(mk_user "$U8" 'maint-password-10' '점검스모크')"
   req "meta status 200 (off)" 200 "$BASE/meta/status"
   [ "$(jq -r '.maintenance' "$B")" = "false" ] && ok "  maintenance=false baseline" || ko "  baseline not false"
@@ -492,7 +492,7 @@ fi
 # ───────────────────────── phase: roles ─────────────────────────
 if has_phase roles; then
   echo "── roles: ORG_MANAGER / SYS_MANAGER matrix samples"
-  U9="smoke-acct-rol-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U9")
+  U9="smoke-acct-rol-$TS@example.com"; SCRATCH_EMAILS+=("$U9")
   read -r _ U9ID _ <<<"$(mk_user "$U9" 'roles-password-10' '운영자스모크')"
   # The global endpoint carries system-tier roles only (AdminGlobalRole is USER
   # and the three SYS_* values); institution roles moved to their own path when

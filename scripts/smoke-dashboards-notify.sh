@@ -24,9 +24,9 @@ CTID="${CTID:-101}"
 NO_SUCH_ID="00000000-0000-0000-0000-000000000000"
 DASH="http://198.18.1.20:8000"
 TS=$(date +%s)-$RANDOM
-# e2e account rules: email domain @pusan.ac.kr; the personal-group slug is the
+# e2e account rules: email domain @example.com; the personal-group slug is the
 # email local part, so the team-group slug must differ from it (dashteam- vs dash-).
-EM="dash-${TS}@pusan.ac.kr"; PW="dash-pass-${TS}!"
+EM="dash-${TS}@example.com"; PW="dash-pass-${TS}!"
 ATITLE="e2e all-notice ${TS}"; OTITLE="e2e org-notice ${TS}"
 
 for cmd in curl jq pct; do

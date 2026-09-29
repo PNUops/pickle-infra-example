@@ -29,7 +29,7 @@ BASE="${1:-https://pickle.pusan.ac.kr}/api/v1"
 
 CTID="${CTID:-101}"
 TS=$(date +%s)
-USER_EMAIL="smoke-${TS}@pusan.ac.kr"
+USER_EMAIL="smoke-${TS}@example.com"
 USER_PW="smoke-pass-${TS}!"
 # shellcheck source=scripts/lib/auth.sh
 . "$(dirname "$0")/lib/auth.sh"

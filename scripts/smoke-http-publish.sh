@@ -37,7 +37,7 @@ RELAY_SSH_PORT="${RELAY_SSH_PORT:-22}"
 RELAY_USER="${RELAY_USER:-admin}"
 VAULT="${VAULT:-/path/to/secrets-vault}"
 RELAY_SSH_KEY="${RELAY_SSH_KEY:-$VAULT/lightsail-ssh.pem}"
-USER_EMAIL="http-${TS}@pusan.ac.kr"; USER_PW="http-pass-${TS}!"
+USER_EMAIL="http-${TS}@example.com"; USER_PW="http-pass-${TS}!"
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"; }
 # shellcheck source=scripts/lib/auth.sh
 . "$(dirname "$0")/lib/auth.sh"

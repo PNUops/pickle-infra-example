@@ -149,7 +149,7 @@ else
 fi
 
 echo "== provision (owner O creates group + VM) =="
-OWNER_EMAIL="sgw-owner-${TS}@pusan.ac.kr"; OWNER_PW="sgw-pass-${TS}!"
+OWNER_EMAIL="sgw-owner-${TS}@example.com"; OWNER_PW="sgw-pass-${TS}!"
 read -r OAT OUID _ < <(mk_user "$OWNER_EMAIL" "$OWNER_PW" "SGW Owner")
 [ -n "$OAT" ] && [ -n "$OUID" ] && ok "owner user id=$OUID" || { ko "owner signup"; exit 1; }
 req "group" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"sgw\",\"kind\":\"PROJECT\"}" || exit 1
@@ -270,7 +270,7 @@ kssh "$UNREG" "$SLUG" 'echo X' | grep -q '^X$' && ko "unregistered key routed" |
 # --- 5. non-member's registered key → SSHGW_KEY_NOT_MEMBER ---
 echo "== [5] non-member key → deny =="
 NM_PW="nm-pw-${TS}!"
-read -r NMAT _ < <(mk_user "sgw-nm-${TS}@pusan.ac.kr" "$NM_PW" "SGW NonMember")
+read -r NMAT _ < <(mk_user "sgw-nm-${TS}@example.com" "$NM_PW" "SGW NonMember")
 NMKEY=$(mktemp -u); mklocalkey "$NMKEY"; NM_FP=$(fp_of "$NMKEY.pub")
 reg_key "$NMAT" "$NM_PW" "nm-key" "$(cat "$NMKEY.pub")" >/dev/null
 kssh "$NMKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "non-member routed" || { sleep 1; [ "$(denied SSHGW_KEY_NOT_MEMBER "$NM_FP")" -ge 1 ] 2>/dev/null && ok "non-member denied (SSHGW_KEY_NOT_MEMBER)" || ko "no SSHGW_KEY_NOT_MEMBER audit for non-member"; }
@@ -281,8 +281,8 @@ kssh "$NMKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "non-member routed" || { sl
 # stranger, so the refusal leaks nothing about who is a colleague.
 echo "== [6] group member absent from the access list → deny =="
 VW_PW="vw-pw-${TS}!"
-read -r VWAT VW_ID _ < <(mk_user "sgw-unlisted-${TS}@pusan.ac.kr" "$VW_PW" "SGW Unlisted")
-addmember "sgw-unlisted-${TS}@pusan.ac.kr"
+read -r VWAT VW_ID _ < <(mk_user "sgw-unlisted-${TS}@example.com" "$VW_PW" "SGW Unlisted")
+addmember "sgw-unlisted-${TS}@example.com"
 VWKEY=$(mktemp -u); mklocalkey "$VWKEY"; VW_FP=$(fp_of "$VWKEY.pub")
 reg_key "$VWAT" "$VW_PW" "vw-key" "$(cat "$VWKEY.pub")" >/dev/null
 kssh "$VWKEY" "$SLUG" 'echo X' | grep -q '^X$' && ko "unlisted member routed" || { sleep 1; [ "$(denied SSHGW_KEY_NOT_MEMBER "$VW_FP")" -ge 1 ] 2>/dev/null && ok "unlisted member denied (SSHGW_KEY_NOT_MEMBER)" || ko "no SSHGW_KEY_NOT_MEMBER audit for the unlisted member"; }
@@ -310,8 +310,8 @@ try_connect PICKLE-PW-OK pssh "$VMPW" "$SLUG" 'echo PICKLE-PW-OK' >/dev/null && 
 # --- 10. MEMBER cannot change VM settings → 403 ---
 echo "== [10] MEMBER PATCH settings → 403 =="
 MB_PW="mb-pw-${TS}!"
-read -r MBAT MB_ID _ < <(mk_user "sgw-member-${TS}@pusan.ac.kr" "$MB_PW" "SGW Member")
-addmember "sgw-member-${TS}@pusan.ac.kr"
+read -r MBAT MB_ID _ < <(mk_user "sgw-member-${TS}@example.com" "$MB_PW" "SGW Member")
+addmember "sgw-member-${TS}@example.com"
 # Listed at the rung that carries access but not editing. Granting first is what
 # makes this a test of the rung: an unlisted person is refused one step earlier,
 # and the check would pass without the settings gate ever being consulted.
@@ -322,8 +322,8 @@ code_is WORKSPACE_ROLE_INSUFFICIENT "  refused by the role gate"
 # --- 12. EDITOR cannot raise password_reveal_min_role (OWNER-gated) → 403 ---
 echo "== [12] EDITOR raise min_role → 403 =="
 ED_PW="ed-pw-${TS}!"
-read -r EDAT ED_ID _ < <(mk_user "sgw-editor-${TS}@pusan.ac.kr" "$ED_PW" "SGW Editor")
-addmember "sgw-editor-${TS}@pusan.ac.kr"
+read -r EDAT ED_ID _ < <(mk_user "sgw-editor-${TS}@example.com" "$ED_PW" "SGW Editor")
+addmember "sgw-editor-${TS}@example.com"
 addgrant "$ED_ID" EDITOR
 req "editor min_role forbidden" 403 -X PATCH "$BASE/vms/$VM/settings" -H "Authorization: Bearer $EDAT" -H 'Content-Type: application/json' -d '{"settings":{"password_reveal_min_role":"EDITOR"}}'
 code_is WORKSPACE_ROLE_INSUFFICIENT "  refused by the role gate"

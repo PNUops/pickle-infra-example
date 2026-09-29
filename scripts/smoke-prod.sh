@@ -97,7 +97,7 @@ if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
   # requester: a verified scratch user written straight into the database (see
   # the header). Without a token every step below fails on 401 and the cycle
   # stops at the precondition check, before any VM exists.
-  OEMAIL="prodsmoke-${TS}@pusan.ac.kr"; OPW="prodsmoke-${TS}!"
+  OEMAIL="prodsmoke-${TS}@example.com"; OPW="prodsmoke-${TS}!"
   if MADE=$(mk_verified_user "$BASE" "$OEMAIL" "$OPW" "prod smoke"); then
     OAT=${MADE%% *}; ok "scratch owner created and signed in"
   else

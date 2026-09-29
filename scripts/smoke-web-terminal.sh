@@ -227,7 +227,7 @@ TPL_MEM=$(jq -r "$FSEL.memoryMb // empty" "$B"); TPL_DISK=$(jq -r "$FSEL.diskGb 
 [ -n "$FID" ] && ok "flavor id=$FID (${TPL_VCPU}c/${TPL_MEM}MB/${TPL_DISK}GB)" || { ko "no ACTIVE vm-flavor — abort"; exit 1; }
 
 U1PW='terminal-owner-1'
-U1="smoke-term-own-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U1")
+U1="smoke-term-own-$TS@example.com"; SCRATCH_EMAILS+=("$U1")
 read -r U1T _ <<<"$(mk_user "$U1" "$U1PW" '터미널소유자')"
 req "create team 201" 201 -X POST "$BASE/workspaces" -H "$(auth "$U1T")" -H 'Content-Type: application/json' \
   -d "{\"kind\":\"PROJECT\",\"name\":\"smoke-term-$TS\"}"
@@ -263,12 +263,12 @@ done
 # three people below differ only in what the list says about them: U2 is listed,
 # U3 is a group member the list does not mention, U4 is outside the group
 # entirely. U1 requested the VM and is therefore its listed owner.
-U2="smoke-term-mem-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U2")
+U2="smoke-term-mem-$TS@example.com"; SCRATCH_EMAILS+=("$U2")
 U2PW='terminal-member-1'
 read -r U2T U2ID _ <<<"$(mk_user "$U2" "$U2PW" '터미널멤버')"
-U3="smoke-term-view-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U3")
+U3="smoke-term-view-$TS@example.com"; SCRATCH_EMAILS+=("$U3")
 read -r U3T _ <<<"$(mk_user "$U3" 'terminal-viewer-1' '터미널뷰어')"
-U4="smoke-term-out-$TS@pusan.ac.kr"; SCRATCH_EMAILS+=("$U4")
+U4="smoke-term-out-$TS@example.com"; SCRATCH_EMAILS+=("$U4")
 read -r U4T _ <<<"$(mk_user "$U4" 'terminal-outsider-1' '터미널외부')"
 req "add U2 to group 201" 201 -X POST "$BASE/workspaces/$GID/members" -H "$(auth "$U1T")" -H 'Content-Type: application/json' -d "{\"email\":\"$U2\",\"role\":\"MEMBER\"}"
 req "add U3 to group 201" 201 -X POST "$BASE/workspaces/$GID/members" -H "$(auth "$U1T")" -H 'Content-Type: application/json' -d "{\"email\":\"$U3\",\"role\":\"MEMBER\"}"
