@@ -1,29 +1,28 @@
 #!/bin/bash
 # shellcheck disable=SC2015,SC2016  # ok/ko idiom safe; $x in single quotes are jq --arg vars, not shell
 # Dashboards-notifications full-journey e2e — run on pve-node as root. Provisions a real dev VM, then walks
-# the surface: in-app notifications + mock-mail delivery (dispatcher),
+# the surface: in-app notifications + mail delivery (dispatcher; read back from
+# the notifications table, since dev sends real mail),
 # announcements (scopes + delivery log), expiry pipeline (DB-forced end_date →
 # JobRunr `vm-expiry` trigger via the dashboard API → auto-stop → VM_EXPIRED →
 # admin period extension → restart), settings editor, ops registries (tasks /
 # drift / ip / summaries), audit views, and a conditional failed-task retry.
 # Force-deletes the VM at the end (teardown always runs once the VM exists).
 #
-# Requires: curl, jq, pct (CTID 101 = pickle-api + pickle_dev + JobRunr dash :8000).
+# The ALL-scope announcement reaches every active account, and dev sends real
+# mail, so each run mails every active user of the deployment.
+#
+# Requires: curl, jq, python3 with bcrypt (for the scratch user's password hash),
+# pct (CTID 101 = pickle-api + pickle_dev + JobRunr dash :8000).
 # The JobRunr dashboard trigger endpoint (POST /api/recurring-jobs/{id}/trigger)
 # is the only non-pickle API this script depends on.
 set -uo pipefail
 BASE="${BASE:-https://pickle.pusan.ac.kr/api/v1}"
-# Signup requires consent to every current terms version (422 otherwise).
-# Built once from the public endpoint so version bumps never break the smoke.
-CONSENTS_JSON=$(curl -fsS "$BASE/meta/terms" 2>/dev/null | jq -c '[.[] | {docType, version}]' 2>/dev/null)
-[ -n "$CONSENTS_JSON" ] || CONSENTS_JSON='[]'
-
 CTID="${CTID:-101}"
 # The id every "this does not exist" case is asked for. Public ids are UUIDs, so
 # a made-up decimal would fail on the shape (400) before reaching the lookup.
 NO_SUCH_ID="00000000-0000-0000-0000-000000000000"
 DASH="http://198.18.1.20:8000"
-SPOOL=/var/lib/pickle/mock-mail.log
 TS=$(date +%s)-$RANDOM
 # e2e account rules: email domain @pusan.ac.kr; the personal-group slug is the
 # email local part, so the team-group slug must differ from it (dashteam- vs dash-).
@@ -38,6 +37,17 @@ seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d=
 # shellcheck source=scripts/lib/auth.sh
 . "$(dirname "$0")/lib/auth.sh"
 pgq(){ pct exec "$CTID" -- su - postgres -c "psql -q -d pickle_dev -tAc \"$1\"" 2>/dev/null | tr -d '[:space:]'; }
+# mk_verified_user (lib/auth.sh) writes the scratch user through pgq and this.
+# pgx feeds the statement on stdin: `su -c` re-parses its command string, and a
+# statement passed there loses anything that shell expands.
+pgx(){
+  local out
+  if ! out=$(pct exec "$CTID" -- su - postgres -c \
+      "psql -q -d pickle_dev -v ON_ERROR_STOP=1 -f -" <<<"$1" 2>&1); then
+    printf 'pgx failed: %s\n%s\n' "${1%%$'\n'*}" "$out" >&2
+    return 1
+  fi
+}
 ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGADMIN_EMAIL:-orgadmin@pnuops.com}"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
 SYSADMIN_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYSADMIN_EMAIL="${SYSADMIN_EMAIL:-admin@pnuops.com}"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
 JRU="$(seed_env PICKLE_JOBRUNR_DASH_USER)"; JRP="$(seed_env PICKLE_JOBRUNR_DASH_PASS)"
@@ -55,11 +65,20 @@ req(){ local n="$1" e="$2"; shift 2; local c; c=$(curl -sS -o "$B" -w '%{http_co
 jqc(){ local n="$1" prog="$2"; shift 2; jq -e "$@" "$prog" "$B" >/dev/null 2>&1 && ok "$n" || ko "$n ($(head -c 200 "$B" | tr '\n' ' '))"; }
 # jr <recurring-job-id> — trigger a JobRunr recurring job via the dashboard API; echoes http code
 jr(){ curl -sS -o /dev/null -w '%{http_code}' -u "$JRU:$JRP" -X POST "$DASH/api/recurring-jobs/$1/trigger" 2>/dev/null; }
-mail_count(){ pct exec "$CTID" -- sh -c "grep -cF -- '$1' $SPOOL 2>/dev/null" | tr -d '[:space:]'; }
+# sent_count <sql condition on n> — this run's user's notifications rows matching
+# the condition that the dispatcher marked SENT. The dispatcher writes SENT (and
+# sent_at) only after the mail sender returned without error; a failed send
+# leaves the row PENDING for a retry or parks it FAILED. dev runs the production
+# mail profile, so the mock-mail spool these checks used to grep stays empty and
+# this row is the delivery evidence left to read.
+sent_count(){ pgq "select count(*) from notifications n join users u on u.id = n.user_id where u.email = '$EM' and n.status = 'SENT' and n.sent_at is not null and $1"; }
+# sent_states <sql condition on n> — the status of every matching row, SENT or
+# not, so a failure says whether the row was missing, still waiting, or failed.
+sent_states(){ pgq "select coalesce(string_agg(n.status::text, ','), 'none') from notifications n join users u on u.id = n.user_id where u.email = '$EM' and $1"; }
 # nudge_dispatcher — trigger the dispatcher and say so when the trigger itself was
 # refused. Throwing the code away made a 401 from the dashboard (wrong or rotated
 # credentials) look exactly like a successful trigger, and the only symptom was a
-# mail poll below timing out for no stated reason.
+# delivery poll below timing out for no stated reason.
 nudge_dispatcher(){
   local c; c=$(jr notification-dispatcher)
   case "$c" in
@@ -67,9 +86,9 @@ nudge_dispatcher(){
     *) echo "  WARN notification-dispatcher trigger returned ${c:-none} (expected 200/204) — the job was NOT nudged" >&2; return 1 ;;
   esac
 }
-# poll_mail <fixed-string> <timeout-s> — dispatcher runs every 1min; we also nudge it
-poll_mail(){ local dl=$((SECONDS+$2)); nudge_dispatcher || true
-  while :; do [ "$(mail_count "$1")" -ge 1 ] 2>/dev/null && return 0
+# poll_sent <sql condition on n> <timeout-s> — dispatcher runs every 1min; we also nudge it
+poll_sent(){ local dl=$((SECONDS+$2)); nudge_dispatcher || true
+  while :; do [ "$(sent_count "$1")" -ge 1 ] 2>/dev/null && return 0
     [ "$SECONDS" -ge "$dl" ] && return 1; sleep 5; done; }
 # tokens expire in 15min and the run spans several long polls — refresh all three
 login(){ curl -sS -o "$B" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
@@ -87,12 +106,17 @@ SAT=""; AAT=""; XAT=""; GID=""; OID=""; RID=""; VM=""; VM_DB=""; VNAME=""; VIP="
 # ── 1. setup: user account, request, approval ──
 phase_setup(){
   echo "== setup: user + request + approve =="
-  req "signup" 202 -X POST "$BASE/auth/signup" -H 'Content-Type: application/json' -d "{\"email\":\"$EM\",\"password\":\"$PW\",\"name\":\"Dash e2e\",\"consents\":$CONSENTS_JSON}" || return 1
-  sleep 2
-  local tok; tok=$(pct exec "$CTID" -- sh -c "grep -o 'token=[A-Za-z0-9_-]*' $SPOOL 2>/dev/null | tail -1 | cut -d= -f2")
-  req "verify-email" 200 -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' -d "{\"token\":\"$tok\"}" || return 1
-  req "user login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$EM\",\"password\":\"$PW\"}" || return 1
-  SAT=$(jq -r .accessToken "$B")
+  # The user is written straight into the database rather than signed up.
+  # Signup hands out its verification token only by mail, and dev runs the
+  # production mail profile: the token goes to a real mailbox and the mock-mail
+  # spool this phase used to read stays empty, so every run stopped here.
+  local made
+  if ! made=$(mk_verified_user "$BASE" "$EM" "$PW" "Dash e2e"); then
+    ko "scratch user created and signed in"
+    return 1
+  fi
+  SAT=${made%% *}
+  ok "scratch user created and signed in"
   req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"name\":\"dash e2e\",\"kind\":\"PROJECT\"}" || return 1
   GID=$(jq -r .id "$B")
   AAT=$(login "$ORGADMIN_EMAIL" "$ORGADMIN_PW")
@@ -175,8 +199,10 @@ phase_notifications(){
   req "read-all" 200 -X POST "$BASE/notifications/read-all" -H "Authorization: Bearer $SAT"
   curl -sS -o "$B" "$BASE/notifications/unread-count" -H "Authorization: Bearer $SAT"
   jqc "unread-count zero after read-all" '.unreadCount == 0'
-  poll_mail "to=$EM subject=[Pickle] VM 신청 승인" 120 \
-    && ok "mock-mail spool has 승인 메일 (to=$EM)" || ko "no 승인 메일 in spool within 120s (to=$EM)"
+  local approved="n.event = 'request.approved' and n.link_path = '/console/requests/$RID'"
+  poll_sent "$approved" 120 \
+    && ok "dispatcher sent 승인 메일 (notifications SENT, to=$EM)" \
+    || ko "승인 메일 not SENT within 120s (to=$EM; rows: $(sent_states "$approved"))"
 }
 
 # ── 3. announcements ──
@@ -206,8 +232,10 @@ phase_announcements(){
     sent=$(jq -r --arg t "$ATITLE" '[.content[] | select(.title==$t and .status=="SENT")] | length' "$B" 2>/dev/null)
     [ "${sent:-0}" -ge 1 ] 2>/dev/null && break; [ "$SECONDS" -ge "$dl" ] && break; sleep 5; done
   [ "${sent:-0}" -ge 1 ] 2>/dev/null && ok "delivery log SENT for ALL announcement (to=$EM)" || ko "no SENT delivery-log row for ALL announcement within 120s"
-  poll_mail "to=$EM subject=[Pickle] $ATITLE" 90 \
-    && ok "mock-mail spool has announcement mail" || ko "no announcement mail in spool within 90s"
+  local announced="n.event = 'announcement' and n.title = '$ATITLE'"
+  poll_sent "$announced" 90 \
+    && ok "dispatcher sent announcement mail (notifications SENT, to=$EM)" \
+    || ko "announcement mail not SENT within 90s (to=$EM; rows: $(sent_states "$announced"))"
 }
 
 # ── 4. expiry: DB-forced end_date → vm-expiry job → auto-stop → extend → restart ──
