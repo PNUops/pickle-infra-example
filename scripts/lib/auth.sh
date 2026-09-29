@@ -282,3 +282,44 @@ smoke_client_ip() {
   [ -n "$src" ] || return 1
   printf '%s' "$src"
 }
+
+# disable_scratch_user EMAIL — close a scratch account this run created.
+#
+# mk_verified_user leaves an ACTIVE, signed-in account behind, and before this
+# helper every run's accounts were disabled by hand afterwards. This does the
+# same thing the same way: DISABLED with a reason, the token version bumped so
+# issued access tokens stop working, a status-change row with no actor, and
+# every live refresh token revoked. Rows are kept rather than deleted, because
+# the run's VM, audit and notification rows point at them.
+#
+# Call it from the path that runs on failure too, and only after the VM cleanup:
+# a disabled owner cannot act on its own VM any more.
+#
+# Only an account created in the last day is touched, so a wrong argument cannot
+# close a real user's account. An address with no such account is not an error
+# (the run may have failed before creating it); an account that is still ACTIVE
+# afterwards is.
+#
+# Requires `pgq` and `pgx` from the calling script.
+disable_scratch_user() {
+  local email="$1" reason='스모크 확인용 임시 계정 정리' left
+  pgx "with u as (
+         update users
+            set status = 'DISABLED', disabled_at = now(), disabled_reason = '$reason',
+                token_version = token_version + 1
+          where email = '$email' and status = 'ACTIVE'
+            and created_at > now() - interval '1 day'
+         returning id),
+       c as (
+         insert into user_status_changes (user_id, from_status, to_status, actor_id, reason, changed_at)
+         select id, 'ACTIVE', 'DISABLED', null, '$reason', now() from u)
+       update refresh_tokens set revoked_at = now()
+        where revoked_at is null
+          and user_id in (select id from users
+                           where email = '$email' and created_at > now() - interval '1 day')" || return 1
+  left=$(pgq "select count(*) from users where email = '$email' and status = 'ACTIVE'")
+  if [ "$left" != 0 ]; then
+    echo "disable_scratch_user: $email is still ACTIVE (count=${left:-unknown})" >&2
+    return 1
+  fi
+}

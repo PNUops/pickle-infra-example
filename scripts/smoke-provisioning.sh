@@ -491,6 +491,13 @@ fi
 cleanup
 post_verify
 residue_guard
+# Last, after the VM cleanup above: nothing after this point acts as the user.
+# The main flow has no early exit, so a failed run reaches this line too.
+if disable_scratch_user "$USER_EMAIL"; then
+  ok "scratch user disabled"
+else
+  ko "scratch user disabled"
+fi
 
 TOTAL=$((PASS + FAIL))
 echo "PROVISIONING SMOKE: $PASS/$TOTAL"

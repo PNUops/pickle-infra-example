@@ -82,6 +82,13 @@ cleanup(){
       echo "-- cleanup: could not obtain admin token or VM name; manual cleanup needed (vm id $VM) --" >&2
     fi
   fi
+  # After the VM, which is deleted with the administrator's token: the scratch
+  # user is closed last, on every exit.
+  if disable_scratch_user "$USER_EMAIL"; then
+    echo "-- cleanup: scratch user $USER_EMAIL disabled --"
+  else
+    echo "-- cleanup: scratch user $USER_EMAIL NOT disabled --" >&2; rc=1
+  fi
   rm -f "$B"
   exit "$rc"
 }

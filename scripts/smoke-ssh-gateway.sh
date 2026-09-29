@@ -120,6 +120,17 @@ cleanup(){
       echo "-- cleanup: no admin token or VM name; manual cleanup needed (vm id $VM) --" >&2
     fi
   fi
+  # After the VM, which is deleted with the administrator's token: the run's
+  # scratch users are closed last, on every exit. Every one of them is
+  # sgw-<role>-$TS; a role this run never reached has no account and is skipped.
+  local role
+  for role in owner nm unlisted member editor; do
+    if disable_scratch_user "sgw-${role}-${TS}@example.com"; then
+      echo "-- cleanup: scratch user sgw-${role}-${TS} disabled --"
+    else
+      echo "-- cleanup: scratch user sgw-${role}-${TS} NOT disabled --" >&2; rc=1
+    fi
+  done
   rm -f "${TMPFILES[@]}"
   exit "$rc"
 }
