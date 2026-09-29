@@ -19,11 +19,6 @@
 # or kill it first; the EXIT trap deletes the VM either way.
 set -uo pipefail
 BASE="${BASE:-https://pickle.pusan.ac.kr/api/v1}"
-# Signup requires consent to every current terms version (422 otherwise).
-# Built once from the public endpoint so version bumps never break the smoke.
-CONSENTS_JSON=$(curl -fsS "$BASE/meta/terms" 2>/dev/null | jq -c '[.[] | {docType, version}]' 2>/dev/null)
-[ -n "$CONSENTS_JSON" ] || CONSENTS_JSON='[]'
-
 CTID="${CTID:-101}"
 TS=$(date +%s)-$RANDOM
 # Every domain this run creates shares this prefix, so one grep over pickle.d
@@ -46,6 +41,18 @@ USER_EMAIL="http-${TS}@pusan.ac.kr"; USER_PW="http-pass-${TS}!"
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"; }
 # shellcheck source=scripts/lib/auth.sh
 . "$(dirname "$0")/lib/auth.sh"
+# mk_verified_user (lib/auth.sh) writes the scratch user through these two.
+# pgx feeds the statement on stdin: `su -c` re-parses its command string, and a
+# statement passed there loses anything that shell expands.
+pgq(){ pct exec "$CTID" -- su - postgres -c "psql -d pickle_dev -qtAc \"$1\"" 2>/dev/null | tr -d '[:space:]'; }
+pgx(){
+  local out
+  if ! out=$(pct exec "$CTID" -- su - postgres -c \
+      "psql -q -d pickle_dev -v ON_ERROR_STOP=1 -f -" <<<"$1" 2>&1); then
+    printf 'pgx failed: %s\n%s\n' "${1%%$'\n'*}" "$out" >&2
+    return 1
+  fi
+}
 ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGADMIN_EMAIL:-orgadmin@pnuops.com}"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
 SYSADMIN_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYSADMIN_EMAIL="${SYSADMIN_EMAIL:-admin@pnuops.com}"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
 B=$(mktemp)
@@ -113,12 +120,16 @@ origin(){ # origin FQDN → echoes the http code
 vhost_count(){ pct exec 100 -- sh -c "ls /etc/nginx/pickle.d/ | grep -c '$1'" 2>/dev/null; }
 
 echo "== auth =="
-req "signup" 202 -X POST "$BASE/auth/signup" -H 'Content-Type: application/json' -d "{\"email\":\"$USER_EMAIL\",\"password\":\"$USER_PW\",\"name\":\"HTTP E2E\",\"consents\":$CONSENTS_JSON}" || exit 1
-sleep 2
-TOKEN=$(pct exec "$CTID" -- sh -c "grep -o 'token=[A-Za-z0-9_-]*' /var/lib/pickle/mock-mail.log 2>/dev/null | tail -1 | cut -d= -f2")
-req "verify-email" 200 -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\"}" || exit 1
-req "user login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$USER_EMAIL\",\"password\":\"$USER_PW\"}" || exit 1
-SAT=$(jq -r .accessToken "$B")
+# The user is written straight into the database rather than signed up. Signup
+# hands out its verification token only by mail, and dev runs the production
+# mail profile: the token goes to a real mailbox and the mock-mail spool this
+# step used to read stays empty, so every run stopped here before creating
+# anything.
+if ! MADE=$(mk_verified_user "$BASE" "$USER_EMAIL" "$USER_PW" "HTTP E2E"); then
+  ko "scratch user created and signed in"; exit 1
+fi
+SAT=${MADE%% *}
+ok "scratch user created and signed in"
 req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"name\":\"http e2e\",\"kind\":\"PROJECT\"}" || exit 1
 GID=$(jq -r .id "$B")
 req "orgadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ORGADMIN_EMAIL\",\"password\":\"$ORGADMIN_PW\"}" || exit 1
