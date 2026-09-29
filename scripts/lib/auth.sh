@@ -24,6 +24,12 @@
 # several callers read the shared `$B` after logging in and would find the MFA
 # exchange there instead of what they expected.
 
+# When this run started, as the platform host's clock reads it. The LXC that
+# holds the database shares the host's kernel and so its clock. Set once, when a
+# smoke sources this file and before it creates anything; disable_scratch_user
+# touches only accounts created at or after it.
+SMOKE_RUN_STARTED="${SMOKE_RUN_STARTED:-$(date -u '+%Y-%m-%d %H:%M:%S+00')}"
+
 # TOTP over the enrolled secret. Computed with stdlib python3 because oathtool
 # is not installed on pve-node by design -- the same implementation
 # smoke-account-ops uses for its enrolment phase, kept in one place now that a
@@ -170,7 +176,7 @@ login_token() {
 # Signup sends a real verification mail on this deployment -- it runs the prod
 # profile -- and these addresses are fabricated, so every run would post bounces
 # to a real domain. Reading the token back is not an option either: it is stored
-# hashed, and the mock spool that two of these scripts still read stopped filling
+# hashed, and the mock spool that two of these scripts once read stopped filling
 # on 2026-08-18 when the profile changed. They had been making unverified
 # accounts ever since, and because the helper echoes three fields, an empty token
 # shifted them and handed callers an internal id where a public one was expected.
@@ -182,13 +188,16 @@ login_token() {
 # different halves -- the API takes the public UUID, while foreign keys such as
 # `audit_logs.actor_id` still hold the internal bigint.
 #
+# The address is lowercased first. The api normalises the address it is given
+# at login, so a row written with capitals could never be signed in to.
+#
 # Requires `pgq` and `pgx` from the calling script.
 bcrypt_hash() {
   python3 -c "import bcrypt,sys; print(bcrypt.hashpw(sys.argv[1].encode(), bcrypt.gensalt(12)).decode())" "$1" 2>/dev/null
 }
 
 mk_verified_user() {
-  local base="$1" email="$2" password="$3" name="$4"
+  local base="$1" email="${2,,}" password="$3" name="$4"
   local hash body token
   hash=$(bcrypt_hash "$password")
   if [ -z "$hash" ]; then
@@ -231,7 +240,19 @@ mk_verified_user() {
   # empty token -- which then reads as a wall of 401s in phases that have nothing
   # to do with authentication. The signup-based helper this replaced cleared the
   # counters for the same reason.
-  pgx "delete from auth_rate_limits" || return 1
+  #
+  # Only this run's rows go: the scratch account's own counters and lockout
+  # pairs, and the counters keyed on this host's address. The table also holds
+  # every real user's windows and lockouts, and clearing it whole lifted their
+  # lockouts along with ours.
+  local host_ip ip_clause=""
+  if host_ip=$(smoke_client_ip "$base"); then
+    ip_clause=" or subject = '$host_ip' or subject like '%|$host_ip'"
+  else
+    echo "mk_verified_user: could not work out the address the api sees for this host; clearing only $email's counters" >&2
+  fi
+  pgx "delete from auth_rate_limits
+        where subject = '$email' or subject like '$email|%'$ip_clause" || return 1
   body=$(mktemp) || return 1
   curl -sS -o "$body" -X POST "$base/auth/login" \
     -H 'Content-Type: application/json' \
@@ -249,4 +270,87 @@ mk_verified_user() {
     return 1
   fi
   echo "$token $(pgq "select public_id from users where email='$email'") $(pgq "select id from users where email='$email'")"
+}
+
+# smoke_client_ip BASE_URL → the address the api records for requests this host
+# sends to BASE_URL.
+#
+# The api keys its per-address counters on X-Real-IP, which the reverse proxy
+# sets from the true peer it restores out of the PROXY protocol, so the address
+# is this host's source address on the route to the proxy -- not the proxy's,
+# and not a public one. Checked on the platform host on 2026-09-29: a login sent
+# from there was counted under exactly the address `ip route get` names. Nothing
+# is echoed when either lookup fails, and callers then leave per-address rows
+# alone rather than guess.
+smoke_client_ip() {
+  local hostport host addr src
+  hostport="${1#*://}"; hostport="${hostport%%/*}"; host="${hostport%%:*}"
+  addr=$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1 {print $1}')
+  [ -n "$addr" ] || return 1
+  src=$(ip -4 route get "$addr" 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
+  [ -n "$src" ] || return 1
+  printf '%s' "$src"
+}
+
+# disable_scratch_user EMAIL — close a scratch account this run created.
+#
+# mk_verified_user leaves an ACTIVE, signed-in account behind, and before this
+# helper every run's accounts were disabled by hand afterwards. This does the
+# same thing the same way: DISABLED with a reason, the token version bumped so
+# issued access tokens stop working, a status-change row with no actor, and
+# every live refresh token revoked. Rows are kept rather than deleted, because
+# the run's VM, audit and notification rows point at them.
+#
+# Call it from the path that runs on failure too, and only after the VM cleanup:
+# a disabled owner cannot act on its own VM any more.
+#
+# Only an account created since this run started (SMOKE_RUN_STARTED) is
+# touched, so a wrong argument cannot close a real user's account or one an
+# earlier run left behind. An address with no such account is not an error (the
+# run may have failed before creating it); an account of this run that is still
+# ACTIVE afterwards is.
+#
+# Requires `pgq` and `pgx` from the calling script.
+disable_scratch_user() {
+  # Lowercased like mk_verified_user's address, or a capitalised argument would
+  # find no row and report success while the account stays ACTIVE.
+  local email="${1,,}" reason='스모크 확인용 임시 계정 정리' left
+  pgx "with u as (
+         update users
+            set status = 'DISABLED', disabled_at = now(), disabled_reason = '$reason',
+                token_version = token_version + 1
+          where email = '$email' and status = 'ACTIVE'
+            and created_at >= '$SMOKE_RUN_STARTED'::timestamptz
+         returning id),
+       c as (
+         insert into user_status_changes (user_id, from_status, to_status, actor_id, reason, changed_at)
+         select id, 'ACTIVE', 'DISABLED', null, '$reason', now() from u)
+       update refresh_tokens set revoked_at = now()
+        where revoked_at is null
+          and user_id in (select id from users
+                           where email = '$email' and created_at >= '$SMOKE_RUN_STARTED'::timestamptz)" || return 1
+  left=$(pgq "select count(*) from users where email = '$email' and status = 'ACTIVE' and created_at >= '$SMOKE_RUN_STARTED'::timestamptz")
+  if [ "$left" != 0 ]; then
+    echo "disable_scratch_user: $email from this run is still ACTIVE (count=${left:-unknown})" >&2
+    return 1
+  fi
+}
+
+# smoke_org_id → public id of the organisation the smokes file their requests
+# under: the seeded test organisation, found by the name the dev seeder gives it
+# (override with SMOKE_ORG_NAME). Picked by name rather than by position so the
+# answer does not move when organisations are added: a request's submission
+# notice goes to that organisation's administrators, and the wrong organisation
+# would mail somebody else's. Exactly one ACTIVE match is required; anything
+# else prints why and returns non-zero.
+#
+# Requires `pgq` from the calling script.
+smoke_org_id() {
+  local name="${SMOKE_ORG_NAME:-테스트 기관}" n
+  n=$(pgq "select count(*) from orgs where name = '$name' and status = 'ACTIVE'")
+  if [ "$n" != 1 ]; then
+    echo "smoke_org_id: expected exactly one ACTIVE organisation named '$name', found ${n:-none}" >&2
+    return 1
+  fi
+  pgq "select public_id from orgs where name = '$name' and status = 'ACTIVE'"
 }

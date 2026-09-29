@@ -19,11 +19,6 @@
 # or kill it first; the EXIT trap deletes the VM either way.
 set -uo pipefail
 BASE="${BASE:-https://pickle.pusan.ac.kr/api/v1}"
-# Signup requires consent to every current terms version (422 otherwise).
-# Built once from the public endpoint so version bumps never break the smoke.
-CONSENTS_JSON=$(curl -fsS "$BASE/meta/terms" 2>/dev/null | jq -c '[.[] | {docType, version}]' 2>/dev/null)
-[ -n "$CONSENTS_JSON" ] || CONSENTS_JSON='[]'
-
 CTID="${CTID:-101}"
 TS=$(date +%s)-$RANDOM
 # Every domain this run creates shares this prefix, so one grep over pickle.d
@@ -42,10 +37,22 @@ RELAY_SSH_PORT="${RELAY_SSH_PORT:-22}"
 RELAY_USER="${RELAY_USER:-admin}"
 VAULT="${VAULT:-/path/to/secrets-vault}"
 RELAY_SSH_KEY="${RELAY_SSH_KEY:-$VAULT/lightsail-ssh.pem}"
-USER_EMAIL="http-${TS}@pusan.ac.kr"; USER_PW="http-pass-${TS}!"
+USER_EMAIL="http-${TS}@example.com"; USER_PW="http-pass-${TS}!"
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-"; }
 # shellcheck source=scripts/lib/auth.sh
 . "$(dirname "$0")/lib/auth.sh"
+# mk_verified_user (lib/auth.sh) writes the scratch user through these two.
+# pgx feeds the statement on stdin: `su -c` re-parses its command string, and a
+# statement passed there loses anything that shell expands.
+pgq(){ pct exec "$CTID" -- su - postgres -c "psql -d pickle_dev -qtAc \"$1\"" 2>/dev/null | tr -d '[:space:]'; }
+pgx(){
+  local out
+  if ! out=$(pct exec "$CTID" -- su - postgres -c \
+      "psql -q -d pickle_dev -v ON_ERROR_STOP=1 -f -" <<<"$1" 2>&1); then
+    printf 'pgx failed: %s\n%s\n' "${1%%$'\n'*}" "$out" >&2
+    return 1
+  fi
+}
 ORGADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ORGADMIN_EMAIL="${ORGADMIN_EMAIL:-orgadmin@pnuops.com}"; ORGADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
 SYSADMIN_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYSADMIN_EMAIL="${SYSADMIN_EMAIL:-admin@pnuops.com}"; SYSADMIN_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
 B=$(mktemp)
@@ -53,7 +60,7 @@ B=$(mktemp)
 # not leak a real guest + IP — force-delete best-effort, mirroring smoke-provisioning.
 VM=""; VM_DELETED=0
 cleanup(){
-  local rc=$?
+  local rc=$? cleanup_failed=""
   if [ -n "$VM" ] && [ "$VM_DELETED" != 1 ]; then
     echo "-- cleanup: force-deleting leftover VM $VM --"
     local at
@@ -75,7 +82,18 @@ cleanup(){
       echo "-- cleanup: could not obtain admin token or VM name; manual cleanup needed (vm id $VM) --" >&2
     fi
   fi
+  # After the VM, which is deleted with the administrator's token: the scratch
+  # user is closed last, on every exit.
+  if disable_scratch_user "$USER_EMAIL"; then
+    echo "-- cleanup: scratch user $USER_EMAIL disabled --"
+  else
+    echo "-- cleanup: scratch user $USER_EMAIL NOT disabled --" >&2; rc=1
+    cleanup_failed+=" scratch user $USER_EMAIL not disabled;"
+  fi
   rm -f "$B"
+  # The summary is printed before this trap runs, so a cleanup failure would sit
+  # above it and scroll past; it is repeated as the very last line instead.
+  [ -z "$cleanup_failed" ] || echo "CLEANUP FAILED:$cleanup_failed"
   exit "$rc"
 }
 trap cleanup EXIT
@@ -113,18 +131,25 @@ origin(){ # origin FQDN → echoes the http code
 vhost_count(){ pct exec 100 -- sh -c "ls /etc/nginx/pickle.d/ | grep -c '$1'" 2>/dev/null; }
 
 echo "== auth =="
-req "signup" 202 -X POST "$BASE/auth/signup" -H 'Content-Type: application/json' -d "{\"email\":\"$USER_EMAIL\",\"password\":\"$USER_PW\",\"name\":\"HTTP E2E\",\"consents\":$CONSENTS_JSON}" || exit 1
-sleep 2
-TOKEN=$(pct exec "$CTID" -- sh -c "grep -o 'token=[A-Za-z0-9_-]*' /var/lib/pickle/mock-mail.log 2>/dev/null | tail -1 | cut -d= -f2")
-req "verify-email" 200 -X POST "$BASE/auth/verify-email" -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\"}" || exit 1
-req "user login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$USER_EMAIL\",\"password\":\"$USER_PW\"}" || exit 1
-SAT=$(jq -r .accessToken "$B")
+# The user is written straight into the database rather than signed up. Signup
+# hands out its verification token only by mail, and dev runs the production
+# mail profile: the token goes to a real mailbox and the mock-mail spool this
+# step used to read stays empty, so every run stopped here before creating
+# anything.
+if ! MADE=$(mk_verified_user "$BASE" "$USER_EMAIL" "$USER_PW" "HTTP E2E"); then
+  ko "scratch user created and signed in"; exit 1
+fi
+SAT=${MADE%% *}
+ok "scratch user created and signed in"
 req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"name\":\"http e2e\",\"kind\":\"PROJECT\"}" || exit 1
 GID=$(jq -r .id "$B")
 req "orgadmin login" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ORGADMIN_EMAIL\",\"password\":\"$ORGADMIN_PW\"}" || exit 1
 AAT=$(jq -r .accessToken "$B")
 # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
-req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT" || exit 1; OID=$(jq -r '.[0].id' "$B")
+req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT" || exit 1
+# The organisation is the seeded test one by name (lib/auth.sh smoke_org_id),
+# never "the first in the list": its administrators are who the request mails.
+if OID=$(smoke_org_id); then ok "request org = seeded test org ($OID)"; else ko "seeded test org not found"; exit 1; fi
 req "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $SAT" || exit 1
 # The catalog is returned in DISPLAY order (distribution, then release), so the
 # first row is a moving target: it was an Ubuntu row until Debian entered the
@@ -139,9 +164,11 @@ FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); M
 [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)" || { ko "no ACTIVE vm-flavor"; exit 1; }
 
 echo "== request + approve (the request form carries no domain axis anymore) =="
-req "vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"HTTP publish e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || exit 1
+# Every id the API speaks is a UUID, so each one goes into the payload quoted;
+# only the spec numbers (vcpu/memory/disk) stay bare.
+req "vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"displayName\":\"HTTP 공개 e2e $TS\",\"workspaceId\":\"$GID\",\"orgId\":\"$OID\",\"purpose\":\"HTTP publish e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":\"$TID\",\"flavorId\":\"$FID\",\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || exit 1
 RID=$(jq -r .id "$B")
-req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"http e2e\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"nodeId\":null}}" || exit 1
+req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"http e2e\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":\"$TID\",\"nodeId\":null}}" || exit 1
 req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $SAT" || exit 1
 VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
 [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || { ko "vm id (empty list)"; exit 1; }

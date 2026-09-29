@@ -29,7 +29,7 @@ BASE="${1:-https://pickle.pusan.ac.kr}/api/v1"
 
 CTID="${CTID:-101}"
 TS=$(date +%s)
-USER_EMAIL="smoke-${TS}@pusan.ac.kr"
+USER_EMAIL="smoke-${TS}@example.com"
 USER_PW="smoke-pass-${TS}!"
 # shellcheck source=scripts/lib/auth.sh
 . "$(dirname "$0")/lib/auth.sh"
@@ -81,7 +81,25 @@ for cmd in curl jq nc qm pct; do
 done
 
 BODY=$(mktemp)
-trap 'rm -f "$BODY"' EXIT
+# On every exit, interrupted runs included: close the scratch user, then report.
+# In a normal run this fires after cleanup and post_verify at the bottom, so the
+# VM is gone by then; nothing that runs here acts as the user. INT and TERM are
+# routed through exit so the EXIT trap still fires when the run is stopped.
+on_exit() {
+  local rc=$?
+  if disable_scratch_user "$USER_EMAIL"; then
+    echo "-- cleanup: scratch user $USER_EMAIL disabled --"
+  else
+    echo "-- cleanup: scratch user $USER_EMAIL NOT disabled --" >&2
+    echo "CLEANUP FAILED: scratch user $USER_EMAIL not disabled"
+    rc=1
+  fi
+  rm -f "$BODY"
+  exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 ok() { echo "PASS  $1"; PASS=$((PASS + 1)); }
 ko() { echo "FAIL  $1"; FAIL=$((FAIL + 1)); }
@@ -228,7 +246,13 @@ phase_account() {
     -d "{\"email\":\"$ORGADMIN_EMAIL\",\"password\":\"$ORGADMIN_PW\"}" || return 1
   OA_LOOKUP_AT=$(jq -r .accessToken "$BODY")
   step "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $OA_LOOKUP_AT" || return 1
-  ORG_ID=$(jq -r '.[0].id' "$BODY")
+  # The organisation is the seeded test one by name (lib/auth.sh smoke_org_id),
+  # never "the first in the list": its administrators are who the request mails.
+  if ! ORG_ID=$(smoke_org_id); then
+    ko "seeded test org not found"
+    return 1
+  fi
+  ok "request org = seeded test org ($ORG_ID)"
 
   # The VM's hostname is generated from the request's display name plus a random
   # suffix, so the request below sends dev-smoke-$TS as the display name and the
