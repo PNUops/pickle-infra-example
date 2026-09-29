@@ -231,7 +231,19 @@ mk_verified_user() {
   # empty token -- which then reads as a wall of 401s in phases that have nothing
   # to do with authentication. The signup-based helper this replaced cleared the
   # counters for the same reason.
-  pgx "delete from auth_rate_limits" || return 1
+  #
+  # Only this run's rows go: the scratch account's own counters and lockout
+  # pairs, and the counters keyed on this host's address. The table also holds
+  # every real user's windows and lockouts, and clearing it whole lifted their
+  # lockouts along with ours.
+  local host_ip ip_clause=""
+  if host_ip=$(smoke_client_ip "$base"); then
+    ip_clause=" or subject = '$host_ip' or subject like '%|$host_ip'"
+  else
+    echo "mk_verified_user: could not work out the address the api sees for this host; clearing only $email's counters" >&2
+  fi
+  pgx "delete from auth_rate_limits
+        where subject = '$email' or subject like '$email|%'$ip_clause" || return 1
   body=$(mktemp) || return 1
   curl -sS -o "$body" -X POST "$base/auth/login" \
     -H 'Content-Type: application/json' \
@@ -249,4 +261,24 @@ mk_verified_user() {
     return 1
   fi
   echo "$token $(pgq "select public_id from users where email='$email'") $(pgq "select id from users where email='$email'")"
+}
+
+# smoke_client_ip BASE_URL → the address the api records for requests this host
+# sends to BASE_URL.
+#
+# The api keys its per-address counters on X-Real-IP, which the reverse proxy
+# sets from the true peer it restores out of the PROXY protocol, so the address
+# is this host's source address on the route to the proxy -- not the proxy's,
+# and not a public one. Checked on the platform host on 2026-09-29: a login sent
+# from there was counted under exactly the address `ip route get` names. Nothing
+# is echoed when either lookup fails, and callers then leave per-address rows
+# alone rather than guess.
+smoke_client_ip() {
+  local hostport host addr src
+  hostport="${1#*://}"; hostport="${hostport%%/*}"; host="${hostport%%:*}"
+  addr=$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1 {print $1}')
+  [ -n "$addr" ] || return 1
+  src=$(ip -4 route get "$addr" 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
+  [ -n "$src" ] || return 1
+  printf '%s' "$src"
 }
