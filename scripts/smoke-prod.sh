@@ -1,14 +1,12 @@
 #!/bin/bash
 # shellcheck disable=SC2015  # ok/ko idiom (ok/ko always return 0) is safe here
 # ==========================================================================
-# Production smoke for pickle — READ-ONLY by default.
+# Production smoke for pickle — READ-ONLY.
 #
 # Layers:
 #   [0] infra snapshot     — reuses health-check.sh (host/LXC/DB/jobs/gw/backup)
 #   [1] auth               — login with a probe account
 #   [2] read-only API      — GET the core read surface, assert 200s
-#   [3] provision cycle    — ONLY with --allow-provision: one real VM
-#                            request→approve→RUNNING→force-delete cycle
 #
 # Probe account (env; in real prod use a DEDICATED low-privilege account):
 #   PICKLE_SMOKE_EMAIL / PICKLE_SMOKE_PASSWORD
@@ -18,19 +16,17 @@
 #   - SSH gateway end-to-end (needs an off-campus client through the Lightsail
 #     relay — that is smoke-ssh-gateway.sh's job)
 #   - real email delivery (SMTP) and custom-domain Let's Encrypt issuance
-#   - any data mutation beyond the optional --allow-provision cycle
-#
-# The --allow-provision cycle uses REAL host capacity (prod == the dev host
-# today). Its requester is a scratch user written straight into LXC 101's
-# database (lib/auth.sh mk_verified_user; needs python3 with bcrypt), not signed
-# up: signup's verification token only travels by mail, dev already runs the
-# production mail profile, and the token is stored hashed. On a prod whose
-# database this host cannot reach, use a pre-verified probe account instead.
+#   - any data mutation. The request → approve → RUNNING → delete cycle this
+#     script once ran under --allow-provision is smoke-provisioning.sh's job,
+#     which covers it in more depth; the flag is refused rather than ignored,
+#     so nobody reads a read-only pass as a provisioning one.
 # ==========================================================================
 set -uo pipefail
 
-ALLOW_PROVISION=0
-[ "${1:-}" = "--allow-provision" ] && ALLOW_PROVISION=1
+if [ "$#" -gt 0 ]; then
+  echo "smoke-prod.sh takes no arguments (the provision cycle is smoke-provisioning.sh)" >&2
+  exit 2
+fi
 
 BASE="${BASE:-https://pickle.pusan.ac.kr/api/v1}"
 CTID="${CTID:-101}"
@@ -46,20 +42,6 @@ req(){ local n="$1" e="$2"; shift 2; local c
   [ "$c" = "$e" ] && ok "$n ($c)" || { ko "$n (want $e got $c)"; head -c 200 "$B"; echo; }
 }
 seed_env(){ pct exec "$CTID" -- sh -c "grep '^$1=' /etc/pickle/api.env | cut -d= -f2-" 2>/dev/null; }
-# shellcheck source=scripts/lib/auth.sh
-. "$(dirname "$0")/lib/auth.sh"
-# mk_verified_user (lib/auth.sh) writes the --allow-provision requester through
-# these two. pgx feeds the statement on stdin: `su -c` re-parses its command
-# string, and a statement passed there loses anything that shell expands.
-pgq(){ pct exec "$CTID" -- su - postgres -c "psql -d pickle_dev -qtAc \"$1\"" 2>/dev/null | tr -d '[:space:]'; }
-pgx(){
-  local out
-  if ! out=$(pct exec "$CTID" -- su - postgres -c \
-      "psql -q -d pickle_dev -v ON_ERROR_STOP=1 -f -" <<<"$1" 2>&1); then
-    printf 'pgx failed: %s\n%s\n' "${1%%$'\n'*}" "$out" >&2
-    return 1
-  fi
-}
 
 echo "== [0] infra health snapshot (health-check.sh) =="
 if [ -x "$HC" ]; then
@@ -90,81 +72,6 @@ if [ -n "$AT" ]; then
   req "GET /resources"    200 "$BASE/resources"    -H "Authorization: Bearer $AT"
 fi
 
-if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
-  echo "== [3] provision → destroy cycle (--allow-provision; REAL capacity) =="
-  TS=$(date +%s)-$RANDOM
-  VM=""; VNAME=""
-  # requester: a verified scratch user written straight into the database (see
-  # the header). Without a token every step below fails on 401 and the cycle
-  # stops at the precondition check, before any VM exists.
-  OEMAIL="prodsmoke-${TS}@example.com"; OPW="prodsmoke-${TS}!"
-  if MADE=$(mk_verified_user "$BASE" "$OEMAIL" "$OPW" "prod smoke"); then
-    OAT=${MADE%% *}; ok "scratch owner created and signed in"
-  else
-    OAT=""; ko "scratch owner created and signed in"
-  fi
-  req "create workspace" 201 -X POST "$BASE/workspaces" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"name\":\"prodsmoke\",\"kind\":\"PROJECT\"}"
-  GID=$(jq -r '.id // empty' "$B")
-  # the seed org is hidden and GET /orgs filters hidden orgs for USER tokens — list as orgadmin
-  ADMIN_PW="$(seed_env PICKLE_SEED_ORGADMIN_PASSWORD)"
-  ADMIN_EMAIL="$(seed_env PICKLE_SEED_ORGADMIN_EMAIL)"; ADMIN_EMAIL="${ADMIN_EMAIL:-orgadmin@pnuops.com}"
-  req "orgadmin login (org lookup)" 200 -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PW\"}"
-  AAT=$(jq -r '.accessToken // empty' "$B")
-  req "orgs" 200 "$BASE/orgs" -H "Authorization: Bearer $AAT"; OID=$(jq -r '.[0].id // empty' "$B")
-  req "os-images" 200 "$BASE/os-images" -H "Authorization: Bearer $OAT"
-  TID=$(jq -r '.[0].id // empty' "$B")
-  # os-images is the OS catalog; specs come from vm-flavors and POST
-  # /requests requires flavorId ('basic' preset, else the first ACTIVE row)
-  req "vm-flavors" 200 "$BASE/vm-flavors" -H "Authorization: Bearer $OAT"
-  FSEL='(map(select(.name=="basic"))[0] // .[0])'
-  FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); MM=$(jq -r "$FSEL.memoryMb // empty" "$B"); DG=$(jq -r "$FSEL.diskGb // empty" "$B")
-  if [ -n "$GID" ] && [ -n "$OID" ] && [ -n "$TID" ] && [ -n "$FID" ]; then
-    # Every id the API speaks is a UUID, so each one goes into the payload
-    # quoted; only the spec numbers (vcpu/memory/disk) stay bare.
-    req "vm request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"displayName\":\"prod 스모크 $TS\",\"workspaceId\":\"$GID\",\"orgId\":\"$OID\",\"purpose\":\"prod smoke\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":\"$TID\",\"flavorId\":\"$FID\",\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}"
-    RID=$(jq -r '.id // empty' "$B")
-    # approve as seed ORG_ADMIN (token from the org-lookup login above)
-    req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"prod smoke\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":\"$TID\",\"nodeId\":null}}"
-    req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $OAT"
-    VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
-    [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || ko "no VM created"
-    if [ -n "$VM" ]; then
-      echo "-- poll RUNNING (<=15min) --"
-      DL=$((SECONDS+900)); ST=""
-      while :; do
-        curl -sS -o "$B" --max-time 20 "$BASE/vms/$VM" -H "Authorization: Bearer $OAT"
-        ST=$(jq -r '.status // empty' "$B")
-        [ "$ST" = RUNNING ] && break
-        { [ "$ST" = ERROR ] || [ "$ST" = NEEDS_ADMIN ]; } && break
-        [ "$SECONDS" -ge "$DL" ] && break
-        sleep 10
-      done
-      [ "$ST" = RUNNING ] && ok "VM RUNNING" || ko "VM not RUNNING (last=$ST)"
-      # force-delete as seed SYS_ADMIN (confirmName only — no reason field)
-      SYS_PW="$(seed_env PICKLE_SEED_SYSADMIN_PASSWORD)"
-      SYS_EMAIL="$(seed_env PICKLE_SEED_SYSADMIN_EMAIL)"; SYS_EMAIL="${SYS_EMAIL:-admin@pnuops.com}"
-      # An enrolled administrator answers the login with a challenge, and a bare
-      # status assertion would call that a pass while leaving XAT empty. This is
-      # the cleanup path for a VM that is already running, so a silent empty
-      # token here leaves it on the host.
-      if XAT=$(login_token "$BASE" "$SYS_EMAIL" "$SYS_PW"); then ok "sysadmin login"; else ko "sysadmin login"; fi
-      req "force-delete" 202 -X POST "$BASE/admin/vms/$VM/force-delete" -H "Authorization: Bearer $XAT" -H 'Content-Type: application/json' -d "{\"confirmName\":\"$VNAME\"}"
-      echo "-- poll DELETED (<=3min) --"
-      DL=$((SECONDS+180)); DC=""; DST=""
-      while :; do
-        DC=$(curl -sS -o "$B" -w '%{http_code}' --max-time 20 "$BASE/vms/$VM" -H "Authorization: Bearer $XAT")
-        DST=$(jq -r '.status // empty' "$B" 2>/dev/null)
-        { [ "$DC" = 404 ] || [ "$DST" = DELETED ]; } && break
-        [ "$SECONDS" -ge "$DL" ] && break
-        sleep 10
-      done
-      { [ "$DC" = 404 ] || [ "$DST" = DELETED ]; } && ok "VM destroyed" || ko "VM not destroyed (http=$DC status=$DST) — MANUAL CLEANUP of $VNAME needed"
-    fi
-  else
-    ko "provision preconditions missing (group/org/os-image/flavor) — skipping cycle"
-  fi
-fi
-
 echo
-echo "smoke-prod: $P passed / $((P+F)) checks (mode: $([ "$ALLOW_PROVISION" = 1 ] && echo full-cycle || echo read-only))"
+echo "smoke-prod: $P passed / $((P+F)) checks (mode: read-only)"
 [ "$F" -eq 0 ] && exit 0 || exit 1
