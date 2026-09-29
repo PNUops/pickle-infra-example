@@ -139,9 +139,11 @@ FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); M
 [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)" || { ko "no ACTIVE vm-flavor"; exit 1; }
 
 echo "== request + approve (the request form carries no domain axis anymore) =="
-req "vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"HTTP publish e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || exit 1
+# Every id the API speaks is a UUID, so each one goes into the payload quoted;
+# only the spec numbers (vcpu/memory/disk) stay bare.
+req "vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"displayName\":\"HTTP 공개 e2e $TS\",\"workspaceId\":\"$GID\",\"orgId\":\"$OID\",\"purpose\":\"HTTP publish e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":\"$TID\",\"flavorId\":\"$FID\",\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || exit 1
 RID=$(jq -r .id "$B")
-req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"http e2e\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"nodeId\":null}}" || exit 1
+req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"http e2e\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":\"$TID\",\"nodeId\":null}}" || exit 1
 req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $SAT" || exit 1
 VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
 [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || { ko "vm id (empty list)"; exit 1; }

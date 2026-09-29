@@ -19,6 +19,9 @@ CONSENTS_JSON=$(curl -fsS "$BASE/meta/terms" 2>/dev/null | jq -c '[.[] | {docTyp
 [ -n "$CONSENTS_JSON" ] || CONSENTS_JSON='[]'
 
 CTID="${CTID:-101}"
+# The id every "this does not exist" case is asked for. Public ids are UUIDs, so
+# a made-up decimal would fail on the shape (400) before reaching the lookup.
+NO_SUCH_ID="00000000-0000-0000-0000-000000000000"
 DASH="http://198.18.1.20:8000"
 SPOOL=/var/lib/pickle/mock-mail.log
 TS=$(date +%s)-$RANDOM
@@ -79,7 +82,7 @@ fresh_tokens(){
   { [ -n "$SAT" ] && [ -n "$AAT" ] && [ -n "$XAT" ]; } || { ko "token refresh (user/orgadmin/sysadmin login)"; return 1; }
 }
 
-SAT=""; AAT=""; XAT=""; GID=""; OID=""; RID=""; VM=""; VNAME=""; VIP=""
+SAT=""; AAT=""; XAT=""; GID=""; OID=""; RID=""; VM=""; VM_DB=""; VNAME=""; VIP=""
 
 # ── 1. setup: user account, request, approval ──
 phase_setup(){
@@ -108,7 +111,9 @@ phase_setup(){
   local sel='(map(select(.name=="basic"))[0] // .[0])'
   FID=$(jq -r "$sel.id // empty" "$B"); VC=$(jq -r "$sel.vcpu // empty" "$B"); MM=$(jq -r "$sel.memoryMb // empty" "$B"); DG=$(jq -r "$sel.diskGb // empty" "$B")
   { [ -n "$FID" ] && ok "flavor id=$FID (${VC}c/${MM}MB/${DG}GB)"; } || { ko "no ACTIVE vm-flavor"; return 1; }
-  req "vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"dashboards e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || return 1
+  # Every id the API speaks is a UUID, so each one goes into the payload quoted;
+  # only the spec numbers (vcpu/memory/disk) stay bare.
+  req "vm-request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $SAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"displayName\":\"대시보드 e2e $TS\",\"workspaceId\":\"$GID\",\"orgId\":\"$OID\",\"purpose\":\"dashboards e2e\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":\"$TID\",\"flavorId\":\"$FID\",\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}" || return 1
   RID=$(jq -r .id "$B")
   # AAT from the org-lookup login above is seconds old — reuse it
   # submission notification is created synchronously with the request
@@ -117,10 +122,16 @@ phase_setup(){
     '[.content[] | select(.event=="request.submitted" and .linkPath==$l)] | length >= 1' --arg l "/admin/requests/$RID"
   curl -sS -o "$B" "$BASE/notifications/unread-count" -H "Authorization: Bearer $AAT"
   jqc "orgadmin unread-count >= 1" '.unreadCount >= 1'
-  req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"dash e2e\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"nodeId\":null}}" || return 1
+  req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"dash e2e\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":\"$TID\",\"nodeId\":null}}" || return 1
   req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $SAT" || return 1
   VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
   [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || { ko "vm id (empty list)"; return 1; }
+  # Two ids for one VM, and they are not interchangeable: VM is the UUID the API
+  # speaks (URLs, JSON assertions), VM_DB is the internal key the direct
+  # statements below run on. Resolve it once, here, and fail loudly — an empty
+  # value would only surface later as a bare `where id=` syntax error.
+  VM_DB=$(pgq "select id from vms where public_id='$VM'")
+  [ -n "$VM_DB" ] && ok "internal vm id resolved ($VM_DB)" || { ko "no vms row for public_id $VM"; return 1; }
 
   # The type-agnostic inventory must show the same VM the per-type list does:
   # the console dashboard and the workspace inventory read this one, so a
@@ -128,8 +139,8 @@ phase_setup(){
   req "resource inventory" 200 "$BASE/resources?workspaceId=$GID" \
     -H "Authorization: Bearer $SAT" || return 1
   local rid rtype
-  rid=$(jq -r --arg id "$VM" '.content[] | select(.id == ($id | tonumber)) | .id // empty' "$B")
-  rtype=$(jq -r --arg id "$VM" '.content[] | select(.id == ($id | tonumber)) | .type // empty' "$B")
+  rid=$(jq -r --arg id "$VM" '.content[] | select(.id == $id) | .id // empty' "$B")
+  rtype=$(jq -r --arg id "$VM" '.content[] | select(.id == $id) | .type // empty' "$B")
   if [ "$rid" = "$VM" ] && [ "$rtype" = "VM" ]; then
     ok "resource inventory carries vm $VM as type VM"
   else
@@ -202,8 +213,8 @@ phase_announcements(){
 # ── 4. expiry: DB-forced end_date → vm-expiry job → auto-stop → extend → restart ──
 phase_expiry(){
   echo "== expiry pipeline =="
-  local upd; upd=$(pgq "update vms set end_date=((now() at time zone 'Asia/Seoul')::date - 1), expiry_stopped_at=null, last_expiry_notice_stage=null where id=$VM returning id")
-  [ "$upd" = "$VM" ] && ok "DB: end_date=yesterday(KST), expiry markers cleared" || { ko "DB end_date update (got '$upd')"; return 1; }
+  local upd; upd=$(pgq "update vms set end_date=((now() at time zone 'Asia/Seoul')::date - 1), expiry_stopped_at=null, last_expiry_notice_stage=null where id=$VM_DB returning id")
+  [ "$upd" = "$VM_DB" ] && ok "DB: end_date=yesterday(KST), expiry markers cleared" || { ko "DB end_date update (got '$upd')"; return 1; }
   local c; c=$(jr vm-expiry)
   case "$c" in 200|204) ok "JobRunr vm-expiry triggered via dashboard ($c)";; *) ko "vm-expiry dashboard trigger (got $c) — check POST $DASH/api/recurring-jobs/vm-expiry/trigger";; esac
   # auto-stop: ACPI with force-stop fallback inside the job; poll marker + status
@@ -214,7 +225,7 @@ phase_expiry(){
     [ "$SECONDS" -ge "$dl" ] && break; sleep 10; done
   { [ "$st" = "STOPPED" ] && [ -n "$esa" ]; } && ok "expiry auto-stop -> STOPPED, expiryStoppedAt=$esa" || { ko "expiry auto-stop (status=$st expiryStoppedAt=${esa:-null} after 420s)"; return 1; }
   curl -sS -o "$B" "$BASE/admin/vms?expired=true&size=100" -H "Authorization: Bearer $AAT"
-  jqc "/admin/vms?expired=true contains the VM" '[.content[] | select(.id==($v|tonumber))] | length == 1' --arg v "$VM"
+  jqc "/admin/vms?expired=true contains the VM" '[.content[] | select(.id==$v)] | length == 1' --arg v "$VM"
   req "user start on expired VM -> 409" 409 -X POST "$BASE/vms/$VM/start" -H "Authorization: Bearer $SAT" \
     && jqc "409 code=VM_EXPIRED" '.code == "VM_EXPIRED"'
   curl -sS -o "$B" "$BASE/notifications?size=50" -H "Authorization: Bearer $SAT"
@@ -248,7 +259,7 @@ phase_ops(){
     && jqc "tasks page shape" '(.content | type == "array") and has("totalElements")'
   req "GET /admin/drift-findings (sys)" 200 "$BASE/admin/drift-findings?size=5" -H "Authorization: Bearer $XAT"
   req "GET /admin/ip-allocations (sys)" 200 "$BASE/admin/ip-allocations?status=ALLOCATED&size=100" -H "Authorization: Bearer $XAT" \
-    && jqc "smoke VM ip $VIP allocated" '[.content[] | select(.ip==$ip and .vmId==($v|tonumber))] | length == 1' --arg ip "$VIP" --arg v "$VM"
+    && jqc "smoke VM ip $VIP allocated" '[.content[] | select(.ip==$ip and .vmId==$v)] | length == 1' --arg ip "$VIP" --arg v "$VM"
   req "GET /admin/summary (orgadmin)" 200 "$BASE/admin/summary" -H "Authorization: Bearer $AAT" \
     && jqc "summary has pendingRequestCount" 'has("pendingRequestCount")'
   req "GET /admin/system-summary (sys)" 200 "$BASE/admin/system-summary" -H "Authorization: Bearer $XAT" \
@@ -264,7 +275,9 @@ phase_audit(){
     && jqc "activity has auth.login row with ip" '[.content[] | select(.action=="auth.login" and .ip != null)] | length >= 1'
   req "GET /admin/audit (orgadmin)" 200 "$BASE/admin/audit?size=5" -H "Authorization: Bearer $AAT" \
     && jqc "audit rows present" '.content | length >= 1'
-  req "audit foreign orgId by ORG_ADMIN -> 404" 404 "$BASE/admin/audit?orgId=999999" -H "Authorization: Bearer $AAT"
+  # A well-formed id that belongs to nobody. It has to parse as a UUID or the
+  # server answers 400 for the shape and the scoping rule is never consulted.
+  req "audit foreign orgId by ORG_ADMIN -> 404" 404 "$BASE/admin/audit?orgId=$NO_SUCH_ID" -H "Authorization: Bearer $AAT"
 }
 
 # ── 8. failed-job recovery — conditional (never fabricates failures on dev) ──
@@ -282,7 +295,7 @@ phase_recovery(){
     if [ -n "$done_id" ]; then
       req "retry DONE task $done_id -> 409" 409 -X POST "$BASE/admin/tasks/$done_id/retry" -H "Authorization: Bearer $XAT"
     else
-      req "retry nonexistent task -> 404" 404 -X POST "$BASE/admin/tasks/999999999/retry" -H "Authorization: Bearer $XAT"
+      req "retry nonexistent task -> 404" 404 -X POST "$BASE/admin/tasks/$NO_SUCH_ID/retry" -H "Authorization: Bearer $XAT"
     fi
   fi
 }

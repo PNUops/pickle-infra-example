@@ -75,7 +75,9 @@ if [ -n "$AT" ]; then
   req "GET /orgs"         200 "$BASE/orgs"         -H "Authorization: Bearer $AT"
   req "GET /os-images"    200 "$BASE/os-images"    -H "Authorization: Bearer $AT"
   req "GET /vm-flavors"   200 "$BASE/vm-flavors"   -H "Authorization: Bearer $AT"
-  req "GET /me/ssh-keys"  200 "$BASE/me/ssh-keys"  -H "Authorization: Bearer $AT"
+  # SSH keys hang off a VM now, so there is no account-level key surface to
+  # probe here; the per-VM one is exercised by the SSH gateway smoke.
+  req "GET /resources"    200 "$BASE/resources"    -H "Authorization: Bearer $AT"
 fi
 
 if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
@@ -112,10 +114,12 @@ if [ "$ALLOW_PROVISION" = 1 ] && [ -n "$AT" ]; then
   FSEL='(map(select(.name=="basic"))[0] // .[0])'
   FID=$(jq -r "$FSEL.id // empty" "$B"); VC=$(jq -r "$FSEL.vcpu // empty" "$B"); MM=$(jq -r "$FSEL.memoryMb // empty" "$B"); DG=$(jq -r "$FSEL.diskGb // empty" "$B")
   if [ -n "$GID" ] && [ -n "$OID" ] && [ -n "$TID" ] && [ -n "$FID" ]; then
-    req "vm request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"workspaceId\":$GID,\"orgId\":$OID,\"purpose\":\"prod smoke\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":$TID,\"flavorId\":$FID,\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}"
+    # Every id the API speaks is a UUID, so each one goes into the payload
+    # quoted; only the spec numbers (vcpu/memory/disk) stay bare.
+    req "vm request" 201 -X POST "$BASE/requests" -H "Authorization: Bearer $OAT" -H 'Content-Type: application/json' -d "{\"type\":\"VM\",\"displayName\":\"prod 스모크 $TS\",\"workspaceId\":\"$GID\",\"orgId\":\"$OID\",\"purpose\":\"prod smoke\",\"courseOrProject\":null,\"extraNote\":null,\"reqStartDate\":null,\"reqEndDate\":null,\"reqIndefinite\":true,\"vm\":{\"imageId\":\"$TID\",\"flavorId\":\"$FID\",\"reqVcpu\":$VC,\"reqMemoryMb\":$MM,\"reqDiskGb\":$DG,\"specReason\":null}}"
     RID=$(jq -r '.id // empty' "$B")
     # approve as seed ORG_ADMIN (token from the org-lookup login above)
-    req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"prod smoke\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":$TID,\"nodeId\":null}}"
+    req "approve" 200 -X POST "$BASE/admin/requests/$RID/approve" -H "Authorization: Bearer $AAT" -H 'Content-Type: application/json' -d "{\"grantedStartDate\":null,\"grantedEndDate\":null,\"comment\":\"prod smoke\",\"vm\":{\"grantedVcpu\":$VC,\"grantedMemoryMb\":$MM,\"grantedDiskGb\":$DG,\"grantedImageId\":\"$TID\",\"nodeId\":null}}"
     req "vm list" 200 "$BASE/vms?workspaceId=$GID" -H "Authorization: Bearer $OAT"
     VM=$(jq -r '.content[0].id // empty' "$B"); VNAME=$(jq -r '.content[0].name // empty' "$B")
     [ -n "$VM" ] && ok "vm id=$VM name=$VNAME" || ko "no VM created"
