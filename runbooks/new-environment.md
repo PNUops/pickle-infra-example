@@ -302,8 +302,10 @@ Cloud DNS 서비스 계정 키만 있으면 되고 DNAT 가 살아 있을 필요
 항목을 통해 주 도메인을 향한다. 선행 조건과 재정의할 변수는 [README.md](../README.md)의
 스모크 절을 본다. 새 환경의 최소 묶음을 순서대로 적으면 `smoke-provisioning.sh`
 (VM 관통 증명), `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`,
-`smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`다. 새 사용자가 필요한 스모크는 사용자를 DB에
-직접 만들므로 이 묶음의 어느 것도 회원가입과 메일 인증을 확인하지 않는다. 그다음 `health-check.sh`로 스냅샷을
+`smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-signup.sh`다. 새 사용자가 필요한
+앞의 스모크는 사용자를 DB에 직접 만들므로, 회원가입과 메일 인증은 마지막 `smoke-signup.sh`만
+확인한다. 이 스모크는 가입 주소 도메인의 메일이 스모크 메일함으로 라우팅되고 그 메일함의 앱
+비밀번호가 볼트에 있어야 돌 수 있다. 그다음 `health-check.sh`로 스냅샷을
 찍고, 백업 타이머의 첫 실행이 표시와 덤프를 남겼는지 확인하고, 의도적으로 호스트를 한 번
 재부팅한 뒤 네트워크 런북(비공개 레포)의 재부팅 후 점검을 다시 돌린다. 첫 재부팅까지만
 견디는 플랫폼은 아직 구축된 것이 아니다.
