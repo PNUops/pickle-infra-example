@@ -118,7 +118,7 @@ def plan(c: Config) -> dict:
             'artifacts': {name: {'path': getattr(c, name + '_file'), 'sha256': getattr(c, name + '_sha256')}
                           for name in ('binary', 'keygen', 'unit')},
             'service': {'enabled': False, 'started': False, 'authorization': 'closed'},
-            'initial_network_window': 'From first start through bounded APT preparation, the isolated bridge is the only network boundary until nftables is installed; sshd is masked after OS readback, and an owned CT is stopped on failure.',
+            'initial_network_window': 'From first start through bounded APT preparation, the isolated bridge is the only network boundary until nftables is installed; SSH and Postfix units are masked after OS readback, and an owned CT is stopped on failure.',
             'proxy_changed': False, 'api_changed': False, 'state_dir': c.state_dir}
 
 
@@ -361,13 +361,25 @@ class Bootstrap:
                      label=f'candidate {phase}', timeout=runtime + 60)
 
     def disable_guest_ssh(self) -> None:
+        units = ('ssh.socket', 'ssh.service', 'postfix.service', 'postfix-resolvconf.path')
+        names = ' '.join(units)
         self.guest(['sh', '-c',
-                    'systemctl disable --now ssh.socket ssh.service 2>/dev/null || true; '
-                    'systemctl mask --now ssh.socket ssh.service'], 'network SSH disabled')
-        for unit in ('ssh.socket', 'ssh.service'):
-            state = self.guest(['systemctl', 'show', unit, '-p', 'ActiveState', '-p', 'UnitFileState'], 'network SSH state')
+                    f'systemctl disable --now {names} 2>/dev/null || true; '
+                    f'systemctl mask --now {names}'], 'template network services disabled')
+        for unit in units:
+            state = self.guest(['systemctl', 'show', unit, '-p', 'ActiveState', '-p', 'UnitFileState'], 'template service state')
             if 'ActiveState=inactive' not in state.splitlines() or 'UnitFileState=masked' not in state.splitlines():
-                raise Error('Guest network SSH did not remain masked')
+                raise Error('Guest template network service did not remain masked')
+
+    def verify_guest_network(self) -> None:
+        resolver = self.guest(['cat', '/etc/resolv.conf'], 'configured DNS readback')
+        servers = [line.split()[1] for line in resolver.splitlines()
+                   if line.split() and line.split()[0] == 'nameserver' and len(line.split()) > 1]
+        if servers != [self.c.nameserver]:
+            raise Error('Guest resolver differs from configured nameserver')
+        listeners = self.guest(['ss', '-H', '-ltn'], 'closed TCP listener readback')
+        if listeners.strip():
+            raise Error('Candidate guest has an unexpected TCP listener')
 
     def stop_owned_on_failure(self) -> str:
         try:
@@ -430,9 +442,9 @@ class Bootstrap:
             release = self.guest(['cat', '/etc/os-release'], 'guest OS identity')
             if not re.search(r'^VERSION_ID="?13"?$', release, re.MULTILINE):
                 raise Error('Guest is not Debian 13')
-            # The template has no gateway unit, but may have sshd. Remove that
-            # listener before using network access for package preparation.
+            # Close template SSH and mail units before package network access.
             self.disable_guest_ssh()
+            self.verify_guest_network()
             self.package_network_preflight()
             self.guest(['test', '!', '-e', '/usr/sbin/policy-rc.d'], 'new package guard')
             self.guest(['test', '!', '-L', '/usr/sbin/policy-rc.d'], 'package guard symlink')
@@ -444,6 +456,8 @@ class Bootstrap:
             self.package('packages', 540, ['/usr/bin/env', 'DEBIAN_FRONTEND=noninteractive',
                                            '/usr/bin/apt-get', 'install', '-y', '--no-install-recommends',
                                            'ca-certificates', 'nftables'])
+            self.disable_guest_ssh()
+            self.verify_guest_network()
             self.guest(['systemctl', 'mask', '--now', 'nftables.service'], 'single firewall owner')
             self.put('/etc/candidate-llm.nft', firewall(c))
             self.put('/etc/systemd/system/candidate-llm-firewall.service', FIREWALL_UNIT)
@@ -469,6 +483,8 @@ class Bootstrap:
             active = self.guest(['systemctl', 'show', 'llm-gateway.service', '-p', 'ActiveState', '--value'], 'gateway active state').strip()
             if (enabled, active) != ('disabled', 'inactive'):
                 raise Error('Gateway application did not remain disabled')
+            self.disable_guest_ssh()
+            self.verify_guest_network()
             self.manifest['completed'] = True
             self.manifest['boundary'] = 'Container retained onboot=0; gateway disabled and stopped; no ingress or API changed.'
             self.save()

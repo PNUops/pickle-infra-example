@@ -92,7 +92,7 @@ class CandidateLlmTest(unittest.TestCase):
             with self.assertRaisesRegex(llm.Error, 'hash changed'):
                 llm.require_proxy_identity(config, Runner())
 
-    def test_requires_both_ssh_units_masked_and_inactive(self) -> None:
+    def test_requires_template_network_units_masked_and_inactive(self) -> None:
         class Guest(llm.Bootstrap):
             def __init__(self, config, state):
                 super().__init__(config, None)
@@ -106,11 +106,27 @@ class CandidateLlmTest(unittest.TestCase):
         safe = Guest(self.config, 'ActiveState=inactive\nUnitFileState=masked\n')
         safe.disable_guest_ssh()
         self.assertIn('systemctl mask --now ssh.socket ssh.service', safe.commands[0][2])
-        self.assertEqual([command[2] for command in safe.commands[1:]], ['ssh.socket', 'ssh.service'])
+        self.assertEqual([command[2] for command in safe.commands[1:]], ['ssh.socket', 'ssh.service', 'postfix.service', 'postfix-resolvconf.path'])
         for state in ('ActiveState=active\nUnitFileState=masked\n',
                       'ActiveState=inactive\nUnitFileState=enabled\n'):
             with self.subTest(state=state), self.assertRaisesRegex(llm.Error, 'did not remain masked'):
                 Guest(self.config, state).disable_guest_ssh()
+
+    def test_rejects_changed_dns_and_any_tcp_listener(self) -> None:
+        class Guest(llm.Bootstrap):
+            def __init__(self, config, resolver, listeners):
+                super().__init__(config, None)
+                self.resolver, self.listeners = resolver, listeners
+
+            def guest(self, command, label):
+                return self.resolver if command[0] == 'cat' else self.listeners
+
+        resolver = f'nameserver {self.config.nameserver}\n'
+        Guest(self.config, resolver, '').verify_guest_network()
+        for text, listeners in [('nameserver 192.0.2.54\n', ''),
+                                (resolver, 'LISTEN 0 100 0.0.0.0:25 0.0.0.0:*')]:
+            with self.subTest(resolver=text, listeners=listeners), self.assertRaises(llm.Error):
+                Guest(self.config, text, listeners).verify_guest_network()
 
     def test_failure_stops_only_the_exact_owned_container(self) -> None:
         class Runner:
@@ -150,6 +166,29 @@ class CandidateLlmTest(unittest.TestCase):
         runner.description = 'another-owner'
         self.assertIn('ownership_unverified', bootstrap.stop_owned_on_failure())
         self.assertNotIn(['pct', 'stop'], [call[0][:2] for call in runner.calls])
+
+    def test_network_readback_failure_records_owned_cleanup(self) -> None:
+        class Runner:
+            def run(self, args, **kwargs):
+                if args[:2] == ['pvesh', 'get'] and args[2] == '/cluster/status':
+                    return json.dumps([{'type': 'cluster', 'name': 'example-cluster', 'quorate': 1},
+                                       {'type': 'node', 'name': 'compute-a', 'online': 1}])
+                return '[]' if args[0] == 'pvesh' else ''
+
+        bootstrap = llm.Bootstrap(self.config, Runner())
+        with patch.object(llm, 'preflight', return_value={}), \
+                patch.object(llm, 'require_proxy_identity'), \
+                patch.object(llm.Path, 'mkdir'), patch.object(bootstrap, 'save'), \
+                patch.object(bootstrap, 'owned'), \
+                patch.object(bootstrap, 'guest', return_value='VERSION_ID="13"\n'), \
+                patch.object(bootstrap, 'disable_guest_ssh'), \
+                patch.object(bootstrap, 'verify_guest_network', side_effect=llm.Error('unexpected listener')), \
+                patch.object(bootstrap, 'stop_owned_on_failure', return_value='stopped') as stop:
+            with self.assertRaisesRegex(llm.Error, 'unexpected listener'):
+                bootstrap.apply()
+        stop.assert_called_once_with()
+        self.assertEqual(bootstrap.manifest['failure_stop'], 'stopped')
+        self.assertFalse(bootstrap.manifest['completed'])
 
     def test_apply_records_stop_result_when_creation_partly_fails(self) -> None:
         class Runner:

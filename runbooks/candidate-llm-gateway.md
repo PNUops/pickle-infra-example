@@ -39,7 +39,10 @@ IP 중복을 확인합니다. 생성 직전에도 클러스터와 활성 작업 
 첫 `pct start`부터 nftables 설치 전까지는 **게스트 방화벽이 아직 없습니다.** 이 구간은
 기존 격리 bridge의 경계에 의존하며, APT 단계마다 실행 제한 시간이 있습니다. 이때
 gateway 데몬과 upstream 자격증명은 아직 없습니다. 게스트 OS를 확인하자마자 `ssh.socket`과
-`ssh.service`를 중지·mask하고 상태를 읽어 확인하지만, 첫 부팅과 이 명령 사이의 짧은
+`ssh.service`, `postfix.service`, `postfix-resolvconf.path`를 중지·mask합니다.
+APT 전후와 완료 시 각 unit의 inactive/masked 상태, 설정한 nameserver와 TCP listener
+부재를 확인합니다. `/etc/resolv.conf`의 nameserver는 입력값과 일치해야 합니다.
+첫 부팅과 이 명령 사이의 짧은
 구간까지 닫혔다고 간주하지 않습니다. APT 네트워크 확인과 설치가 끝나면 proxy 주소에서
 TCP 8081만 받는 게스트 방화벽을 활성화하고 부팅 시 networking보다 먼저 실행되도록
 연결합니다.
