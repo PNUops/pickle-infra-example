@@ -66,7 +66,8 @@
 #
 # Usage: smoke-signup.sh [ORIGIN]   (default https://pickle.pusan.ac.kr)
 # Env:   VAULT, PICKLE_SMOKE_IMAP_PASSWORD_FILE, PICKLE_SMOKE_IMAP_USER,
-#        PICKLE_SMOKE_IMAP_HOST, PICKLE_SMOKE_VERIFY_BASE_URL (default
+#        PICKLE_SMOKE_IMAP_HOST, PICKLE_SMOKE_SIGNUP_DOMAIN (default
+#        example.com), PICKLE_SMOKE_VERIFY_BASE_URL (default
 #        ORIGIN/verify-email, the api's PICKLE_VERIFICATION_BASE_URL), CTID.
 # Requires: curl, jq, python3, pct.
 set -uo pipefail # no -e: cleanup and the summary must run even after failures
@@ -84,7 +85,10 @@ MAILBOX="$HERE/lib/signup_mailbox.py"
 
 TS=$(date +%s)
 # Lowercase by construction: login lowercases the address it is given.
-USER_EMAIL="signup-${TS}-${RANDOM}@example.com"
+# The domain has to be one whose mail is routed to the smoke mailbox, and one
+# the api's signup address pattern accepts.
+SIGNUP_DOMAIN="${PICKLE_SMOKE_SIGNUP_DOMAIN:-example.com}"
+USER_EMAIL="signup-${TS}-${RANDOM}@${SIGNUP_DOMAIN,,}"
 USER_PW="smoke-pass-${TS}-${RANDOM}!"
 USER_NAME="가입 스모크"
 REASON='스모크 확인용 임시 계정 정리'
@@ -120,7 +124,8 @@ SIGNUP_SENT=0
 
 BODY=$(mktemp)
 REQ=$(mktemp)
-chmod 600 "$BODY" "$REQ"
+HDR=$(mktemp)
+chmod 600 "$BODY" "$REQ" "$HDR"
 
 # The accounts this run may touch: this address, created since the run began.
 mine="email = '$USER_EMAIL' and created_at >= '$SMOKE_RUN_STARTED'::timestamptz"
@@ -156,6 +161,9 @@ close_signup_account() {
 
 on_exit() {
   local rc=$?
+  # A second Ctrl-C (or a TERM) during cleanup would otherwise cut it off with
+  # nothing printed, leaving the account open.
+  trap '' INT TERM
   TOKEN=""
   if close_signup_account; then
     if [ "$SIGNUP_SENT" = 1 ]; then
@@ -168,7 +176,7 @@ on_exit() {
     echo "CLEANUP FAILED: scratch user $USER_EMAIL not closed"
     rc=1
   fi
-  rm -f "$BODY" "$REQ"
+  rm -f "$BODY" "$REQ" "$HDR"
   exit "$rc"
 }
 trap on_exit EXIT
@@ -207,8 +215,11 @@ step_masked() {
   return 1
 }
 
-# Request bodies carrying the token or the password go through a 0600 file,
-# never argv, where every process on the host could read them.
+# Secrets never reach a command line, where every process on the host could
+# read them: request bodies carrying the token or the password are built by jq
+# from its environment (`env.X`, not `--arg`) and handed to curl through a
+# 0600 file, and the bearer header reaches curl the same way (`-H @file`).
+# printf is a shell builtin, so writing the files execs nothing.
 post_secret() {
   local name="$1" expect="$2" path="$3" json="$4"
   printf '%s' "$json" > "$REQ"
@@ -218,8 +229,11 @@ post_secret() {
   return "$rc"
 }
 
-login_json() { jq -nc --arg e "$USER_EMAIL" --arg p "$USER_PW" '{email:$e,password:$p}'; }
-verify_json() { jq -nc --arg t "$TOKEN" '{token:$t}'; }
+login_json() { SMOKE_E="$USER_EMAIL" SMOKE_P="$USER_PW" jq -nc '{email: env.SMOKE_E, password: env.SMOKE_P}'; }
+verify_json() { SMOKE_T="$TOKEN" jq -nc '{token: env.SMOKE_T}'; }
+
+# Write the bearer header file for the calls made as the scratch user.
+auth_header() { printf 'Authorization: Bearer %s\n' "$USER_AT" > "$HDR"; }
 
 # The terms in force, as SQL, for comparing recorded consents.
 current_terms="select distinct on (doc_type) id from terms_versions
@@ -261,8 +275,9 @@ phase_signup() {
 
   SIGNUP_AT=$(date +%s)
   SIGNUP_SENT=1
-  printf '%s' "$(jq -nc --arg e "$USER_EMAIL" --arg p "$USER_PW" --arg n "$USER_NAME" \
-      --argjson c "$CONSENTS_JSON" '{email:$e,password:$p,name:$n,consents:$c}')" > "$REQ"
+  SMOKE_E="$USER_EMAIL" SMOKE_P="$USER_PW" SMOKE_N="$USER_NAME" SMOKE_C="$CONSENTS_JSON" \
+    jq -nc '{email: env.SMOKE_E, password: env.SMOKE_P, name: env.SMOKE_N,
+             consents: (env.SMOKE_C | fromjson)}' > "$REQ"
   step "signup" 202 -X POST "$BASE/auth/signup" -H 'Content-Type: application/json' --data-binary "@$REQ"
   local rc=$?
   : > "$REQ"
@@ -331,17 +346,26 @@ phase_signup() {
 
 # ── phase 2: the verification mail ──
 phase_mail() {
-  local rc
-  TOKEN=$(python3 -B "$MAILBOX" --host "$IMAP_HOST" --user "$IMAP_USER" \
+  # Three lines on stdout: the token, "junk" or "normal", and the folder.
+  local rc out rest kind folder
+  out=$(python3 -B "$MAILBOX" --host "$IMAP_HOST" --user "$IMAP_USER" \
     --password-file "$IMAP_PW_FILE" --address "$USER_EMAIL" --verify-base "$VERIFY_BASE" \
     --not-before "$SIGNUP_AT" --timeout 120)
   rc=$?
+  TOKEN=${out%%$'\n'*}
+  rest=${out#*$'\n'}
+  kind=${rest%%$'\n'*}
+  folder=${rest#*$'\n'}
+  out=""
   if [ "$rc" != 0 ] || [ "${#TOKEN}" != 43 ]; then
     TOKEN=""
     ko "verification mail to $USER_EMAIL read from the mailbox (exit $rc)"
     return 1
   fi
-  ok "verification mail to $USER_EMAIL read; link base $VERIFY_BASE (token withheld)"
+  ok "verification mail to $USER_EMAIL read from $folder; link base $VERIFY_BASE (token withheld)"
+  if [ "$kind" = junk ]; then
+    echo "WARN  the verification mail was filed as spam ($folder)"
+  fi
 }
 
 # ── phase 3: verification, once and only once ──
@@ -395,8 +419,9 @@ phase_account() {
     return 1
   fi
   ok "login returned an access token"
+  auth_header
 
-  step "me" 200 "$BASE/me" -H "Authorization: Bearer $USER_AT" || return 1
+  step "me" 200 "$BASE/me" -H "@$HDR" || return 1
   local summary
   summary=$(jq -c '{email, status, role, pending: (.pendingConsents | length)}' "$BODY")
   if [ "$summary" = "{\"email\":\"$USER_EMAIL\",\"status\":\"ACTIVE\",\"role\":\"USER\",\"pending\":0}" ]; then
@@ -405,7 +430,7 @@ phase_account() {
     ko "me (got $summary)"
   fi
 
-  step "me/consents" 200 "$BASE/me/consents" -H "Authorization: Bearer $USER_AT" || return 1
+  step "me/consents" 200 "$BASE/me/consents" -H "@$HDR" || return 1
   local mine_c want_c
   mine_c=$(jq -c '[.[] | {docType, version}] | sort' "$BODY")
   want_c=$(jq -c 'sort' <<<"$CONSENTS_JSON")
@@ -415,7 +440,7 @@ phase_account() {
     ko "me/consents (got $mine_c, expected $want_c)"
   fi
 
-  step "workspaces" 200 "$BASE/workspaces" -H "Authorization: Bearer $USER_AT" || return 1
+  step "workspaces" 200 "$BASE/workspaces" -H "@$HDR" || return 1
   local ws
   ws=$(jq -c '[.[] | {kind, myRole}]' "$BODY")
   if [ "$ws" = '[{"kind":"PERSONAL","myRole":"OWNER"}]' ]; then

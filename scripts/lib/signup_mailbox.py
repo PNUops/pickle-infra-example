@@ -22,6 +22,9 @@ among them):
   can never supply the token.
 - print the password or the token anywhere but the token on stdout.
 
+On success stdout carries three lines: the token, "junk" or "normal" for
+whether the mail was in the spam folder, and the folder name as listed.
+
 Exit status: 0 token printed; 2 credential missing or unreadable; 3 no
 matching mail before the deadline; 4 a matching mail was wrong (ambiguous,
 malformed, or the already-registered notice); 5 IMAP failure.
@@ -132,13 +135,14 @@ def extract_token(raw: bytes, address: str, verify_base: str) -> str | None:
 _LIST_RE = re.compile(rb'^\((?P<flags>[^)]*)\) (?P<delim>"[^"]*"|NIL) (?P<name>.+)$')
 
 
-def folders(conn) -> list[str]:
+def folders(conn) -> list[tuple[str, bool]]:
     """Folders to search: Gmail's All Mail and Spam when advertised, else INBOX.
 
     All Mail holds every message outside Spam and Trash, so a mail archived or
     labelled away from the inbox is still found; Spam is searched because a
     forwarded mail may be filed there. Names are passed back exactly as the
-    server listed them, localised and encoded names included.
+    server listed them, localised and encoded names included. Each comes with
+    whether it is the spam folder, so the caller can say so.
     """
     typ, lines = conn.list()
     if typ != 'OK':
@@ -154,9 +158,8 @@ def folders(conn) -> list[str]:
         for flag in ('\\All', '\\Junk'):
             if flag in flags and flag not in found:
                 found[flag] = m.group('name').decode('ascii', 'replace')
-    if '\\All' not in found:
-        return ['INBOX'] + ([found['\\Junk']] if '\\Junk' in found else [])
-    return [found['\\All']] + ([found['\\Junk']] if '\\Junk' in found else [])
+    junk = [(found['\\Junk'], True)] if '\\Junk' in found else []
+    return [(found.get('\\All', 'INBOX'), False)] + junk
 
 
 def _search_date(epoch: float) -> str:
@@ -165,12 +168,18 @@ def _search_date(epoch: float) -> str:
     return time.strftime('%d-%b-%Y', time.gmtime(epoch - 86400))
 
 
-def scan_once(conn, address: str, verify_base: str, not_before: float) -> tuple[list[str], list[str]]:
-    """One pass over the folders. Returns (tokens, folder names they came from)."""
+def scan_once(conn, address: str, verify_base: str, not_before: float) -> tuple[list[str], list[tuple[str, bool]]]:
+    """One pass over the folders. Returns (tokens, (folder, is_junk) each came from).
+
+    A mail seen in two folders is counted once by its Message-ID. A mail with
+    no Message-ID cannot be recognised a second time, so each sighting counts:
+    a copy in two folders then reads as two mails and the caller fails the run
+    as ambiguous rather than guessing which one is meant.
+    """
     tokens: list[str] = []
-    where: list[str] = []
+    where: list[tuple[str, bool]] = []
     seen_ids: set[str] = set()
-    for folder in folders(conn):
+    for folder, is_junk in folders(conn):
         typ, _ = conn.select(folder, readonly=True)
         if typ != 'OK':
             continue
@@ -202,19 +211,21 @@ def scan_once(conn, address: str, verify_base: str, not_before: float) -> tuple[
             if msg_id:
                 seen_ids.add(msg_id)
             tokens.append(token)
-            where.append(folder)
+            where.append((folder, is_junk))
     return tokens, where
 
 
 def wait_for_token(conn, address: str, verify_base: str, not_before: float,
-                   timeout: float, interval: float = 5.0, sleep=time.sleep, clock=time.monotonic) -> tuple[str, str]:
+                   timeout: float, interval: float = 5.0, sleep=time.sleep,
+                   clock=time.monotonic) -> tuple[str, str, bool]:
+    """(token, folder, is_junk) of the one verification mail for this run."""
     deadline = clock() + timeout
     while True:
         tokens, where = scan_once(conn, address, verify_base, not_before)
         if len(tokens) > 1:
             raise MailError(f'{len(tokens)} verification mails reached {address}; expected exactly one')
         if tokens:
-            return tokens[0], where[0]
+            return tokens[0], where[0][0], where[0][1]
         if clock() >= deadline:
             raise TimeoutError(f'no verification mail to {address} within {int(timeout)}s')
         sleep(interval)
@@ -260,10 +271,12 @@ def main(argv: list[str] | None = None, connector=connect) -> int:
     try:
         if args.check_login:
             return 0
-        token, folder = wait_for_token(conn, args.address.lower(), args.verify_base,
-                                       args.not_before, args.timeout)
-        print(f'mailbox: verification mail found in {folder}', file=sys.stderr)
+        token, folder, is_junk = wait_for_token(conn, args.address.lower(), args.verify_base,
+                                                args.not_before, args.timeout)
+        # Three lines: the token, whether it came from spam, and the folder.
         print(token)
+        print('junk' if is_junk else 'normal')
+        print(folder)
         return 0
     except TimeoutError as exc:
         print(f'mailbox: {exc}', file=sys.stderr)

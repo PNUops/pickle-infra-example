@@ -41,6 +41,14 @@ def readdress(raw: bytes, new: str) -> bytes:
     return raw.replace(ADDRESS.encode(), new.encode())
 
 
+def strip_message_id(raw: bytes) -> bytes:
+    head, sep, body = raw.partition(b'\r\n\r\n')
+    lines = [line for line in head.split(b'\r\n') if not line.lower().startswith(b'message-id:')]
+    stripped = b'\r\n'.join(lines) + sep + body
+    assert b'Message-ID' not in stripped.partition(b'\r\n\r\n')[0]
+    return stripped
+
+
 def internaldate(epoch: float) -> bytes:
     return imaplib.Time2Internaldate(epoch).encode()
 
@@ -164,15 +172,15 @@ class ScanTest(unittest.TestCase):
 
     def test_finds_the_token_in_all_mail_read_only(self):
         imap = self.fake(all_mail=[(7, self.start + 3, VERIFY)])
-        token, folder = sm.wait_for_token(imap, ADDRESS, BASE, self.start, 1, sleep=lambda _: None)
+        token, folder, junk = sm.wait_for_token(imap, ADDRESS, BASE, self.start, 1, sleep=lambda _: None)
         self.assertEqual(token, TOKEN)
-        self.assertEqual(folder, '"[Gmail]/&yATMtLz0rQDVaA-"')
+        self.assertEqual((folder, junk), ('"[Gmail]/&yATMtLz0rQDVaA-"', False))
         self.assert_read_only(imap)
 
     def test_finds_the_token_in_spam(self):
         imap = self.fake(spam=[(3, self.start + 3, VERIFY)])
-        token, folder = sm.wait_for_token(imap, ADDRESS, BASE, self.start, 1, sleep=lambda _: None)
-        self.assertEqual((token, folder), (TOKEN, '"[Gmail]/&wqTTONVo-"'))
+        token, folder, junk = sm.wait_for_token(imap, ADDRESS, BASE, self.start, 1, sleep=lambda _: None)
+        self.assertEqual((token, folder, junk), (TOKEN, '"[Gmail]/&wqTTONVo-"', True))
         self.assert_read_only(imap)
 
     def test_plain_server_falls_back_to_inbox(self):
@@ -198,6 +206,24 @@ class ScanTest(unittest.TestCase):
         with self.assertRaisesRegex(sm.MailError, 'expected exactly one'):
             sm.wait_for_token(imap, ADDRESS, BASE, self.start, 1, sleep=lambda _: None)
 
+    def test_same_message_id_in_two_folders_counts_once(self):
+        imap = self.fake(all_mail=[(1, self.start + 1, VERIFY)], spam=[(5, self.start + 1, VERIFY)])
+        token, folder, junk = sm.wait_for_token(imap, ADDRESS, BASE, self.start, 1, sleep=lambda _: None)
+        self.assertEqual((token, folder, junk), (TOKEN, '"[Gmail]/&yATMtLz0rQDVaA-"', False))
+
+    def test_mail_without_message_id_is_found(self):
+        bare = strip_message_id(VERIFY)
+        imap = self.fake(all_mail=[(1, self.start + 1, bare)])
+        self.assertEqual(sm.wait_for_token(imap, ADDRESS, BASE, self.start, 1, sleep=lambda _: None)[0], TOKEN)
+
+    def test_mail_without_message_id_in_two_folders_is_ambiguous(self):
+        # Documented in scan_once: without a Message-ID a second sighting cannot
+        # be recognised, so the run fails rather than guessing.
+        bare = strip_message_id(VERIFY)
+        imap = self.fake(all_mail=[(1, self.start + 1, bare)], spam=[(5, self.start + 1, bare)])
+        with self.assertRaisesRegex(sm.MailError, 'expected exactly one'):
+            sm.wait_for_token(imap, ADDRESS, BASE, self.start, 1, sleep=lambda _: None)
+
     def test_polls_until_the_mail_arrives(self):
         imap = self.fake()
         calls = []
@@ -207,7 +233,7 @@ class ScanTest(unittest.TestCase):
             if len(calls) == 2:
                 imap.folders['"[Gmail]/&yATMtLz0rQDVaA-"'].append((9, self.start + 10, VERIFY))
 
-        token, _ = sm.wait_for_token(imap, ADDRESS, BASE, self.start, 60, sleep=arrive)
+        token, _, _ = sm.wait_for_token(imap, ADDRESS, BASE, self.start, 60, sleep=arrive)
         self.assertEqual(token, TOKEN)
         self.assertEqual(len(calls), 2)
         self.assert_read_only(imap)
@@ -269,7 +295,7 @@ class MainTest(unittest.TestCase):
             os.unlink(fh.name)
         self.assertEqual(rc, 0)
         self.assertEqual(seen['password'], 'qqqqwwwwzzzzyyyy')
-        self.assertEqual(out.strip(), TOKEN)
+        self.assertEqual(out.splitlines(), [TOKEN, 'normal', '"[Gmail]/&yATMtLz0rQDVaA-"'])
         for fragment in ('qqqq', 'yyyy', 'qqqqwwwwzzzzyyyy'):
             self.assertNotIn(fragment, out + err)
         self.assertNotIn(TOKEN, err)
