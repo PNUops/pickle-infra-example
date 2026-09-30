@@ -103,7 +103,7 @@ runbooks/         운영 절차                                    // 이 예시
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `register-image.py`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
 | 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `candidate-core-vzdump-hook.sh`, `core-pbs-monitor.py`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py`, `pbs-capacity-probe.py`, `pbs-capacity-monitor.py` |
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
-| 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh` |
+| 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh`, `smoke-signup.sh` |
 
 `deploy-console.sh`는 기본적으로 hostname이 `pickle-app`인 LXC만 받습니다. 다른
 후보 LXC에는 `CTID`와 `EXPECTED_CT_HOSTNAME`을 함께 지정합니다. 실제 hostname과
@@ -193,11 +193,27 @@ SHA와 nginx 문법·응답을 검사하고, `recover`는 health-only 상태를 
 
 스모크는 목이 아니라 살아 있는 시스템에 실제 요청을 보냅니다. `smoke-provisioning.sh`는
 DB에 직접 만든 인증된 사용자로 워크스페이스 생성, VM 신청, 관리자 승인, 프로비저닝 완료 대기,
-SSH 도달 확인, 전원 왕복, 삭제, DB 정합 검증까지 한 번에 통과시킵니다. 회원가입과 메일 인증
-경로는 이 스모크가 확인하지 않습니다(인증 메일이 실제 메일함으로 가서 토큰을 읽을 수 없습니다).
+SSH 도달 확인, 전원 왕복, 삭제, DB 정합 검증까지 한 번에 통과시킵니다.
 `smoke-http-publish.sh`, `smoke-dashboards-notify.sh`, `smoke-ssh-gateway.sh`,
-`smoke-account-ops.sh`, `smoke-web-terminal.sh`도 같은 이유로 사용자를 DB에 직접 만듭니다.
-로그인 제한 카운터는 그 사용자와 이 호스트 주소의 행만 지웁니다.
+`smoke-account-ops.sh`, `smoke-web-terminal.sh`도 사용자를 DB에 직접 만듭니다. 인증 메일이
+실제 메일함으로 가고 api는 토큰의 해시만 저장하므로, 가입 경로로 만들면 토큰을 읽을 방법이
+없기 때문입니다. 로그인 제한 카운터는 그 사용자와 이 호스트 주소의 행만 지웁니다.
+
+회원가입과 메일 인증 경로는 `smoke-signup.sh` 하나가 확인합니다. 실행마다 새 주소
+`signup-<epoch>-<난수>@example.com`으로 `POST /auth/signup`을 보내고, 운영 메일함에 도착한
+인증 메일을 IMAP(`imap.example.com:993`, SSL)으로 읽어 링크의 토큰을 꺼냅니다. 그 토큰으로
+인증한 뒤 같은 토큰의 재사용이 410으로 거절되는지, 로그인한 계정이 ACTIVE이고 약관 동의와
+개인 워크스페이스를 갖는지 확인합니다. 202 응답은 이미 있는 주소에도 똑같이 오므로 계정은
+DB에서 확인합니다. 메일함 앱 비밀번호는 볼트 파일 `smoke-mailbox/mailbox-imap.txt`에서
+읽고(`VAULT`로 볼트 위치, `PICKLE_SMOKE_IMAP_PASSWORD_FILE`로 파일 경로 변경), 파일이 없거나
+비었거나 로그인이 거절되면 계정을 만들기 전에 실패합니다. 메일함은 읽기 전용으로 열고
+`BODY.PEEK`로 가져오므로 읽음 표시도 바뀌지 않고, 이 실행의 주소로 가입 요청 뒤에 도착한
+메일만 봅니다. 실행 중 나가는 메일은 그 주소로 가는 인증 메일 한 통이고, 가입과 인증은
+관리자를 포함해 다른 누구에게도 알리지 않습니다.
+가입 주소의 도메인은 `PICKLE_SMOKE_SIGNUP_DOMAIN`(기본 `example.com`)으로 정합니다. 직접
+소유하고 그 메일이 스모크 메일함으로 라우팅되는 도메인이어야 합니다. 이 스모크는 DB에 계정을
+만드는 스모크와 달리 로그인 제한 카운터를 지우지 않으므로, 다른 스모크 직후에 돌리면 1분 창이
+지날 때까지 429를 받을 수 있습니다.
 
 스모크가 만든 계정은 끝날 때(실패 경로 포함, VM 정리 뒤) 지우거나 비활성화합니다. 이 샘플의
 주소는 소문자 예시 도메인(`@example.com`)이고, 실제 환경에서는 메일이 반송되지 않고 운영자가
