@@ -141,8 +141,12 @@ PVE와 NetBird의 기존 firewall을 유지하며, guest 정책을 우회하는 
 선택 설정 `interim_ingress`는 edge의 확인된 IPv4에서 활성 gateway owner의 campus
 TCP 24080/24443으로 들어온 연결만 `pinfra` proxy의 같은 포트로 전달합니다. Standby는
 해당 포트를 열지 않으며 proxy guest firewall은 별도로 설정해야 합니다.
-기본 실행은 사전 검사이고 실제 적용은 아직 수행하지 않았습니다. 생성된 SDN 파일을 수동으로
-편집하지 않는 부팅·rollback 절차는 [운영 네트워크 런북](runbooks/production-network.md)에 있습니다.
+선택 설정 `relay_transit`는 릴레이의 고정 IPv4에서 활성 gateway owner로 들어온
+새 TCP·UDP 연결만 guest 망으로 전달하고, API의 릴레이 동기화 포트 8080을 별도로
+허용합니다. Guest 포트 22는 차단하며, guest 연결은 `RETURN`으로 PVE VM 방화벽의
+최종 판단을 받습니다. Standby에는 이 신규 연결 예외를 만들지 않습니다.
+기본 실행은 사전 검사입니다. 생성된 SDN 파일을 수동으로 편집하지 않는 적용·부팅·rollback
+절차는 [운영 네트워크 런북](runbooks/production-network.md)에 있습니다.
 
 격리 core 도구는 Debian 13 템플릿으로 PostgreSQL 18과 Java 25 실행 환경을 준비합니다.
 새 게스트의 `eth0` MTU는 소유권 확인 직후 `/etc/network/if-pre-up.d/isolated-core-mtu`

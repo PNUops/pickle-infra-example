@@ -599,6 +599,88 @@ class ProductionNetworkTests(unittest.TestCase):
                 with self.assertRaises((AssertionError, ValueError, KeyError)):
                     validate_config(config)
 
+    def test_absent_relay_transit_keeps_existing_plan_and_guard_bytes(self):
+        import hashlib
+        mark = (0x1bd20, 0xffffffff, 0x80000000)
+        expected = {
+            ('pve-a', True): ('455cb04b488c45fa8b1117a53c9306c0a81bd655a3175a1ea16baa314029c437',
+                              'dc11a6322e96bb2675c63c22627a6f2de34d713acd078844b7db8d77b6904f5c'),
+            ('pve-b', False): ('69b6f850f2443818202db6c0eda407c8afcfaa5f306cfdb55e2d52e8ee70b3c3',
+                               '873b7c141c64c545e654f5fcd9e041de0e53047bbdc16e3ebedbef51099da108'),
+        }
+        for (node, active), (plan_hash, guard_hash) in expected.items():
+            with self.subTest(node=node):
+                plan = firewall_plan(CONFIG, node, mark, active)
+                raw = json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), plan_hash)
+                guard = nft_guard_text(CONFIG, node, mark, active, 'owned_guard').encode()
+                self.assertEqual(hashlib.sha256(guard).hexdigest(), guard_hash)
+
+    def test_relay_transit_is_owner_only_and_returns_to_guest_firewall(self):
+        config = copy.deepcopy(CONFIG)
+        config['relay_transit'] = {'source': '100.64.0.1', 'api_destination': '100.65.1.20'}
+        validate_config(config)
+        mark = (0x1bd20, 0xffffffff, 0x80000000)
+        owner = firewall_plan(config, 'pve-a', mark, True)
+        standby = firewall_plan(config, 'pve-b', mark, False)
+        base = firewall_plan(CONFIG, 'pve-a', mark, True)
+        self.assertEqual(standby, firewall_plan(CONFIG, 'pve-b', mark, False))
+        self.assertEqual(owner['ip6tables'], base['ip6tables'])
+        self.assertEqual(owner['iptables']['nat'], base['iptables']['nat'])
+        self.assertEqual(owner['iptables']['dnat'] if 'dnat' in owner['iptables'] else None,
+                         base['iptables']['dnat'] if 'dnat' in base['iptables'] else None)
+        added = [rule for rule in owner['iptables']['forward'] if
+                 rule[:6] == ['-i', 'vmbr0', '-o', 'pguest', '-s', '100.64.0.1'] or
+                 rule[:6] == ['-i', 'vmbr0', '-o', 'pinfra', '-s', '100.64.0.1']]
+        self.assertEqual(len(added), 5)
+        for protocol in ('tcp', 'udp'):
+            deny = ['-i', 'vmbr0', '-o', 'pguest', '-s', '100.64.0.1', '-d', '100.66.0.0/16',
+                    '-p', protocol, '--dport', '22', '-j', 'DROP']
+            grant = ['-i', 'vmbr0', '-o', 'pguest', '-s', '100.64.0.1', '-d', '100.66.0.0/16',
+                     '-p', protocol, '-m', 'conntrack', '--ctstate', 'NEW', '-j', 'RETURN']
+            self.assertLess(owner['iptables']['forward'].index(deny),
+                            owner['iptables']['forward'].index(grant))
+            established = ['-i', 'vmbr0', '-o', 'pguest', '-m', 'conntrack',
+                           '--ctstate', 'ESTABLISHED,RELATED', '-j', 'RETURN']
+            self.assertLess(owner['iptables']['forward'].index(deny),
+                            owner['iptables']['forward'].index(established))
+        api = ['-i', 'vmbr0', '-o', 'pinfra', '-s', '100.64.0.1', '-d', '100.65.1.20',
+               '-p', 'tcp', '--dport', '8080', '-m', 'conntrack', '--ctstate', 'NEW', '-j', 'RETURN']
+        self.assertIn(api, owner['iptables']['forward'])
+        self.assertFalse(any(rule[-1] == 'ACCEPT' for rule in owner['iptables']['forward']))
+        text = nft_guard_text(config, 'pve-a', mark, True, 'owned_guard')
+        for rule in added:
+            self.assertIn(nft_filter_rule(rule, 'ipv4'), text)
+        self.assertIn('counter return', text)
+        self.assertNotIn('counter accept', text)
+        self.assertEqual(nft_guard_text(config, 'pve-b', mark, False, 'owned_guard'),
+                         nft_guard_text(CONFIG, 'pve-b', mark, False, 'owned_guard'))
+
+    def test_relay_transit_rejects_malformed_and_wrong_boundary(self):
+        candidates = [None, {}, {'source': '100.64.0.1'},
+                      {'source': '100.64.0.1', 'api_destination': '100.65.1.20', 'port': 8080},
+                      {'source': True, 'api_destination': '100.65.1.20'},
+                      {'source': 123, 'api_destination': '100.65.1.20'},
+                      {'source': '100.64.0.2', 'api_destination': '100.65.1.20'},
+                      {'source': '100.64.0.1 ', 'api_destination': '100.65.1.20'},
+                      {'source': '100.64.0.1', 'api_destination': True},
+                      {'source': '100.64.0.1', 'api_destination': '100.65.1.21'},
+                      {'source': '100.64.0.1', 'api_destination': '100.65.0.1'}]
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                config = copy.deepcopy(CONFIG)
+                config['relay_transit'] = candidate
+                with self.assertRaises((AssertionError, ValueError, KeyError, TypeError)):
+                    validate_config(config)
+        for source in ('100.65.1.21', '100.66.1.21', '192.0.2.30', '100.64.0.30',
+                       '127.0.0.1', '198.51.100.2', '100.64.0.31', '0.0.0.0', '255.255.255.255'):
+            with self.subTest(source=source):
+                config = copy.deepcopy(CONFIG)
+                config['service_sources']['relay'] = source
+                config['relay_transit'] = {'source': source, 'api_destination': '100.65.1.20'}
+                with self.assertRaises((AssertionError, ValueError)):
+                    validate_config(config)
+
     def test_interim_dnat_hook_lifecycle_is_ipv4_only(self):
         module = load_script('production-network')
         config = copy.deepcopy(CONFIG)

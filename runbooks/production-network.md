@@ -133,6 +133,30 @@ DROP한다. FORWARD의 신규 연결 예외는 conntrack 원본 목적지와 포
 firewall과 listener는 별도로 준비해야 한다. IPv6 DNAT은 생성하지 않는다.
 설정을 제거했는데 소유 DNAT 체인이나 hook이 남으면 현재 상태 검증이 실패한다.
 
+### Relay transit (선택 설정)
+
+`/etc/pickle/production-network.json`의 선택 항목 `relay_transit`는
+`{"source":"<릴레이 WG IPv4>","api_destination":"<pinfra API IPv4>"}` 두 필드만 받는다.
+`source`는 `service_sources.relay`와 정확히 같고 guest·infra·node 관리 주소 밖의
+정규화된 단일 IPv4여야 한다. `api_destination`은 `service_sources.api`와 정확히
+같은 `pinfra` 호스트 주소여야 한다. 두 값이 다르거나 필드가 추가되면 적용 전에
+중단한다. 항목이 없으면 기존 firewall plan은 변하지 않는다.
+
+활성 gateway owner만 uplink에서 해당 `source`가 보낸 새 TCP·UDP 연결을
+`pguest` 목적지에 `RETURN`하고, 같은 출발지에서 API 목적지 TCP 8080으로 향하는
+새 연결을 따로 `RETURN`한다. TCP·UDP guest 목적지 포트 22는 일반 허용보다 먼저
+DROP한다. `RETURN`은 PVE의 VM별 NIC 방화벽을 우회하지 않으므로, 실제 backend
+포트의 허용은 VM 정책과 릴레이의 매핑·출발지 정책이 각각 담당한다. Standby는
+이 신규 연결 예외를 만들지 않는다. IPv6, DNAT, SNAT, NetBird mark는 이 항목으로
+바뀌지 않는다.
+
+이 예외는 기존 `PKL-PROD-FWD`와 priority -20의 `inet pickle_production_guard`
+모두에 동일한 계획으로 반영된다. 별도 runtime 규칙을 한 체인에만 덧붙이면 다음
+`reconcile`이 지우거나 다른 guard의 DROP에 걸린다. 변경 전에는 원래
+runtime/config/state와 gateway owner를 보호하고, 변경 뒤에는 두 hook의 규칙 순서와
+VM별 방화벽을 검증한다. Relay에서 guest로 가는 경로와 회신 route는 각 호스트의
+별도 네트워크 설정도 맞아야 하므로 이 선택 항목만으로 공개 연결 성공을 판정하지 않는다.
+
 VM별 IN/OUT 정책은 기존 `pve-firewall` backend와 플랫폼 API가 소유한다. 이 도구는
 per-VM allowlist를 만들거나 PVE/NetBird firewall을 비활성화하지 않는다. 새
 `proxmox-firewall` backend로 전환하지도 않는다.
@@ -163,11 +187,38 @@ per-VM allowlist를 만들거나 PVE/NetBird firewall을 비활성화하지 않�
 - 두 VNet은 IPv4/IPv6/ARP 이외의 EtherType을 거부한다. VLAN/QinQ trunk는 지원하지 않는다.
   VLAN-aware=false만으로 tagged frame의 firewall 우회가 차단된다고 가정하지 않는다.
 
-NetBird 재시작 후에는 node `reconcile --apply`와 운영자 관리 경로 검증을 다시 한다.
+NetBird 재시작 후에는 아래 운영 중 `reconcile --apply` 경로와 운영자 관리 경로 검증을 다시 한다.
 독립 nft guard는 legacy hook 순서 변경 중에도 유지된다. `status`는 mark/L2/priority guard
 counter를 함께 출력한다. 같은 node와 다른 node의 실제 guest로 새 IN 거부, 명시적 허용,
 OUT과 반환, IP/MAC/ARP 위조, IPv6 link-local, tagged frame을 검사하고 counter의 전후를
 기록한다. 순서를 바꾼 규칙이나 가짜 mark를 주입하는 시험은 소유한 격리 guest 경로에만 한다.
+
+## 운영 중 재적용과 guest 수명주기
+
+운영 중 소유 규칙만 다시 적용할 때는 `systemctl restart example-production-network.service`나
+`systemctl stop example-production-network.service`를 사용하지 않는다. 이 unit은
+`pve-guests.service`의 `Requires`·`After` 대상이다. Unit 재시작은 guest service의
+`stopall`·`startall`을 동반할 수 있고, `onboot=0`으로 수동 시작한 guest는
+`startall` 뒤에도 중지된 채 남을 수 있다. 이 의존성은 부팅 시 네트워크 guard가
+준비되기 전에 guest를 시작하지 않기 위한 것이므로 제거하지 않는다. VNet의
+if-up hook이 요청하는 service 재시작에도 같은 guest 영향이 있을 수 있다.
+
+재적용 전에는 설치된 unit의 의존성과 현재 gateway owner, committed state의
+`pending=false`, config·owner 및 관리 네트워크 파일의 hash, 각 guest의 실행·
+`onboot` 상태와 관리 SSH·HTTPS 경로를 읽고 기록한다. 예상과 다르거나 다른
+네트워크 변경이 진행 중이면 중단한다. 일치할 때 설치된 wrapper를 직접 실행한다.
+
+```bash
+bash /usr/local/libexec/example-production-network/apply-production-network.sh \
+  reconcile --config /etc/pickle/production-network.json --apply
+```
+
+이 명령은 unit의 active 상태를 바꾸지 않고 현재 owner·baseline·guard를 검사해
+소유 규칙을 재생성한다. 이후 `status`와 관리 경로, guest 정책·회신 경로를 다시
+확인한다. 부팅 전용 `--startup-wait-seconds`는 수동 재적용에 넣지 않는다.
+의도적으로 service를 stop/restart하거나 host를 재부팅할 때는 guest 중단 시간,
+`onboot=0`을 포함한 guest별 재시작 순서, API·proxy 등 수동 service 복구,
+관리 경로와 사용자 트래픽 검증, 실패 시 원복 절차를 먼저 확정한다.
 
 ## 부팅과 재적용
 

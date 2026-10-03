@@ -82,6 +82,25 @@ def validate_config(config):
         host_addresses = {ipaddress.IPv4Address(value) for node in config["nodes"].values()
                           for key, value in node.items() if key in ("campus", "mesh", "bmc_address") and value}
         assert source not in host_addresses
+    if "relay_transit" in config:
+        transit = config["relay_transit"]
+        assert isinstance(transit, dict) and set(transit) == {"source", "api_destination"}
+        assert all(type(transit[key]) is str for key in ("source", "api_destination"))
+        source = ipaddress.IPv4Address(transit["source"])
+        destination = ipaddress.IPv4Address(transit["api_destination"])
+        assert str(source) == transit["source"] and str(destination) == transit["api_destination"]
+        infra = ipaddress.IPv4Network(config["vnets"]["pinfra"]["cidr"])
+        assert source == ipaddress.IPv4Address(config["service_sources"]["relay"])
+        assert all(source not in network for network in networks)
+        assert not (source.is_unspecified or source.is_multicast or source.is_loopback
+                    or source.is_link_local or source == ipaddress.IPv4Address("255.255.255.255"))
+        host_addresses = {ipaddress.IPv4Address(value) for node in config["nodes"].values()
+                          for key, value in node.items() if key in ("campus", "mesh", "bmc_address") and value}
+        assert source not in host_addresses
+        assert destination == ipaddress.IPv4Address(config["service_sources"]["api"])
+        assert destination in infra and destination not in (
+            infra.network_address, infra.broadcast_address,
+            ipaddress.IPv4Address(config["vnets"]["pinfra"]["gateway"]))
     return config
 
 
@@ -188,6 +207,12 @@ def firewall_plan(config, node_name, accept_mark, active):
     for host in config["nodes"].values():
         for destination in (host["campus"], host["mesh"]):
             v4["forward"].append(["-i", "pguest", "-d", destination, "-j", "DROP"])
+    transit = config.get("relay_transit")
+    if transit is not None and active:
+        for protocol in ("tcp", "udp"):
+            v4["forward"].append(["-i", uplink, "-o", "pguest", "-s", transit["source"],
+                                  "-d", config["vnets"]["pguest"]["cidr"],
+                                  "-p", protocol, "--dport", "22", "-j", "DROP"])
     for name in config["vnets"]:
         v4["forward"].append(["-i", uplink, "-o", name, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"])
         if active:
@@ -199,6 +224,15 @@ def firewall_plan(config, node_name, accept_mark, active):
                                   "-d", ingress["destination"], "-p", "tcp", "--dport", str(port),
                                   "-m", "conntrack", "--ctstate", "NEW", "--ctorigdst", node["campus"],
                                   "--ctorigdstport", str(port), "-j", "RETURN"])
+    if transit is not None and active:
+        source = transit["source"]
+        guests = config["vnets"]["pguest"]["cidr"]
+        for protocol in ("tcp", "udp"):
+            v4["forward"].append(["-i", uplink, "-o", "pguest", "-s", source, "-d", guests,
+                                  "-p", protocol, "-m", "conntrack", "--ctstate", "NEW", "-j", "RETURN"])
+        v4["forward"].append(["-i", uplink, "-o", "pinfra", "-s", source,
+                              "-d", transit["api_destination"], "-p", "tcp", "--dport", "8080",
+                              "-m", "conntrack", "--ctstate", "NEW", "-j", "RETURN"])
     v4["forward"].append(["-i", "pguest", "-o", "pinfra", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"])
     for source in ("proxy", "sshgw", "relay"):
         v4["forward"].append(["-i", "pinfra", "-o", "pguest", "-s", config["service_sources"][source], "-j", "RETURN"])
