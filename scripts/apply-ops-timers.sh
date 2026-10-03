@@ -35,6 +35,31 @@ for f in /etc/cron.d/pickle-db-backup /etc/cron.d/pickle-health-check; do
 done
 ls -1 "$BK" 2>/dev/null || echo "  (no cron.d files present — already migrated)"
 
+# The scheduled health snapshot loads this host's DNS settings.
+install -d -m 0755 /etc/pickle
+if [ ! -f /etc/pickle/host.env ]; then
+  printf '%s\n' '# Host-specific DNS health settings' > /etc/pickle/host.env
+  chmod 644 /etc/pickle/host.env
+fi
+
+# DNS health settings belong to this environment. Append only missing keys;
+# an installation never changes an existing transition or rollback mode.
+for key in PLATFORM_ROOT_DOMAIN PLATFORM_DNS_EXPECTED_NS PLATFORM_DNS_MODE PLATFORM_DNS_MANUAL_FQDNS; do
+  value=${!key:-}
+  if [ -n "$value" ] && ! grep -q "^${key}=" /etc/pickle/host.env; then
+    if [[ ! "$value" =~ ^[a-zA-Z0-9._\ -]+$ ]]; then
+      echo "invalid DNS health value for $key" >&2
+      exit 1
+    fi
+    printf '%s="%s"\n' "$key" "$value" >> /etc/pickle/host.env
+    echo "   added $key to /etc/pickle/host.env"
+  fi
+done
+if ! grep -q '^PLATFORM_ROOT_DOMAIN=' /etc/pickle/host.env; then
+  echo "   NOTE platform-root DNS stays unarmed. Configure PLATFORM_ROOT_DOMAIN and"
+  echo "        PLATFORM_DNS_EXPECTED_NS in /etc/pickle/host.env after delegation."
+fi
+
 echo "== install unit files"
 for u in "$SRC_UNITS"/*; do
   install -m 0644 "$u" "$UNIT_DIR/$(basename "$u")"

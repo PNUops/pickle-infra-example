@@ -6,7 +6,7 @@
 # gateway + WireGuard tunnel, the Let's Encrypt certificates and their renewal
 # machinery, the wildcard certificate row against the installed material, DB
 # backups, the dev domain end-to-end, and public DNS for the main domain and
-# the platform root (wildcard record and name servers).
+# the platform root (exact domain records, apex and name servers).
 #
 # Prints an aligned OK/WARN/FAIL/SKIP table and a Korean summary. Exits non-zero
 # if ANY check is FAIL (WARN and SKIP do not fail the run). Every probe is
@@ -52,21 +52,18 @@ PGCONN_WARN="${PGCONN_WARN:-80}"                              # pickle_dev conne
 PCT_TIMEOUT="${PCT_TIMEOUT:-20}"
 STATE_DIR="${PICKLE_OPS_STATE_DIR:-/var/lib/pickle-ops}"
 DOMAIN="${PICKLE_DEV_DOMAIN:-https://pickle.pusan.ac.kr}"
-# The platform root users publish under. Its wildcard A record and its name
-# servers are checked below; the certificate that fronts it is a certbot
-# lineage named after it, compared to the certificates row below.
-#
-# Deliberately has NO default. Those two checks assert that the root is served
-# from a zone this project administers, which is not true of a root whose
-# delegation has not moved yet, so a default would make them fail on a host
-# where nothing is wrong. Unset means the DNS checks report SKIP; setting it in
-# the host environment file is the step that arms them, and that step belongs
-# at the point the delegation actually moves.
+# Setting the root arms its DNS checks after delegation. There is no default.
+# Its wildcard certificate is checked independently by the lineage walk below.
 PLATFORM_ROOT_DOMAIN="${PLATFORM_ROOT_DOMAIN:-}"
-# Name resolved by the wildcard probe. Empty means a random label under the
-# root, which is what a wildcard record answers to; when the wildcard record is
-# later removed in favour of per-publication records, point this at a name that
-# is actually published so the check keeps asserting something real.
+# explicit requires unregistered names to be NXDOMAIN. wildcard is only for a
+# transition or rollback while the fallback A set is deliberately installed.
+PLATFORM_DNS_MODE="${PLATFORM_DNS_MODE:-explicit}"
+# Exact nameservers from this root's managed zone, whitespace-separated. A
+# provider suffix alone cannot distinguish a different zone in the same cloud.
+PLATFORM_DNS_EXPECTED_NS="${PLATFORM_DNS_EXPECTED_NS:-}"
+# Operator-owned ingress names outside the domain database, whitespace-separated.
+PLATFORM_DNS_MANUAL_FQDNS="${PLATFORM_DNS_MANUAL_FQDNS:-}"
+# Optional reproducible probe name; it must be an unregistered single label.
 PLATFORM_DNS_PROBE_FQDN="${PLATFORM_DNS_PROBE_FQDN:-}"
 # The address the public names must resolve to: this host's public ingress.
 # Shared by the main-domain and the platform-root DNS checks.
@@ -502,36 +499,14 @@ else
   else rec "dns:main" FAIL "$dns_host → $dns_got (expected $dns_expect)"; fi
 fi
 
-# ---- 14. platform root: wildcard record and name servers --------------------
-# The platform root's zone is administered by us (Cloud DNS), and every user
-# subdomain resolves through its wildcard A record straight to this host's
-# ingress, with no proxy in between. pve-node has no hosts entry for the root,
-# so unlike the main-domain probe this one is real public DNS. A random label
-# is what a wildcard answers to; a name that is actually published is used
-# instead once PLATFORM_DNS_PROBE_FQDN is set (see the variable).
-if [ -z "$PLATFORM_ROOT_DOMAIN" ]; then
-  rec "dns:wildcard" SKIP "PLATFORM_ROOT_DOMAIN unset — the platform root is not yet served from a zone we administer"
-  rec "dns:ns" SKIP "PLATFORM_ROOT_DOMAIN unset — no delegation to assert"
-elif ! command -v dig >/dev/null 2>&1; then
-  rec "dns:wildcard" WARN "dig not installed — platform-root DNS unverified"
-  rec "dns:ns" WARN "dig not installed — platform-root name servers unverified"
+# ---- 14. platform root: explicit records and exact delegation ----------------
+# shellcheck source=scripts/lib/platform-dns-health.sh
+if ! . "$(dirname "$0")/lib/platform-dns-health.sh"; then
+  rec dns:platform FAIL "cannot load the platform DNS health helper"
+elif ! declare -F check_platform_dns >/dev/null; then
+  rec dns:platform FAIL "platform DNS health helper has no check_platform_dns function"
 else
-  probe_fqdn="${PLATFORM_DNS_PROBE_FQDN:-probe-${RANDOM}.${PLATFORM_ROOT_DOMAIN}}"
-  wc_got=$(dig +short +time=3 +tries=1 "$probe_fqdn" A 2>/dev/null | grep -E '^[0-9.]+$' | sort | tr '\n' ' ' | sed 's/ $//')
-  if [ "$wc_got" = "$dns_expect" ]; then rec "dns:wildcard" OK "$probe_fqdn → $wc_got"
-  elif [ -z "$wc_got" ]; then rec "dns:wildcard" FAIL "$probe_fqdn has no A record (expected $dns_expect) — user subdomains are dark"
-  else rec "dns:wildcard" FAIL "$probe_fqdn → $wc_got (expected $dns_expect)"; fi
-
-  # The zone must be delegated to Cloud DNS: certbot's DNS-01 renewal writes
-  # its challenge there, so a delegation moved anywhere else (the registrar's
-  # own parking servers after a lapse, a leftover set) breaks the next renewal
-  # weeks before anything else notices. WARN, not FAIL: the wildcard probe
-  # above already says whether names resolve today.
-  ns_got=$(dig +short +time=3 +tries=1 "$PLATFORM_ROOT_DOMAIN" NS 2>/dev/null | sed 's/\.$//' | sort | tr '\n' ' ' | sed 's/ $//')
-  ns_bad=$(printf '%s\n' "$ns_got" | tr ' ' '\n' | grep -v '^$' | grep -v 'googledomains\.com$' || true)
-  if [ -z "$ns_got" ]; then rec "dns:ns" WARN "$PLATFORM_ROOT_DOMAIN has no NS answer"
-  elif [ -n "$ns_bad" ]; then rec "dns:ns" WARN "$PLATFORM_ROOT_DOMAIN delegated outside Cloud DNS: $ns_got"
-  else rec "dns:ns" OK "$PLATFORM_ROOT_DOMAIN → $ns_got"; fi
+  check_platform_dns
 fi
 
 # ---- output -----------------------------------------------------------------

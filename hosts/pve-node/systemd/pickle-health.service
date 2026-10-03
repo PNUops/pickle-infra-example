@@ -5,6 +5,7 @@ After=pve-guests.service
 OnFailure=pickle-ops-failure@%n.service
 
 [Service]
+EnvironmentFile=/etc/pickle/host.env
 Type=oneshot
 # Interpreter-invoked for both the wrapper and the check itself — see the
 # comment in pickle-db-backup.service. The snapshot never changes service

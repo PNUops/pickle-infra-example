@@ -21,7 +21,7 @@
 
 ```
 pickle.example.ac.kr ──┐                   외부 릴레이 (오프캠퍼스 SSH)
-*.example.dev        ──┤ :80/:443           HAProxy(send-proxy-v2)
+<name>.example.dev   ──┤ :80/:443           HAProxy(send-proxy-v2)
                        ▼                      │ 캠퍼스발 아웃바운드 WireGuard
 pve-node (Proxmox VE) ────────────────────────────┘
  ├─ vmbr1 (인프라)
@@ -260,6 +260,17 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 `gpu-passthrough.md`(GPU 패스스루 — Resource Mapping 생성, 토큰 최소 권한, VM 모양(`rombar=0`),
 붙이기·떼기·인계, 카드 상태 확인과 손실 대응, 시험 게스트 정리)를 담았습니다. 나머지 재구축과 복구 절차는 비공개 레포지토리에 둡니다.
 
+## 플랫폼 DNS 점검
+
+VM 공개 이름은 개별 A 레코드로 ingress를 가리킵니다. 와일드카드 인증서는 DNS-01로
+별도 갱신합니다. `health-check.sh`는 apex, 등록된 VM 이름, 수동 ingress 이름과 정확한
+NS 위임을 확인하고 미등록 이름에는 NXDOMAIN을 요구합니다.
+
+`/etc/pickle/host.env`의 `PLATFORM_ROOT_DOMAIN`과 `PLATFORM_DNS_EXPECTED_NS`로
+검사를 설정합니다. `PLATFORM_DNS_MODE` 기본값은 `explicit`이며 전환과 롤백 중에는
+`wildcard`를 사용합니다. DB 외부에서 관리하는 이름은 `PLATFORM_DNS_MANUAL_FQDNS`에
+기록합니다. 설정과 복구 순서는 [플랫폼 DNS 런북](runbooks/platform-dns.md)에 있습니다.
+
 ## 검증
 
 ```bash
@@ -289,13 +300,16 @@ DB 백업 테스트는 PBS 응답을 대신하는 메모리 객체로 snapshot �
 ## 무엇을 바꿨나
 
 원본에서 이 레포지토리로 옮기며 치환한 값입니다. 아래는 전부 실제 값이 아닙니다.
-합성 로그인 시험 도메인은 `staging.example.com`으로 치환했습니다. 그 밖의 기존
-서비스 도메인은 플랫폼이 사용하는 이름을 유지합니다.
+합성 로그인 시험 도메인은 `staging.example.com`으로 치환했습니다. 플랫폼 DNS 런북의
+도메인과 NS 설정은 아래 표의 예시 이름을 사용합니다. 그 밖의 기존 서비스 도메인은
+플랫폼이 사용하는 이름을 유지합니다.
 
 | 항목 | 이 레포지토리의 값 |
 |---|---|
 | 호스트 LAN 주소·게이트웨이 | `192.0.2.10/24`, `192.0.2.1` |
 | 리버스 프록시 공인 IP | `203.0.113.10` |
+| 플랫폼 DNS 런북의 루트와 수동 ingress | `example.dev`, `staging.example.dev` |
+| 플랫폼 DNS 런북의 NS 집합 | `ns1.example.test`부터 `ns4.example.test`까지 |
 | 패스스루 대상 IP | `203.0.113.20` |
 | 외부 릴레이 공인 IP | `198.51.100.10` |
 | 관리 SSH 포트 | `22` |
