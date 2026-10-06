@@ -87,11 +87,17 @@ class Config:
     terminal_unit_file: str
     terminal_unit_sha256: str
     state_dir: str
+    # Optional, one-host SSH transit ingress for a staged private listener.
+    ssh_transit_ingress_source: str | None = None
+    ssh_transit_port: int | None = None
 
     @classmethod
     def load(cls, path: Path) -> 'Config':
         value = json.loads(path.read_text())
-        if not isinstance(value, dict) or set(value) != {field.name for field in fields(cls)}:
+        optional = {'ssh_transit_ingress_source', 'ssh_transit_port'}
+        required = {field.name for field in fields(cls)} - optional
+        if (not isinstance(value, dict) or not required <= set(value) or
+                not set(value) <= required | optional):
             raise BootstrapError('Configuration must contain exactly the documented fields')
         result = cls(**value)
         result.validate()
@@ -116,6 +122,25 @@ class Config:
                 (network.network_address, network.broadcast_address) for address in addresses):
             raise BootstrapError('Service addresses must be distinct usable addresses in the subnet')
         ipaddress.IPv4Address(self.nameserver)
+        if (self.ssh_transit_ingress_source is None) != (self.ssh_transit_port is None):
+            raise BootstrapError('SSH transit source and port must be supplied together')
+        if self.ssh_transit_port is not None:
+            if type(self.ssh_transit_port) is not int or not 1024 <= self.ssh_transit_port <= 65535:
+                raise BootstrapError('SSH transit port must be one explicit unprivileged TCP port')
+            if self.ssh_transit_port in (8082, 8083, 9443, 8006):
+                raise BootstrapError('SSH transit port collides with a service or node-management port')
+            source_text = self.ssh_transit_ingress_source
+            if not isinstance(source_text, str) or '/' in source_text:
+                raise BootstrapError('SSH transit source must be one IPv4 address, not a CIDR')
+            try:
+                source = ipaddress.IPv4Address(source_text)
+            except ipaddress.AddressValueError as error:
+                raise BootstrapError('Invalid SSH transit source IPv4 address') from error
+            if (str(source) != source_text or source in network or
+                    source in addresses or source == ipaddress.IPv4Address(self.nameserver) or
+                    source.is_unspecified or source.is_multicast or source.is_loopback or
+                    source.is_link_local or source.is_reserved):
+                raise BootstrapError('SSH transit source must be one external infrastructure peer')
         for name in ('proxy_ctid', 'sshgw_ctid', 'api_ctid'):
             value = getattr(self, name)
             if type(value) is not int or not 100 <= value <= 999:
@@ -396,6 +421,10 @@ def firewall(c: Config, role: str) -> str:
     else:
         accepts = (f'ip saddr {c.proxy_ip} tcp dport 8082 accept\n'
                    f'        ip saddr {c.api_ip} tcp dport 8083 accept')
+        if c.ssh_transit_port is not None:
+            c.validate()
+            accepts += (f'\n        ip saddr {c.ssh_transit_ingress_source} '
+                        f'ip daddr {c.sshgw_ip} tcp dport {c.ssh_transit_port} accept')
     return f'''add table inet isolated_services
 flush table inet isolated_services
 table inet isolated_services {{

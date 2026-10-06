@@ -38,6 +38,115 @@ def load_script(name):
 
 
 class ProductionNetworkTests(unittest.TestCase):
+    def test_public_ssh_transit_is_an_exact_owner_only_dnat_and_forward(self):
+        config = copy.deepcopy(CONFIG)
+        config['public_ssh_transit'] = {
+            'source': '192.0.2.10', 'destination': '100.65.1.30', 'port': 2224}
+        validate_config(config)
+        mark = (0x1bd20, 0xffffffff, 0x80000000)
+        owner = firewall_plan(config, 'pve-a', mark, True)
+        standby = firewall_plan(config, 'pve-b', mark, False)
+        expected_standby = firewall_plan(CONFIG, 'pve-b', mark, False)
+        expected_standby['iptables']['dnat'] = []
+        expected_standby['iptables']['input'].append(
+            ['-d', '192.0.2.31', '-p', 'tcp', '--dport', '2224', '-j', 'DROP'])
+        self.assertEqual(standby, expected_standby)
+        self.assertEqual(owner['iptables']['dnat'], [[
+            '-i', 'vmbr0', '-s', '192.0.2.10', '-d', '192.0.2.30',
+            '-p', 'tcp', '--dport', '2224', '-j', 'DNAT',
+            '--to-destination', '100.65.1.30:2224']])
+        expected = ['-i', 'vmbr0', '-o', 'pinfra', '-s', '192.0.2.10',
+                    '-d', '100.65.1.30', '-p', 'tcp', '--dport', '2224',
+                    '-m', 'conntrack', '--ctstate', 'NEW',
+                    '--ctorigdst', '192.0.2.30', '--ctorigdstport', '2224', '-j', 'RETURN']
+        self.assertIn(expected, owner['iptables']['forward'])
+        self.assertIn(['-d', '192.0.2.30', '-p', 'tcp', '--dport', '2224', '-j', 'DROP'],
+                      owner['iptables']['input'])
+        guard = nft_guard_text(config, 'pve-a', mark, True, 'owned_guard')
+        self.assertIn('ip saddr 192.0.2.10 ip daddr 100.65.1.30', guard)
+        self.assertIn('ct original ip daddr 192.0.2.30', guard)
+        self.assertIn('ct original proto-dst 2224 counter return', guard)
+        standby_guard = nft_guard_text(config, 'pve-b', mark, False, 'owned_guard')
+        self.assertIn('ip daddr 192.0.2.31 meta l4proto tcp tcp dport { 2224 } counter drop',
+                      standby_guard)
+        self.assertNotIn('ct original proto-dst 2224 counter return', standby_guard)
+
+    def test_public_ssh_transit_rejects_broad_or_wrong_endpoints(self):
+        valid = {'source': '192.0.2.10', 'destination': '100.65.1.30', 'port': 2224}
+        changes = ({'source': '100.65.1.40'}, {'source': '192.0.2.30'},
+                   {'source': '192.0.2.10/32'}, {'destination': '100.65.1.20'},
+                   {'destination': '100.66.1.30'}, {'port': 22}, {'port': True},
+                   {'port': 8006}, {'unknown': 'value'})
+        for change in changes:
+            config = copy.deepcopy(CONFIG)
+            config['public_ssh_transit'] = {**valid, **change}
+            with self.subTest(change=change), self.assertRaises((AssertionError, ValueError)):
+                validate_config(config)
+
+    def test_public_ssh_transit_coexists_with_existing_optional_routes(self):
+        config = copy.deepcopy(CONFIG)
+        config['interim_ingress'] = {'source': '192.0.2.11', 'destination': '100.65.1.10'}
+        config['relay_transit'] = {'source': '100.64.0.1', 'api_destination': '100.65.1.20'}
+        config['public_ssh_transit'] = {
+            'source': '192.0.2.10', 'destination': '100.65.1.30', 'port': 2224}
+        validate_config(config)
+        mark = (0x1bd20, 0xffffffff, 0x80000000)
+        owner = firewall_plan(config, 'pve-a', mark, True)
+        self.assertEqual([row[row.index('--dport') + 1] for row in owner['iptables']['dnat']],
+                         ['24080', '24443', '2224'])
+        self.assertIn(['-i', 'vmbr0', '-o', 'pinfra', '-s', '100.64.0.1',
+                       '-d', '100.65.1.20', '-p', 'tcp', '--dport', '8080',
+                       '-m', 'conntrack', '--ctstate', 'NEW', '-j', 'RETURN'],
+                      owner['iptables']['forward'])
+        standby = firewall_plan(config, 'pve-b', mark, False)
+        self.assertEqual(standby['iptables']['dnat'], [])
+        self.assertIn(['-d', '192.0.2.31', '-p', 'tcp', '--dport', '2224', '-j', 'DROP'],
+                      standby['iptables']['input'])
+        self.assertFalse(any('2224' in row for row in standby['iptables']['forward']))
+
+    def test_ssh_only_commit_validates_its_owned_dnat_on_owner_and_standby(self):
+        module = load_script('production-network')
+        config = copy.deepcopy(CONFIG)
+        config['public_ssh_transit'] = {
+            'source': '192.0.2.10', 'destination': '100.65.1.30', 'port': 2224}
+        mark = (0x1bd20, 0xffffffff, 0x80000000)
+        for node, active in (('pve-a', True), ('pve-b', False)):
+            plan = firewall_plan(config, node, mark, active)
+
+            def run(command, **_kwargs):
+                if command[:4] == ['ip', '-j', '-4', 'address']:
+                    vnet = command[-1]
+                    addresses = [{'local': config['vnets'][vnet]['gateway']}] if active else []
+                    return subprocess.CompletedProcess(command, 0, json.dumps([{'addr_info': addresses}]), '')
+                binary, _table_flag, table, operation, chain = command[:5]
+                for name, (candidate_table, hook) in module.HOOKS.items():
+                    if candidate_table != table or name not in plan[binary]:
+                        continue
+                    if chain == hook:
+                        output = f'-A {hook} -m comment --comment {module.COMMENT} -j {module.CHAINS[name]}\n'
+                        return subprocess.CompletedProcess(command, 0, output, '')
+                    if chain == module.CHAINS[name]:
+                        output = ''.join(f'-A {chain} -j RETURN\n' for _ in range(len(plan[binary][name]) + 1))
+                        return subprocess.CompletedProcess(command, 0, output, '')
+                raise AssertionError(command)
+
+            def sysctl(key):
+                if key == 'net.ipv4.ip_forward':
+                    return '1' if active else '0'
+                return '0' if key.endswith('autoconf') or key == 'net.ipv6.conf.all.forwarding' else '1'
+
+            with self.subTest(node=node), patch.object(module, 'cluster_check'), \
+                 patch.object(module, 'mesh_profile', return_value={'mtu': 1420}), \
+                 patch.object(module, 'check_links'), patch.object(module, 'guest_firewall_check'), \
+                 patch.object(module, 'accept_mark', return_value=mark), \
+                 patch.object(module, 'guard_fingerprints', return_value={}), \
+                 patch.object(module.Path, 'read_text', return_value=json.dumps(
+                     {'cluster': config['cluster'], 'zone': config['zone'], 'owner': 'pve-a'})), \
+                 patch.object(module, 'sysctl', side_effect=sysctl), patch.object(module, 'run', side_effect=run), \
+                 patch.object(module, 'assert_no_interim_dnat') as absent:
+                module.validate_current(config, node, {'accept_mark': list(mark), 'guard_fingerprints': {}})
+                absent.assert_not_called()
+
     def test_boot_readiness_waits_for_typed_absences_without_reconciling(self):
         module = load_script('production-network')
         now = [0.0]

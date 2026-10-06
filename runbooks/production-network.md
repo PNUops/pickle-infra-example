@@ -133,6 +133,35 @@ DROP한다. FORWARD의 신규 연결 예외는 conntrack 원본 목적지와 포
 firewall과 listener는 별도로 준비해야 한다. IPv6 DNAT은 생성하지 않는다.
 설정을 제거했는데 소유 DNAT 체인이나 hook이 남으면 현재 상태 검증이 실패한다.
 
+### 공개 SSH 중계 (선택 설정)
+
+`/etc/pickle/production-network.json`의 `public_ssh_transit`는 `source`,
+`destination`, `port` 세 필드를 받는다. `source`는 확인한 edge 출발지의
+정규화된 단일 IPv4이며 guest 대역과 node campus/mesh/BMC 주소 밖에 있어야
+한다. `destination`은 `service_sources.sshgw`와 같은 `pinfra` 호스트
+주소다. `port`는 private SSH 중계 경로의 TCP 2224다. 예시 형식은
+`{"source":"192.0.2.10","destination":"100.65.1.30","port":2224}`다.
+이 항목이 없으면 SSH 중계 예외를 만들지 않는다.
+
+활성 gateway owner는 정확한 source와 자기 campus 목적지의 TCP 2224만
+`PKL-PROD-DNAT`에서 SSH gateway의 같은 포트로 전달한다. Host INPUT은
+원래 campus 목적지의 이 포트를 DROP한다. `PKL-PROD-FWD`와 priority
+-20 `inet pickle_production_guard`는 source, guest 목적지, TCP 2224,
+conntrack 원본 campus 목적지·포트가 모두 맞는 새 연결에만 `RETURN`을
+렌더한다. Standby에는 campus TCP 2224 INPUT DROP과 비어 있는 소유 DNAT
+체인을 렌더하고 FORWARD 예외는 만들지 않는다. DNAT 체인의 hook은 유지되지만
+안에는 마지막 RETURN만 있으며 주소나 포트를 전달하지 않는다.
+IPv6, NetBird mark, 일반 guest 포트와 기존 relay 경로는 유지한다.
+
+이 설정은 host 방화벽 소유 범위만 다룬다. edge private receiver,
+SSH gateway listener/input 규칙, 회신 route, 사용자 SSH host key와
+공개 relay 백엔드는 각기 별도 소유자다. 실제 전환 전 두 guest 준비 상태와
+단일 writer를 확인하고, 생성된 legacy/nft 규칙과 PVE guest firewall의
+최종 판단을 읽는다. 준비 파일을 설치해도 이 항목만으로 외부 SSH 경로가
+변하거나 운영 서비스가 시작되지는 않는다.
+Private receiver와 PROXY-required listener의 unit 생성, 파일 소유권 및 조건부
+원복은 [SSH 중계 런북](ssh-transit.md)에 있다.
+
 ### Relay transit (선택 설정)
 
 `/etc/pickle/production-network.json`의 선택 항목 `relay_transit`는

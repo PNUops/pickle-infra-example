@@ -82,6 +82,25 @@ def validate_config(config):
         host_addresses = {ipaddress.IPv4Address(value) for node in config["nodes"].values()
                           for key, value in node.items() if key in ("campus", "mesh", "bmc_address") and value}
         assert source not in host_addresses
+    if "public_ssh_transit" in config:
+        transit = config["public_ssh_transit"]
+        assert isinstance(transit, dict) and set(transit) == {"source", "destination", "port"}
+        assert type(transit["source"]) is str and type(transit["destination"]) is str
+        source = ipaddress.IPv4Address(transit["source"])
+        destination = ipaddress.IPv4Address(transit["destination"])
+        assert str(source) == transit["source"] and str(destination) == transit["destination"]
+        assert type(transit["port"]) is int and transit["port"] == 2224
+        infra = ipaddress.IPv4Network(config["vnets"]["pinfra"]["cidr"])
+        assert destination == ipaddress.IPv4Address(config["service_sources"]["sshgw"])
+        assert destination in infra and destination not in (
+            infra.network_address, infra.broadcast_address,
+            ipaddress.IPv4Address(config["vnets"]["pinfra"]["gateway"]))
+        assert source != destination and all(source not in network for network in networks)
+        assert not (source.is_unspecified or source.is_multicast or source.is_loopback
+                    or source.is_link_local or source == ipaddress.IPv4Address("255.255.255.255"))
+        host_addresses = {ipaddress.IPv4Address(value) for node in config["nodes"].values()
+                          for key, value in node.items() if key in ("campus", "mesh", "bmc_address") and value}
+        assert source not in host_addresses
     if "relay_transit" in config:
         transit = config["relay_transit"]
         assert isinstance(transit, dict) and set(transit) == {"source", "api_destination"}
@@ -164,7 +183,8 @@ def firewall_plan(config, node_name, accept_mark, active):
     node = config["nodes"][node_name]
     peer = next(value for name, value in config["nodes"].items() if name != node_name)
     uplink, mesh = config["uplink"], config["mesh_interface"]
-    v4 = {name: [] for name in CHAINS if name != "dnat" or "interim_ingress" in config}
+    v4 = {name: [] for name in CHAINS if name != "dnat" or
+          "interim_ingress" in config or "public_ssh_transit" in config}
     v6 = {name: [] for name in CHAINS if name not in ("nat", "dnat")}
     # Admit only the intended encrypted VTEP before host INPUT policy is evaluated.
     local_vxlan = ["-p", "udp", "--dport", "4789", "-m", "addrtype", "--dst-type", "LOCAL"]
@@ -200,6 +220,15 @@ def firewall_plan(config, node_name, accept_mark, active):
                 v4["dnat"].append(["-i", uplink, "-s", ingress["source"], "-d", node["campus"],
                                    "-p", "tcp", "--dport", str(port), "-j", "DNAT",
                                    "--to-destination", f'{ingress["destination"]}:{port}'])
+    ssh_transit = config.get("public_ssh_transit")
+    if ssh_transit is not None:
+        port = str(ssh_transit["port"])
+        v4["input"].append(["-d", node["campus"], "-p", "tcp", "--dport", port, "-j", "DROP"])
+    if ssh_transit is not None and active:
+        port = str(ssh_transit["port"])
+        v4["dnat"].append(["-i", uplink, "-s", ssh_transit["source"],
+                           "-d", node["campus"], "-p", "tcp", "--dport", port,
+                           "-j", "DNAT", "--to-destination", f'{ssh_transit["destination"]}:{port}'])
     v6["input"] += [["-i", name, "-j", "DROP"] for name in config["vnets"]]
     for family in (v4, v6):
         family["forward"] += [["-i", "pguest", "-o", "pguest", "-j", "RETURN"],
@@ -224,6 +253,12 @@ def firewall_plan(config, node_name, accept_mark, active):
                                   "-d", ingress["destination"], "-p", "tcp", "--dport", str(port),
                                   "-m", "conntrack", "--ctstate", "NEW", "--ctorigdst", node["campus"],
                                   "--ctorigdstport", str(port), "-j", "RETURN"])
+    if ssh_transit is not None and active:
+        port = str(ssh_transit["port"])
+        v4["forward"].append(["-i", uplink, "-o", "pinfra", "-s", ssh_transit["source"],
+                              "-d", ssh_transit["destination"], "-p", "tcp", "--dport", port,
+                              "-m", "conntrack", "--ctstate", "NEW", "--ctorigdst", node["campus"],
+                              "--ctorigdstport", port, "-j", "RETURN"])
     if transit is not None and active:
         source = transit["source"]
         guests = config["vnets"]["pguest"]["cidr"]
