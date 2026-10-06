@@ -487,7 +487,7 @@ def validate_current(config, node, state):
     assert sysctl("net.ipv4.ip_forward") == ("1" if active else "0")
     assert sysctl("net.ipv6.conf.all.forwarding") == "0"
     plan = firewall_plan(config, node, tuple(state["accept_mark"]), active)
-    if "interim_ingress" not in config:
+    if "dnat" not in plan["iptables"]:
         assert_no_interim_dnat()
     for name, specification in config["vnets"].items():
         rows = json.loads(run(["ip", "-j", "-4", "address", "show", "dev", name]).stdout)

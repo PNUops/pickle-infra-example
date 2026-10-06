@@ -100,6 +100,40 @@ class IsolatedServicesTest(unittest.TestCase):
                 with self.assertRaises(service.BootstrapError):
                     bad.validate()
 
+    def test_optional_ssh_transit_accepts_one_external_host_and_old_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / 'config.json'
+            old = asdict(config())
+            old.pop('ssh_transit_ingress_source')
+            old.pop('ssh_transit_port')
+            path.write_text(json.dumps(old))
+            loaded = service.Config.load(path)
+            self.assertIsNone(loaded.ssh_transit_port)
+            self.assertEqual(service.firewall(loaded, 'sshgw'),
+                             service.firewall(config(), 'sshgw'))
+        staged = replace(config(), ssh_transit_ingress_source='203.0.113.5',
+                         ssh_transit_port=2224)
+        staged.validate()
+        rule = 'ip saddr 203.0.113.5 ip daddr 198.18.1.30 tcp dport 2224 accept'
+        rendered = service.firewall(staged, 'sshgw')
+        self.assertEqual(rendered.count(rule), 1)
+        self.assertLess(rendered.index(rule), rendered.index('ip protocol icmp'))
+        self.assertNotIn('203.0.113.5', service.firewall(staged, 'proxy'))
+        self.assertNotIn('0.0.0.0/0 tcp dport 2224', rendered)
+
+    def test_optional_ssh_transit_rejects_cidr_internal_peer_and_port_collision(self):
+        base = config()
+        for source, port in (('203.0.113.5/32', 2224), ('198.18.1.20', 2224),
+                             ('127.0.0.1', 2224), ('203.0.113.5', 8083),
+                             ('203.0.113.5', True), ('203.0.113.5', 22),
+                             ('203.0.113.5', 0)):
+            with self.subTest(source=source, port=port):
+                with self.assertRaises(service.BootstrapError):
+                    replace(base, ssh_transit_ingress_source=source,
+                            ssh_transit_port=port).validate()
+        with self.assertRaises(service.BootstrapError):
+            replace(base, ssh_transit_port=2224).validate()
+
     def test_input_parent_must_be_root_owned_mode_0700(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td)

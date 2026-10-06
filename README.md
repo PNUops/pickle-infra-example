@@ -141,6 +141,15 @@ PVE와 NetBird의 기존 firewall을 유지하며, guest 정책을 우회하는 
 선택 설정 `interim_ingress`는 edge의 확인된 IPv4에서 활성 gateway owner의 campus
 TCP 24080/24443으로 들어온 연결만 `pinfra` proxy의 같은 포트로 전달합니다. Standby는
 해당 포트를 열지 않으며 proxy guest firewall은 별도로 설정해야 합니다.
+선택 설정 `public_ssh_transit`는 확인한 edge 출발지 IPv4에서 활성 gateway owner의
+campus TCP 2224로 들어온 연결만 `pinfra` SSH gateway의 같은 포트로 전달합니다.
+Standby는 원래 campus 목적지의 TCP 2224를 차단하고, 전달은 활성 owner만
+담당합니다. 설정하지 않으면 해당 규칙을 만들지 않으며 SSH gateway와 공개
+relay 설정은 별도로 검증해야 합니다.
+`render-ssh-transit.py`는 Python 3에서 실행하며 private SSH 중계 unit과 선택적인
+source 방화벽 파일을 새 디렉터리에 생성합니다. 입력과 적용 전 검증, 영속화와 원복
+순서는 [SSH 중계 런북](runbooks/ssh-transit.md)에 있습니다. 파일 설치나 서비스 기동은
+별도로 승인된 절차에서 수행합니다.
 선택 설정 `relay_transit`는 릴레이의 고정 IPv4에서 활성 gateway owner로 들어온
 새 TCP·UDP 연결만 guest 망으로 전달하고, API의 릴레이 동기화 포트 8080을 별도로
 허용합니다. Guest 포트 22는 차단하며, guest 연결은 `RETURN`으로 PVE VM 방화벽의

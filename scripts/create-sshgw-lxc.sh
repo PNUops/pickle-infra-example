@@ -32,6 +32,29 @@ DISK_GB="${DISK_GB:-8}"
 CORES="${CORES:-1}"
 MEMORY_MB="${MEMORY_MB:-512}"
 TEMPLATE="local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst"
+RAW_SSH_TRANSIT_PORT="${RAW_SSH_TRANSIT_PORT:-0}"
+RAW_SSH_RELAY_IP="${RAW_SSH_RELAY_IP:-100.64.0.1}"
+if [[ ! "$RAW_SSH_TRANSIT_PORT" =~ ^(0|[1-9][0-9]*)$ ||
+      ${#RAW_SSH_TRANSIT_PORT} -gt 5 ]] ||
+   (( RAW_SSH_TRANSIT_PORT != 0 &&
+      (RAW_SSH_TRANSIT_PORT < 1024 || RAW_SSH_TRANSIT_PORT > 65535 ||
+       RAW_SSH_TRANSIT_PORT == 8082 || RAW_SSH_TRANSIT_PORT == 8083) )); then
+  echo "RAW_SSH_TRANSIT_PORT must be 0 or one unprivileged non-bridge TCP port" >&2
+  exit 1
+fi
+if (( RAW_SSH_TRANSIT_PORT != 0 )); then
+  python3 - "$RAW_SSH_RELAY_IP" <<'PY'
+import ipaddress, sys
+try:
+    address = ipaddress.IPv4Address(sys.argv[1])
+    if (str(address) != sys.argv[1] or address == ipaddress.IPv4Address('100.64.0.2')
+            or address.is_unspecified or address.is_multicast or address.is_loopback
+            or address.is_link_local or address.is_reserved):
+        raise ValueError('peer address is not one usable IPv4 host')
+except ValueError as error:
+    raise SystemExit('RAW_SSH_RELAY_IP must be one exact WireGuard peer IPv4 address') from error
+PY
+fi
 
 # Pinned sshpiperd release (checksum-verified below).
 SSHPIPERD_VERSION="${SSHPIPERD_VERSION:-v1.5.4}"
@@ -103,7 +126,8 @@ done
 # --- 3. Provisioning (every step guarded; transport subnet 100.64.0.0/30) --
 # The heredoc is single-quoted: it runs verbatim inside the container. Transport
 # constants (100.64.0.2/.1, :22, :2222, :51820) are architectural and fixed.
-pct exec "$CTID" -- bash -lc "$(cat <<'EOS'
+pct exec "$CTID" -- env "RAW_SSH_TRANSIT_PORT=$RAW_SSH_TRANSIT_PORT" \
+  "RAW_SSH_RELAY_IP=$RAW_SSH_RELAY_IP" bash -lc "$(cat <<'EOS'
 set -euo pipefail
 
 # 3a. pickle service account (runs sshpiperd + the plugin + shim, no shell)
@@ -289,6 +313,23 @@ table inet sshgw {
     chain output  { type filter hook output priority filter; policy accept; }
 }
 NFT
+if (( RAW_SSH_TRANSIT_PORT != 0 )); then
+  raw_rule="        iifname \"wg0\" ip saddr ${RAW_SSH_RELAY_IP} ip daddr 100.64.0.2 tcp dport ${RAW_SSH_TRANSIT_PORT} ct state new accept"
+  nft_next=$(mktemp)
+  if ! awk -v new_rule="$raw_rule" '
+      { print }
+      $0 == "        iifname \"wg0\" ip saddr 100.64.0.1 tcp dport 22 accept" {
+          print new_rule; found++
+      }
+      END { if (found != 1) exit 1 }
+  ' "$nft_tmp" > "$nft_next"; then
+    rm -f "$nft_next" "$nft_tmp"
+    echo "refusing SSH transit render: peer-only :22 anchor differs" >&2
+    exit 1
+  fi
+  mv "$nft_next" "$nft_tmp"
+fi
+nft -c -f "$nft_tmp"
 if ! cmp -s "$nft_tmp" /etc/nftables.conf 2>/dev/null; then
   install -m 644 -o root -g root "$nft_tmp" /etc/nftables.conf
   echo "installed /etc/nftables.conf (peer-only :22)"

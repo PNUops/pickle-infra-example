@@ -1,0 +1,8 @@
+{
+  "source_listen": "100.64.0.2",
+  "relay_peer": "100.64.0.1",
+  "target_node": "192.0.2.30",
+  "target_listener": "198.18.1.30",
+  "transit_source": "192.0.2.10",
+  "target_binary": "/opt/pickle/sshgw/bin/sshgw-proxyfront"
+}
