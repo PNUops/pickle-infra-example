@@ -54,11 +54,15 @@ class Config:
     database_system_identifier: str
     database_socket_dir: str
     existing_public_id: str | None
+    cpu_allocation_ratio: int = 1
+    committed_vcpu: int = 0
 
     @classmethod
     def from_dict(cls, value: dict) -> Config:
-        require(type(value) is dict and set(value) == {f.name for f in fields(cls)},
-                'Configuration fields differ from the documented shape')
+        optional = {'cpu_allocation_ratio', 'committed_vcpu'}
+        required = {f.name for f in fields(cls)} - optional
+        require(type(value) is dict and set(value) in (required, required | optional),
+                'Configuration requires every legacy field and either both CPU policy fields or neither')
         config = cls(**value)
         config.validate()
         return config
@@ -89,6 +93,10 @@ class Config:
                 'Pool gateway is outside the usable pool addresses')
         for name in ('reserve_cpu_threads', 'reserve_memory_mb', 'reserve_disk_gb'):
             positive_int(getattr(self, name), name, zero=True)
+        require(type(self.cpu_allocation_ratio) is int and self.cpu_allocation_ratio in (1, 2),
+                'CPU allocation ratio must be the integer 1 or 2')
+        positive_int(self.committed_vcpu, 'committed_vcpu', zero=True)
+        require(self.committed_vcpu <= 9223372036854775807, 'Committed vCPU exceeds signed 64-bit capacity')
         require(type(self.gpu_node) is bool, 'gpu_node must explicitly be true or false')
         if self.existing_public_id is not None:
             require(str(uuid.UUID(self.existing_public_id)) == self.existing_public_id,
@@ -118,16 +126,37 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def config_document(config: Config) -> dict:
+    value = asdict(config)
+    if config.cpu_allocation_ratio == 1 and config.committed_vcpu == 0:
+        # Preserve the legacy collector's exact configuration shape.
+        del value['cpu_allocation_ratio'], value['committed_vcpu']
+    return value
+
+
 def capacity(physical: dict, config: Config, measured_at: str) -> dict:
-    require(set(physical) == {'cpu_threads', 'memory_mb', 'disk_gb'}, 'Unexpected capacity dimensions')
+    config.validate()
+    require(type(physical) is dict and set(physical) == {'cpu_threads', 'memory_mb', 'disk_gb'},
+            'Unexpected capacity dimensions')
     reserved = {'cpu_threads': config.reserve_cpu_threads, 'memory_mb': config.reserve_memory_mb,
                 'disk_gb': config.reserve_disk_gb}
     for key, value in physical.items():
         positive_int(value, 'physical ' + key)
+        require(value <= (2147483647 if key in ('cpu_threads', 'memory_mb') else 9223372036854775807),
+                'Physical capacity exceeds its database column range')
         require(reserved[key] < value, f'The {key} reserve leaves no allocatable capacity')
-    return {'schema_version': 1, 'physical': physical, 'reserved': reserved,
-            'allocatable': {key: physical[key] - reserved[key] for key in physical},
-            'measured_at': measured_at}
+    allocatable = {key: physical[key] - reserved[key] for key in physical}
+    cpu_budget = allocatable['cpu_threads'] * config.cpu_allocation_ratio
+    require(cpu_budget <= 9223372036854775807 and config.committed_vcpu < cpu_budget,
+            'CPU policy overflows or leaves no allocatable vCPU')
+    allocatable['cpu_threads'] = cpu_budget - config.committed_vcpu
+    result = {'schema_version': 1, 'physical': physical, 'reserved': reserved,
+              'allocatable': allocatable, 'measured_at': measured_at}
+    if config.cpu_allocation_ratio != 1 or config.committed_vcpu != 0:
+        result['schema_version'] = 2
+        result['cpu_policy'] = {'allocation_ratio': config.cpu_allocation_ratio,
+                                'committed_vcpu': config.committed_vcpu}
+    return result
 
 
 def collect(config: Config, runner: Runner, now: datetime | None = None) -> dict:
@@ -174,7 +203,7 @@ def collect(config: Config, runner: Runner, now: datetime | None = None) -> dict
     physical = {'cpu_threads': positive_int(status.get('cpuinfo', {}).get('cpus'), 'CPU threads'),
                 'memory_mb': positive_int(status.get('memory', {}).get('total'), 'memory total') // 1024**2,
                 'disk_gb': disk_bytes // 1024**3}
-    return {'schema_version': 1, 'config': asdict(config), 'measured_at': measured_at,
+    return {'schema_version': 1, 'config': config_document(config), 'measured_at': measured_at,
             'boot_id': runner.run(['cat', '/proc/sys/kernel/random/boot_id']),
             'placement_capacity': capacity(physical, config, measured_at),
             'thin_pool': {'vg': vg, 'pool': pool, 'total_bytes': disk_bytes, 'available_bytes': available},
@@ -189,8 +218,9 @@ def validate_report(report: dict, now: datetime | None = None) -> Config:
     measured = datetime.fromisoformat(report['measured_at'])
     require(measured.tzinfo is not None and 0 <= ((now or utc_now()) - measured).total_seconds() <= 900,
             'Collect fresh node evidence within 15 minutes before registration')
+    validate_capacity_document(report['placement_capacity'])
     require(report['placement_capacity'] == capacity(report['placement_capacity']['physical'], config, report['measured_at']),
-            'Capacity does not equal the measured values minus explicit reserves')
+            'Capacity does not equal measured values, explicit reserves and the CPU policy')
     require(report['checks'] == {'cluster': True, 'local_api_address': True, 'bridge': True, 'thin_pool': True,
                                  'ca_hostname_https': True, 'local_gateway_required': False}, 'Collection checks did not all pass')
     require(str(uuid.UUID(report['boot_id'])) == report['boot_id'], 'Invalid collected boot identifier')
@@ -285,7 +315,7 @@ def preview(report: dict, snapshot: dict) -> dict:
         after = {key: value for key, value in cap.items() if key != 'measured_at'}
         unchanged = before == after and (old['cpu_threads'], old['memory_mb'], old['disk_capacity_gb']) == (
             cap['physical']['cpu_threads'], cap['allocatable']['memory_mb'], cap['physical']['disk_gb'])
-        require(old['status'] != 'ACTIVE' or unchanged, 'Park the node in MAINTENANCE before changing placement reserves or capacity')
+        require(old['status'] != 'ACTIVE' or unchanged, 'Park the node in MAINTENANCE before changing placement reserves, CPU policy or capacity')
         require(snapshot['allocated_memory_mb'] <= cap['allocatable']['memory_mb'],
                 'Registered VM memory exceeds the proposed allocatable memory')
         require(snapshot['allocated_vcpu'] <= cap['allocatable']['cpu_threads'],
@@ -306,8 +336,10 @@ def preview(report: dict, snapshot: dict) -> dict:
 
 
 def validate_capacity_document(value) -> None:
-    require(type(value) is dict and set(value) == {'schema_version', 'physical', 'reserved', 'allocatable', 'measured_at'} and
-            type(value.get('schema_version')) is int and value['schema_version'] == 1,
+    legacy_fields = {'schema_version', 'physical', 'reserved', 'allocatable', 'measured_at'}
+    require(type(value) is dict and type(value.get('schema_version')) is int and
+            ((value['schema_version'] == 1 and set(value) == legacy_fields) or
+             (value['schema_version'] == 2 and set(value) == legacy_fields | {'cpu_policy'})),
             'Unknown stored placement_capacity schema; preserve it for review')
     dimensions = {'cpu_threads', 'memory_mb', 'disk_gb'}
     for group in ('physical', 'reserved', 'allocatable'):
@@ -315,8 +347,26 @@ def validate_capacity_document(value) -> None:
                 'Malformed stored placement_capacity dimensions; preserve them for review')
         for key, number in value[group].items():
             positive_int(number, 'stored ' + group + ' ' + key, zero=group == 'reserved')
-    require(all(value['physical'][key] - value['reserved'][key] == value['allocatable'][key] for key in dimensions),
-            'Stored placement_capacity has an inconsistent reservation')
+            maximum = 2147483647 if group == 'physical' and key in ('cpu_threads', 'memory_mb') else 9223372036854775807
+            require(number <= maximum, 'Stored capacity exceeds its integer range')
+    for key in dimensions:
+        require(value['reserved'][key] < value['physical'][key],
+                'Stored reserve leaves no physical allocation margin')
+    ratio, committed = 1, 0
+    if value['schema_version'] == 2:
+        policy = value['cpu_policy']
+        require(type(policy) is dict and set(policy) == {'allocation_ratio', 'committed_vcpu'},
+                'Unknown stored CPU policy fields; preserve them for review')
+        ratio, committed = policy['allocation_ratio'], policy['committed_vcpu']
+        require(type(ratio) is int and ratio in (1, 2), 'Unsupported stored CPU allocation ratio')
+        positive_int(committed, 'stored committed_vcpu', zero=True)
+        require(committed <= 9223372036854775807, 'Stored committed vCPU exceeds signed 64-bit capacity')
+    expected = {key: value['physical'][key] - value['reserved'][key] for key in dimensions}
+    budget = expected['cpu_threads'] * ratio
+    require(budget <= 9223372036854775807 and committed < budget,
+            'Stored CPU policy overflows or leaves no allocatable vCPU')
+    expected['cpu_threads'] = budget - committed
+    require(value['allocatable'] == expected, 'Stored placement_capacity has an inconsistent reservation or CPU policy')
     require(isinstance(value['measured_at'], str), 'Stored placement capacity has no measurement time')
     require(datetime.fromisoformat(value['measured_at']).tzinfo is not None,
             'Stored placement capacity time must include its timezone')

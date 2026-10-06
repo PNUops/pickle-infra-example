@@ -12,7 +12,9 @@ Unix socket과 `postgres` 계정으로 한정하며 비밀번호를 전달하지
 ## 입력 준비
 
 `examples/node-registration.json`을 복사해 해당 환경의 값으로 바꾸세요. 예시는 예약
-주소와 예시 이름이므로 그대로 적용할 수 없습니다. 모든 필드가 필수이며 예약량에 기본값은 없습니다.
+주소와 예시 이름이므로 그대로 적용할 수 없습니다. 기존 예시의 모든 필드는 필수이며 예약량에 기본값은 없습니다. CPU 공유 정책의
+`cpu_allocation_ratio`와 `committed_vcpu`만 선택 항목이며 둘 다 넣거나 둘 다 생략합니다.
+공유 입력 형상은 `examples/node-registration-cpu-sharing.json`에서 확인하세요.
 예시 pool은 새 운영 사용자망 `100.66.0.0/16`입니다. 기존 개발망 예시
 `198.19.0.0/16`과 별도로 준비한 운영 pool을 지정하고 실제 배포 주소와 대조하세요.
 
@@ -23,7 +25,8 @@ Unix socket과 `postgres` 계정으로 한정하며 비밀번호를 전달하지
 | `bridge`, `bridge_mtu` | 이미 생성된 guest bridge와 MTU. 대기 노드는 gateway 주소를 소유할 필요가 없음 |
 | `storage` | 해당 노드의 활성 `lvmthin` storage. PVE 총량과 실제 VG/thin-pool의 크기를 대조 |
 | `pool_name`, `pool_cidr`, `pool_gateway` | DB에 이미 존재하는 사용자 VM IP pool의 정확한 값 |
-| `reserve_cpu_threads`, `reserve_memory_mb`, `reserve_disk_gb` | core, 호스트와 장애 복구에 남길 CPU thread 수, MiB, GiB. 0도 명시해야 함 |
+| `reserve_cpu_threads`, `reserve_memory_mb`, `reserve_disk_gb` | CPU는 기존 schema 1의 물리 예약량, schema 2에서는 host 물리 thread 예약량. RAM·디스크는 남길 MiB·GiB. 0도 명시해야 함 |
+| `cpu_allocation_ratio`, `committed_vcpu` | 선택 항목 한 쌍. 정수 비율 1 또는 2와 다른 용도로 이미 commit된 vCPU. 생략하거나 1/0이면 기존 schema 1 |
 | `gpu_node` | GPU 노드로 운영할지 명시한 boolean. 실제 GPU의 존재나 사용 가능 상태를 자동 판정하는 값이 아님 |
 | `database`, `database_hostname`, `database_system_identifier`, `database_socket_dir` | 새 플랫폼 DB의 이름, PostgreSQL 호스트 이름, 실제 PostgreSQL system identifier, 로컬 socket 경로 |
 | `existing_public_id` | 최초 등록은 `null`. 재등록은 기존 노드의 정확한 공개 UUID |
@@ -71,15 +74,33 @@ dry-run은 `BEGIN READ ONLY` 안에서 조회만 합니다. INSERT를 실행했�
 `labels.placement_capacity`에 다음 세 값을 함께 보존합니다.
 
 - `physical`: 실측 CPU thread, RAM MiB, disk GiB
-- `reserved`: 명시한 core와 복구 예약량
-- `allocatable`: 각 실측 값에서 예약량을 한 번 뺀 값
+- `reserved`: 명시한 물리 예약량. schema 2 CPU는 host 물리 thread 예약량
+- `allocatable`: RAM·디스크는 실측 값에서 예약량을 한 번 뺀 값. CPU는 아래 정책 계산 값
 
-label에는 `schema_version: 1`과 `measured_at`도 포함합니다. 기존 GPU 표시와 다른 label은
+기본 입력은 label `schema_version: 1`과 기존 세 용량 그룹, `measured_at`을 유지합니다.
+공유 비율이 2이거나 commit된 vCPU가 0보다 크면 schema 2와
+`cpu_policy: {allocation_ratio, committed_vcpu}`를 함께 기록합니다.
+
+CPU 배치 가능량은 `(physical.cpu_threads - reserved.cpu_threads) × allocation_ratio - committed_vcpu`입니다.
+물리 thread와 host 예약량은 물리 단위로 보존하고 다른 용도의 commit은 vCPU 단위로
+기록합니다. 플랫폼 DB에 이미 등록된 VM은 배치 consumer가 합산하므로
+그 vCPU를 `committed_vcpu`에 다시 포함하지 마세요. host 예약량이나 같은 외부 VM을
+두 번 차감하지 않도록 현재 인벤토리와 운영자 정책을 함께 검토하세요.
+예를 들어 물리 24, host 예약 4, 비율 2, 별도 commit 17이면 새 플랫폼 vCPU
+예산은 23입니다. 이 값은 사용률·속도 보장이나 kernel 제한을 설정하는 값이 아닙니다.
+RAM과 디스크의 예약 정책은 이 비율로 바뀌지 않습니다.
+
+한 필드만 지정하거나 bool·소수·문자열·음수·지원하지 않는 비율·정수 범위 초과를
+주면 거부합니다. host 예약량이 물리량 이상이거나 commit이 공유 예산을 모두
+소비해도 거부합니다. CPU label 예산은 signed 64-bit 범위를 사용하고 DB의
+`cpu_threads` 컬럼에는 실제 물리 thread 수를 유지합니다. 기존 GPU 표시와 다른 label은
 보존합니다. API가 `allocatable`을 직접 사용해야 하며, 이미 차감된 `memory_mb`에서
 예약량을 다시 빼면 안 됩니다.
 
 **CPU와 디스크 예약은 label 기록만으로 집행되지 않습니다.** 해당 label을 읽는 배치
-기능이 검증되기 전에는 신규 노드를 활성화하지 마세요. CPU overcommit 정책도 별도입니다.
+기능이 검증되기 전에는 신규 노드를 활성화하지 마세요. schema 2 CPU 정책을 쓰면
+이를 읽는 API consumer를 먼저 배포하고 실제 배치 거부/허용 경계를 확인해야 합니다.
+구버전 consumer에 schema 2 label을 기록한 뒤 ACTIVE로 올리지 마세요.
 API 실행 환경의 노드 이름 해석, CA와 Proxmox 권한, IPAM 예약 범위, VM 생성과 접속도
 활성화 전에 검증해야 합니다. 이 도구의 HTTPS 검사는 PVE 노드에서 수행한 확인입니다.
 
@@ -110,8 +131,8 @@ sudo python3 scripts/register-node.py register \
 재등록은 `existing_public_id`를 정확히 입력한 새 보고서로 수행합니다. `api_host`,
 bridge, storage와 pool 연결이 다르면 자동 이동으로 취급하지 않고 거부합니다.
 기존 `public_id`, 상태와 다른 label은 유지합니다. ACTIVE 노드의 용량이나 예약량을
-바꾸려면 먼저 별도 관리 절차로 MAINTENANCE에 두세요. 이 스크립트는 상태를 바꾸지 않습니다.
-기존 `placement_capacity`가 알려진 schema 1 형상과 다르거나 `node_registration`이
+바꾸거나 CPU 공유 비율·commit된 vCPU를 바꾸려면 먼저 별도 관리 절차로 MAINTENANCE에 두세요. 이 스크립트는 상태를 바꾸지 않습니다.
+기존 `placement_capacity`가 알려진 schema 1/2 형상·정수 타입·계산식과 다르거나 `node_registration`이
 object가 아니면 덮어쓰지 않습니다. 모르는 예약 방식은 별도 검토가 필요합니다.
 
 ## 실패와 복구
