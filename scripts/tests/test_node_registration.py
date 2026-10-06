@@ -16,7 +16,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts/lib'))
-from node_registration import Config, RegistrationError, Runner, apply_sql, capacity, collect, preview, register, snapshot_sql, utc_now, validate_report
+from node_registration import Config, RegistrationError, Runner, apply_sql, capacity, collect, config_document, preview, register, snapshot_sql, utc_now, validate_capacity_document, validate_report
 
 CONFIG = Config.from_dict(json.loads((ROOT / 'examples/node-registration.json').read_text()))
 PUBLIC_ID = 'ea9b79b8-cb30-4ee0-b3c2-b05a1a65b8c0'
@@ -91,6 +91,81 @@ class NodeRegistrationTests(unittest.TestCase):
                        {'reserve_memory_mb': True}, {'pool_cidr': '100.66.0.7/16'}):
             with self.assertRaises((RegistrationError, ValueError)):
                 Config.from_dict({**asdict(CONFIG), **change})
+
+    def test_legacy_default_pair_preserves_original_document_and_labels(self):
+        legacy = json.loads((ROOT / 'examples/node-registration.json').read_text())
+        config = Config.from_dict(legacy)
+        explicit = Config.from_dict({**legacy, 'cpu_allocation_ratio': 1, 'committed_vcpu': 0})
+        self.assertEqual(config_document(config), legacy)
+        self.assertEqual(config_document(explicit), legacy)
+        physical = {'cpu_threads': 32, 'memory_mb': 65536, 'disk_gb': 1024}
+        measured = '2026-01-01T00:00:00+00:00'
+        self.assertEqual(capacity(physical, config, measured), capacity(physical, explicit, measured))
+        self.assertEqual(capacity(physical, config, measured)['schema_version'], 1)
+        self.assertNotIn('cpu_policy', capacity(physical, config, measured))
+
+    def test_shared_budget_keeps_real_threads_and_subtracts_committed_vcpu_once(self):
+        for threads, committed, expected in ((24, 17, 23), (32, 15, 41)):
+            with self.subTest(threads=threads):
+                config = replace(CONFIG, cpu_allocation_ratio=2, committed_vcpu=committed)
+                result = capacity({'cpu_threads': threads, 'memory_mb': 65536, 'disk_gb': 1024}, config, utc_now().isoformat())
+                self.assertEqual(result['schema_version'], 2)
+                self.assertEqual(result['physical']['cpu_threads'], threads)
+                self.assertEqual(result['reserved']['cpu_threads'], 4)
+                self.assertEqual(result['cpu_policy'], {'allocation_ratio': 2, 'committed_vcpu': committed})
+                self.assertEqual(result['allocatable'], {'cpu_threads': expected, 'memory_mb': 57344, 'disk_gb': 896})
+                validate_capacity_document(result)
+        config = replace(CONFIG, cpu_allocation_ratio=1, committed_vcpu=7)
+        self.assertEqual(capacity({'cpu_threads': 32, 'memory_mb': 65536, 'disk_gb': 1024}, config, utc_now().isoformat())['allocatable']['cpu_threads'], 21)
+
+    def test_optional_cpu_policy_pair_rejects_partial_unknown_or_noninteger_values(self):
+        legacy = json.loads((ROOT / 'examples/node-registration.json').read_text())
+        for value in ({**legacy, 'cpu_allocation_ratio': 2}, {**legacy, 'committed_vcpu': 0},
+                      {**legacy, 'cpu_allocation_ratio': 2, 'committed_vcpu': 0, 'extra_cpu_field': 1}):
+            with self.assertRaises(RegistrationError): Config.from_dict(value)
+        for ratio, committed in ((True, 0), (2.0, 0), ('2', 0), (3, 0), (0, 0),
+                                 (2, True), (2, 0.0), (2, '0'), (2, -1), (2, 2**63)):
+            with self.subTest(ratio=ratio, committed=committed), self.assertRaises(RegistrationError):
+                Config.from_dict({**legacy, 'cpu_allocation_ratio': ratio, 'committed_vcpu': committed})
+
+    def test_shared_nonpositive_overflow_and_tampered_labels_fail_closed(self):
+        physical = {'cpu_threads': 32, 'memory_mb': 65536, 'disk_gb': 1024}
+        config = replace(CONFIG, cpu_allocation_ratio=2, committed_vcpu=56)
+        with self.assertRaises(RegistrationError): capacity(physical, config, utc_now().isoformat())
+        config = replace(CONFIG, cpu_allocation_ratio=2, committed_vcpu=0)
+        with self.assertRaises(RegistrationError): capacity({**physical, 'cpu_threads': 2**31}, config, utc_now().isoformat())
+        with self.assertRaises(RegistrationError): capacity({**physical, 'disk_gb': 2**63}, config, utc_now().isoformat())
+        large = capacity({**physical, 'cpu_threads': 2**31-1}, config, utc_now().isoformat())
+        self.assertEqual(large['allocatable']['cpu_threads'], (2**31-1-4)*2)
+        validate_capacity_document(large)
+        from copy import deepcopy
+        result = capacity(physical, config, utc_now().isoformat())
+        for edit in (lambda x:x['cpu_policy'].update(allocation_ratio=True), lambda x:x['cpu_policy'].update(committed_vcpu=-1),
+                     lambda x:x['cpu_policy'].update(unrecognized=0), lambda x:x['allocatable'].update(cpu_threads=55),
+                     lambda x:x['reserved'].update(cpu_threads=32), lambda x:x.update(schema_version=True)):
+            bad=deepcopy(result);edit(bad)
+            with self.assertRaises(RegistrationError): validate_capacity_document(bad)
+        evidence=report(config);evidence['placement_capacity']['cpu_policy']['allocation_ratio']=True
+        with self.assertRaises(RegistrationError): validate_report(evidence)
+
+    def test_registered_platform_vcpu_is_checked_against_shared_budget_and_uuid_is_preserved(self):
+        config=replace(CONFIG, cpu_allocation_ratio=2, committed_vcpu=15, existing_public_id=PUBLIC_ID)
+        evidence=report(config);before=snapshot(config, existing=True);before['allocated_vcpu']=41
+        desired=preview(evidence,before)
+        self.assertEqual(desired['cpu_threads'],32)
+        self.assertEqual(desired['labels']['placement_capacity']['allocatable']['cpu_threads'],41)
+        self.assertEqual(desired['public_id'],PUBLIC_ID)
+        self.assertEqual(desired['memory_mb'],57344)
+        self.assertEqual(desired['disk_capacity_gb'],1024)
+        sql=apply_sql(config,before,desired)
+        self.assertIn(') > 41 THEN',sql)
+        self.assertIn('cpu_threads=32',sql)
+        before['allocated_vcpu']=42
+        with self.assertRaises(RegistrationError): preview(evidence,before)
+        before['allocated_vcpu']=0;before['node']['status']='ACTIVE'
+        with self.assertRaises(RegistrationError): preview(evidence,before)
+        before['node']['status']='MAINTENANCE';before['node']['labels']['placement_capacity']=evidence['placement_capacity']
+        self.assertEqual(preview(evidence,before)['public_id'],PUBLIC_ID)
 
     def test_reserves_cannot_consume_the_whole_node(self):
         with self.assertRaises(RegistrationError):

@@ -98,7 +98,7 @@ runbooks/         운영 절차                                    // 이 예시
 | 분류 | 스크립트 |
 |---|---|
 | 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh`, `bootstrap-isolated-core.sh`, `bootstrap-isolated-services.sh`, `bootstrap-candidate-llm.sh` |
-| 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 예약 용량 기록) |
+| 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 물리 예약·CPU 공유 용량 기록) |
 | 배포 | `deploy-api.sh`, `deploy-console.sh`(기본 설정 검증 후 요청한 Vite 기능 플래그로 최종 빌드), `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `register-image.py`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
 | 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `candidate-core-vzdump-hook.sh`, `core-pbs-monitor.py`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py`, `pbs-capacity-probe.py`, `pbs-capacity-monitor.py` |
@@ -251,6 +251,15 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아닙�
 
 `node-registration.md`는 Proxmox 노드 단독 등록과 core·복구 용량 예약,
 활성화 전 검증을 설명합니다.
+
+노드 등록 설정의 `cpu_allocation_ratio`와 `committed_vcpu`는 함께 지정합니다.
+두 필드를 생략하거나 `1`과 `0`으로 지정하면 기존 schema 1 예약 계산을 유지합니다.
+공유 정책은 schema 2의 `cpu_policy`에 기록하며 CPU 배치 가능량을
+`(물리 thread - host 예약 thread) × 비율 - 별도 commit된 vCPU`로 계산합니다.
+비율은 정수 `1` 또는 `2`이고 이미 플랫폼 DB의 VM으로 계산되는 vCPU를
+`committed_vcpu`에 다시 넣지 않습니다. RAM·디스크 예약은 공유 비율과 무관합니다.
+`examples/node-registration-cpu-sharing.json`은 공유 정책의 입력 형상을 보여 줍니다.
+schema 2를 읽는 API 배치 consumer를 먼저 배포·검증한 뒤 노드를 활성화하세요.
 
 이 예시본에는 `proxmox-api-principal.md`(Proxmox API 서비스 principal 권한 분리와 token custody), `new-environment.md`(신규 환경 관통 구축 순서 — 환경별로 바꿀 값 표와
 사람만 할 수 있는 단계·절차가 없는 지점 명시), `node-intake.md`(비Proxmox 노드 편입 절차 —
