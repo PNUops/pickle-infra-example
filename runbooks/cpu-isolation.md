@@ -128,6 +128,8 @@ python3 /root/reviewed-cpu-isolation.py install \
 승인 기록과 전체 파일 manifest를 고정합니다. guest 수정은 PVE config lock과 전체 원본 SHA
 CAS 아래 수행하고, 다른 필드의 canonical digest가 보존됐는지 조회합니다.
 
+PID1의 `init.scope`는 runtime 합성 scope이므로 unit-file 문법 검사 인수에서 제외합니다.
+`[Scope] AllowedCPUs` drop-in과 실제 requested/effective mask 검사는 유지합니다.
 unit 문법 검사 뒤 부모 mask를 적용하고 실제 partition·모든 thread·hook·CT mask를 조회합니다.
 이 검증이 통과한 뒤 daemon-reload와 영속 unit enable·첫 start를 수행하고 active 상태와
 최종 조회를 기록합니다. 실제 효과 직전마다 승인 시각을 다시 확인하며, guest·storage

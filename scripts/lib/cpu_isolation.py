@@ -670,6 +670,13 @@ PVE::Storage::lock_storage_config(sub {
     command(['perl', '-e', source, before['storage_config_sha256'], before['storage']['digest'], str(deadline_epoch)])
 
 
+def verify_control_units():
+    """Check file-backed units; PID1 init.scope is a synthesized runtime scope."""
+    command(['systemd-analyze', 'verify', '/etc/systemd/system/pickle-cpu-isolation.service',
+             'qemu.slice', 'system.slice', 'user.slice',
+             'pve-container@200.service', 'pve-guests.service'])
+
+
 def install(c, before, admission_raw, program_raw, authority_raw):
     need(INSTALL_REVIEWED and APPLY_REVIEWED, 'CPU installation/application guards are closed')
     validate_observation(c, before)
@@ -757,9 +764,7 @@ def install(c, before, admission_raw, program_raw, authority_raw):
         need(actual_store == {k: v for k, v in store.items() if k not in ('content', 'digest')} and
              set(after_files['storage']['content'].split(',')) == set(store['content'].split(',')) | {'snippets'},
              'Collateral local storage configuration changed')
-        command(['systemd-analyze', 'verify', '/etc/systemd/system/pickle-cpu-isolation.service',
-                 'qemu.slice', 'system.slice', 'user.slice', 'init.scope',
-                 'pve-container@200.service', 'pve-guests.service'])
+        verify_control_units()
         # No guest is stopped/restarted. The native parent masks are changed in
         # the approved window, then independently read back before enabling.
         still_approved()

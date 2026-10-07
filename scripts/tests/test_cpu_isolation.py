@@ -65,6 +65,25 @@ def observation(config=None):
 
 
 class CpuIsolationTests(unittest.TestCase):
+    def test_file_verify_excludes_synthesized_init_scope_without_removing_runtime_scope_controls(self):
+        def native_verify_model(argv):
+            if 'init.scope' in argv:
+                raise c.IsolationError('Unit init.scope not found.')
+            return ''
+        with patch.object(c, 'command', side_effect=native_verify_model) as run:
+            c.verify_control_units()
+        args = run.call_args[0][0]
+        self.assertEqual(args[:2], ['systemd-analyze', 'verify'])
+        self.assertIn('qemu.slice', args)
+        self.assertIn('pve-container@200.service', args)
+        _, files = c.render(policy(), topology(), b'closed CPU program model')
+        self.assertIn(b'[Scope]\nAllowedCPUs=', files['/etc/systemd/system/init.scope.d/90-pickle-cpu-isolation.conf'])
+        self.assertIn('init.scope', c.CONTROL_NAMES)
+        bad = observation()
+        bad['cgroups']['init.scope']['cpuset.cpus.effective'] = '0-23'
+        with self.assertRaises(c.IsolationError):
+            c.verify(policy(), bad, authority_sha256='d' * 64)
+
     def test_storage_capability_order_is_canonical_without_hiding_real_config_drift(self):
         before = {'type': 'dir', 'path': '/var/lib/vz', 'content': 'import,iso,vztmpl,backup',
                   'digest': 'a' * 40, 'disable': 0}
