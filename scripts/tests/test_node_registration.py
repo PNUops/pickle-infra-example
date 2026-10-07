@@ -128,6 +128,16 @@ class NodeRegistrationTests(unittest.TestCase):
             with self.subTest(ratio=ratio, committed=committed), self.assertRaises(RegistrationError):
                 Config.from_dict({**legacy, 'cpu_allocation_ratio': ratio, 'committed_vcpu': committed})
 
+    def test_protected_platform_threads_leave_only_student_shared_budget(self):
+        for threads, committed, expected in ((24, 5, 19), (32, 3, 37)):
+            config = replace(CONFIG, reserve_cpu_threads=12, cpu_allocation_ratio=2, committed_vcpu=committed)
+            result = capacity({'cpu_threads': threads, 'memory_mb': 65536, 'disk_gb': 1024}, config, utc_now().isoformat())
+            self.assertEqual(result['physical']['cpu_threads'], threads)
+            self.assertEqual(result['reserved']['cpu_threads'], 12)
+            self.assertEqual(result['allocatable']['cpu_threads'], expected)
+            self.assertEqual(result['cpu_policy']['committed_vcpu'], committed)
+            validate_capacity_document(result)
+
     def test_shared_nonpositive_overflow_and_tampered_labels_fail_closed(self):
         physical = {'cpu_threads': 32, 'memory_mb': 65536, 'disk_gb': 1024}
         config = replace(CONFIG, cpu_allocation_ratio=2, committed_vcpu=56)
