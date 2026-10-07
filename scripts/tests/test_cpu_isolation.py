@@ -65,6 +65,43 @@ def observation(config=None):
 
 
 class CpuIsolationTests(unittest.TestCase):
+    def existing_dropins(self):
+        controls = {group: {} for group in c.DROPIN_GROUPS}
+        metadata = {group: {} for group in c.DROPIN_GROUPS}
+        name = 'example-production-network.conf'
+        controls['pve-guests.service'][name] = c.EXISTING_DROPINS['pve-guests.service'][name]
+        metadata['pve-guests.service'][name] = {'uid': 0, 'gid': 0, 'mode': 0o600, 'nlink': 1,
+            'dev': 1, 'ino': 22, 'mtime_ns': 33, 'ctime_ns': 44}
+        return {'systemd_dropins': controls, 'systemd_dropin_metadata': metadata}
+
+    def test_only_exact_existing_network_override_with_original_custody_is_admitted(self):
+        before = self.existing_dropins()
+        c.permitted_existing_dropins(before)
+        for edit in (lambda r: r['systemd_dropins']['pve-guests.service'].update({'foreign.conf': 'a' * 64}),
+                     lambda r: r['systemd_dropins']['pve-guests.service'].update({'example-production-network.conf': 'a' * 64}),
+                     lambda r: r['systemd_dropin_metadata']['pve-guests.service']['example-production-network.conf'].update(mode=0o644),
+                     lambda r: r['systemd_dropin_metadata']['pve-guests.service']['example-production-network.conf'].update(nlink=2),
+                     lambda r: r['systemd_dropin_metadata']['pve-guests.service']['example-production-network.conf'].update(uid=False)):
+            bad = copy.deepcopy(before); edit(bad)
+            with self.subTest(edit=edit), self.assertRaises(c.IsolationError): c.permitted_existing_dropins(bad)
+
+    def test_cpu_install_preserves_network_override_and_rejects_deleted_replaced_or_extra_files(self):
+        before = self.existing_dropins()
+        _, files = c.render(policy(), topology(), b'closed CPU program model')
+        after = copy.deepcopy(before)
+        for group in c.DROPIN_GROUPS:
+            path = '/etc/systemd/system/' + group + '.d/' + c.CPU_DROPIN
+            after['systemd_dropins'][group][c.CPU_DROPIN] = c.sha(files[path])
+            after['systemd_dropin_metadata'][group][c.CPU_DROPIN] = {'uid': 0, 'mode': 0o644}
+        c.preserved_dropins(before, after, files)
+        for edit in (lambda r: r['systemd_dropins']['pve-guests.service'].pop('example-production-network.conf'),
+                     lambda r: r['systemd_dropins']['pve-guests.service'].update({'example-production-network.conf': 'b' * 64}),
+                     lambda r: r['systemd_dropin_metadata']['pve-guests.service']['example-production-network.conf'].update(ino=23),
+                     lambda r: r['systemd_dropins']['qemu.slice'].update({'foreign.conf': 'a' * 64}),
+                     lambda r: r['systemd_dropins']['qemu.slice'].update({c.CPU_DROPIN: 'a' * 64})):
+            bad = copy.deepcopy(after); edit(bad)
+            with self.subTest(edit=edit), self.assertRaises(c.IsolationError): c.preserved_dropins(before, bad, files)
+
     def test_budget_protects_whole_host_and_platform_pairs_before_sharing(self):
         for physical, expected in ((12, 19), (16, 37)):
             result = c.derive(policy(physical), topology(physical))

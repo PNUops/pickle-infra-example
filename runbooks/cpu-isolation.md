@@ -90,7 +90,16 @@ QEMU config를 직접 만드는 것까지 막는 글로벌 PVE hook은 없습니
 local storage는 기존 dir `/var/lib/vz`와 모든 기존 content를 보존한 채 `snippets` 한 종류를
 CAS digest 아래 추가합니다. 새 실행 파일은
 `/var/lib/vz/snippets/pickle-cpu-isolation-hook.py`이고 mode 0755/root입니다.
-기존 hook·cpuset·control unit·drop-in·enable link가 있으면 설치를 거부합니다.
+기존 hook·cpuset·control unit·enable link가 있으면 설치를 거부합니다.
+기존 drop-in은 `pve-guests.service.d/example-production-network.conf` 한 파일만
+SHA `4bd160888cfc1743de5f7fd89b59b9dbba37ddd10080506fd03b95a0868e587e`,
+root:root·0600·단일 링크 조건으로 허용합니다. 필수 network dependency의 원래
+바이트·inode·mtime/ctime·소유·mode를 읽기 inventory에 묶고, 설치 전 재조회 및
+설치/enable/activation 뒤에 보존됐는지 확인합니다. 이 파일을 교체하거나
+CPU manifest의 새 파일로 생성하지 않습니다. 다른 기존 override·내용·권한과
+설치 중 추가된 override는 거부합니다. 기존 network 파일이 없으면 임의로
+만들지 않습니다. 실패한 이전 시도·프로그램·before 자료는 보존하고, 보완한
+프로그램에는 새 stage와 새 native inventory를 사용합니다.
 
 ## 승인 창의 설치 순서와 실패
 

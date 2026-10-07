@@ -24,6 +24,12 @@ PROGRAM_PATH = Path('/usr/local/libexec/pickle-cpu-isolation.py')
 HOOK_PATH = Path('/var/lib/vz/snippets/pickle-cpu-isolation-hook.py')
 HOOK_VOLUME = 'local:snippets/pickle-cpu-isolation-hook.py'
 CONTROL_NAMES = ('system.slice', 'user.slice', 'init.scope', 'lxc.monitor', 'lxc.pivot')
+DROPIN_GROUPS = ('system.slice', 'user.slice', 'init.scope', 'qemu.slice',
+                 'pve-container@.service', 'pve-guests.service')
+CPU_DROPIN = '90-pickle-cpu-isolation.conf'
+EXISTING_DROPINS = {'pve-guests.service': {
+    'example-production-network.conf':
+        '4bd160888cfc1743de5f7fd89b59b9dbba37ddd10080506fd03b95a0868e587e'}}
 CODE_PATHS = ('/usr/share/perl5/PVE/QemuServer.pm', '/usr/share/perl5/PVE/API2/Qemu.pm',
               '/usr/share/perl5/PVE/GuestHelpers.pm', '/usr/share/perl5/PVE/LXC.pm',
               '/usr/share/perl5/PVE/LXC/Config.pm', '/usr/share/perl5/PVE/Service/pvestatd.pm')
@@ -313,6 +319,43 @@ def qemu_inventory():
             'vhost_scan_complete': True, 'thread_scan_complete': True}
 
 
+def permitted_existing_dropins(report):
+    """Admit only the pinned network dependency; never rewrite it."""
+    controls = report.get('systemd_dropins')
+    metadata = report.get('systemd_dropin_metadata')
+    need(type(controls) is dict and set(controls) == set(DROPIN_GROUPS) and
+         type(metadata) is dict and set(metadata) == set(DROPIN_GROUPS),
+         'Existing drop-in inventory is incomplete')
+    for group, entries in controls.items():
+        need(type(entries) is dict and type(metadata[group]) is dict and
+             set(metadata[group]) == set(entries), 'Existing drop-in metadata differs')
+        for name, value in entries.items():
+            need(EXISTING_DROPINS.get(group, {}).get(name) == value,
+                 'An existing drop-in has another owner')
+            row = metadata[group][name]
+            need(type(row) is dict and all(type(row.get(k)) is int and row[k] == v
+                 for k, v in {'uid': 0, 'gid': 0, 'mode': 0o600, 'nlink': 1}.items()),
+                 'Pinned network drop-in custody differs')
+
+
+def preserved_dropins(before, after, files):
+    """Reject added overrides and preserve original bytes and native identity."""
+    permitted_existing_dropins(before)
+    controls, metadata = after.get('systemd_dropins'), after.get('systemd_dropin_metadata')
+    need(type(controls) is dict and set(controls) == set(DROPIN_GROUPS) and
+         type(metadata) is dict and set(metadata) == set(DROPIN_GROUPS),
+         'Installed drop-in inventory is incomplete')
+    for group in DROPIN_GROUPS:
+        expected = dict(before['systemd_dropins'][group])
+        path = '/etc/systemd/system/' + group + '.d/' + CPU_DROPIN
+        need(path in files, 'Owned CPU drop-in candidate is absent')
+        expected[CPU_DROPIN] = sha(files[path])
+        need(controls[group] == expected and type(metadata[group]) is dict and
+             set(metadata[group]) == set(expected), 'Installed or foreign drop-in differs')
+        for name, value in before['systemd_dropin_metadata'][group].items():
+            need(metadata[group][name] == value, 'Existing network drop-in changed during CPU installation')
+
+
 def observe(c):
     validate_config(c)
     need(os.geteuid() == 0 and socket.gethostname().split('.')[0] == c['node'], 'Wrong native host')
@@ -331,10 +374,16 @@ def observe(c):
             state[key]['thread_cpu_sets'] = thread_cpu_sets(key)
     state['qemu.slice']['thread_cpu_sets'] = thread_cpu_sets('qemu.slice')
     storage = load_json(command(['pvesh', 'get', '/storage/local', '--output-format', 'json']))
-    controls = {}
-    for name in ('system.slice', 'user.slice', 'init.scope', 'qemu.slice', 'pve-container@.service', 'pve-guests.service'):
+    controls, dropin_metadata = {}, {}
+    for name in DROPIN_GROUPS:
         path = Path('/etc/systemd/system') / (name + '.d')
         controls[name] = {x.name: sha(read(x, protected=True)) for x in sorted(path.glob('*.conf'))} if path.exists() else {}
+        dropin_metadata[name] = {}
+        for x in sorted(path.glob('*.conf')) if path.exists() else ():
+            s = x.lstat()
+            dropin_metadata[name][x.name] = {'uid': s.st_uid, 'gid': s.st_gid,
+                'mode': stat.S_IMODE(s.st_mode), 'nlink': s.st_nlink,
+                'dev': s.st_dev, 'ino': s.st_ino, 'mtime_ns': s.st_mtime_ns, 'ctime_ns': s.st_ctime_ns}
     installed = {}
     if PROGRAM_PATH.exists():
         installed['program_sha256'] = sha(read(PROGRAM_PATH, protected=True))
@@ -349,7 +398,7 @@ def observe(c):
             'required_code_sha256': {p: sha(read(p)) for p in CODE_PATHS},
             'guests': sorted(guests, key=lambda x: (x['kind'], x['vmid'])),
             'cgroups': state, 'storage': storage, 'storage_config_sha256': sha(read('/etc/pve/storage.cfg')),
-            'systemd_dropins': controls, 'installed_files': installed,
+            'systemd_dropins': controls, 'systemd_dropin_metadata': dropin_metadata, 'installed_files': installed,
             'inventory': qemu_inventory(), 'host_or_guest_changed': False}
 
 
@@ -621,7 +670,7 @@ def install(c, before, admission_raw, program_raw, authority_raw):
     # The protected record is an authorization link, never a native fact proof.
     need(not POLICY_PATH.parent.exists() and not PROGRAM_PATH.exists() and not HOOK_PATH.exists(),
          'An installed policy/program/hook already owns this path')
-    need(all(not value for value in before['systemd_dropins'].values()), 'Foreign systemd drop-in configuration')
+    permitted_existing_dropins(before)
     need(not os.path.lexists('/etc/systemd/system/multi-user.target.wants/pickle-cpu-isolation.service'),
          'An existing enablement link has another owner')
     previous_partition = before['cgroups']['lxc']
@@ -642,7 +691,9 @@ def install(c, before, admission_raw, program_raw, authority_raw):
     current = observe(c)
     need(current['guests'] == before['guests'] and current['storage'] == store and
          current['storage_config_sha256'] == before['storage_config_sha256'] and
-         current['systemd_dropins'] == before['systemd_dropins'] and current['boot_id'] == before['boot_id'],
+         current['systemd_dropins'] == before['systemd_dropins'] and
+         current['systemd_dropin_metadata'] == before['systemd_dropin_metadata'] and
+         current['boot_id'] == before['boot_id'],
          'Native custody changed after collection')
     backup = Path('/var/backups') / ('pickle-cpu-isolation-' + record['nonce'])
     trusted_directory(backup.parent)
@@ -680,6 +731,7 @@ def install(c, before, admission_raw, program_raw, authority_raw):
             elif str(g['vmid']) in platform:
                 mutate_guest(c['node'], g, cpuset=platform[str(g['vmid'])], deadline_epoch=deadline)
         after_files = observe(c)
+        preserved_dropins(before, after_files, files)
         need(len(after_files['guests']) == len(before['guests']), 'Guest inventory changed during installation')
         old = {(g['kind'], g['vmid']): g for g in before['guests']}
         for g in after_files['guests']:
@@ -706,6 +758,7 @@ def install(c, before, admission_raw, program_raw, authority_raw):
         still_approved()
         command(['systemctl', 'enable', 'pickle-cpu-isolation.service'])
         final = observe(c)
+        preserved_dropins(before, final, files)
         verified = verify(c, final, authority_sha256=record['authority_sha256'])
         still_approved()
         exclusive(backup / 'after.json', canonical(final))
@@ -717,6 +770,7 @@ def install(c, before, admission_raw, program_raw, authority_raw):
         need(command(['systemctl', 'is-active', 'pickle-cpu-isolation.service']).strip() == 'active',
              'Initial persistent unit is not active')
         final = observe(c)
+        preserved_dropins(before, final, files)
         verified = verify(c, final, authority_sha256=record['authority_sha256'])
         still_approved()
         exclusive(backup / 'activation-complete.json', canonical(verified))
