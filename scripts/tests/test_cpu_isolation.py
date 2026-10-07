@@ -65,6 +65,26 @@ def observation(config=None):
 
 
 class CpuIsolationTests(unittest.TestCase):
+    def test_storage_capability_order_is_canonical_without_hiding_real_config_drift(self):
+        before = {'type': 'dir', 'path': '/var/lib/vz', 'content': 'import,iso,vztmpl,backup',
+                  'digest': 'a' * 40, 'disable': 0}
+        reordered = before | {'content': 'backup,vztmpl,iso,import'}
+        self.assertEqual(c.storage_projection(before), c.storage_projection(reordered))
+        self.assertEqual(before['content'], 'import,iso,vztmpl,backup')
+        self.assertEqual(c.storage_projection(before)['content'], 'backup,import,iso,vztmpl')
+        with_snippets = before | {'content': 'snippets,backup,import,iso,vztmpl'}
+        self.assertEqual(c.storage_projection(with_snippets)['content'], 'backup,import,iso,snippets,vztmpl')
+        for key, value in (('digest', 'b' * 40), ('path', '/foreign'), ('disable', 1)):
+            self.assertNotEqual(c.storage_projection(before), c.storage_projection(reordered | {key: value}))
+
+    def test_storage_capabilities_reject_duplicate_missing_extra_and_untyped_values(self):
+        base = {'type': 'dir', 'path': '/var/lib/vz', 'digest': 'a' * 40}
+        for value in ('backup,import,iso', 'backup,import,iso,vztmpl,images',
+                      'backup,backup,import,iso,vztmpl', 'backup,import,iso,vztmpl,',
+                      'backup, import,iso,vztmpl', None, ['backup', 'import', 'iso', 'vztmpl'], True):
+            with self.subTest(value=value), self.assertRaises(c.IsolationError):
+                c.storage_projection(base | {'content': value})
+
     def existing_dropins(self):
         controls = {group: {} for group in c.DROPIN_GROUPS}
         metadata = {group: {} for group in c.DROPIN_GROUPS}

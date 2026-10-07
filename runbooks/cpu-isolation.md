@@ -100,6 +100,10 @@ CPU manifest의 새 파일로 생성하지 않습니다. 다른 기존 override�
 설치 중 추가된 override는 거부합니다. 기존 network 파일이 없으면 임의로
 만들지 않습니다. 실패한 이전 시도·프로그램·before 자료는 보존하고, 보완한
 프로그램에는 새 stage와 새 native inventory를 사용합니다.
+PVE GET의 storage content CSV는 같은 capability 집합이어도 순서가 달라질 수
+있습니다. 읽기 projection은 기존 네 종류 또는 그 집합에 `snippets`를 더한
+경우에만 순서를 정렬합니다. 중복·누락·다른 capability·문자열 아닌 값은
+거부하며 digest, raw `storage.cfg` SHA와 다른 설정 필드는 그대로 CAS 비교합니다.
 
 ## 승인 창의 설치 순서와 실패
 

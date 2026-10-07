@@ -55,6 +55,18 @@ def canonical(value):
     return (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
 
 
+def storage_projection(value):
+    """Canonicalize only capability order; retain every other native field."""
+    need(type(value) is dict and type(value.get('content')) is str,
+         'Native storage content is not a typed CSV')
+    members = value['content'].split(',')
+    base = {'backup', 'vztmpl', 'import', 'iso'}
+    need(all(re.fullmatch('[a-z]+', item) for item in members) and
+         len(members) == len(set(members)) and set(members) in (base, base | {'snippets'}),
+         'Storage capabilities are missing, repeated or foreign')
+    return value | {'content': ','.join(sorted(members))}
+
+
 def whole(value, minimum=0):
     need(type(value) is int and minimum <= value <= 2147483647, 'Invalid integer')
     return value
@@ -373,7 +385,7 @@ def observe(c):
             state[key + '/ns'] = cgroup_state(key + '/ns')
             state[key]['thread_cpu_sets'] = thread_cpu_sets(key)
     state['qemu.slice']['thread_cpu_sets'] = thread_cpu_sets('qemu.slice')
-    storage = load_json(command(['pvesh', 'get', '/storage/local', '--output-format', 'json']))
+    storage = storage_projection(load_json(command(['pvesh', 'get', '/storage/local', '--output-format', 'json'])))
     controls, dropin_metadata = {}, {}
     for name in DROPIN_GROUPS:
         path = Path('/etc/systemd/system') / (name + '.d')
@@ -681,7 +693,7 @@ def install(c, before, admission_raw, program_raw, authority_raw):
     for g in before['guests']:
         need(g['hookscript'] is None if g['kind'] == 'qemu' else g['cpuset'] is None,
              'An existing hook/cpuset has another owner')
-    store = before['storage']
+    store = storage_projection(before['storage'])
     need(store.get('type') == 'dir' and store.get('path') == '/var/lib/vz' and
          set(store['content'].split(',')) in ({'backup', 'vztmpl', 'import', 'iso'},
                                              {'backup', 'vztmpl', 'import', 'iso', 'snippets'}),
