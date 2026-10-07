@@ -25,7 +25,7 @@ Unix socket과 `postgres` 계정으로 한정하며 비밀번호를 전달하지
 | `bridge`, `bridge_mtu` | 이미 생성된 guest bridge와 MTU. 대기 노드는 gateway 주소를 소유할 필요가 없음 |
 | `storage` | 해당 노드의 활성 `lvmthin` storage. PVE 총량과 실제 VG/thin-pool의 크기를 대조 |
 | `pool_name`, `pool_cidr`, `pool_gateway` | DB에 이미 존재하는 사용자 VM IP pool의 정확한 값 |
-| `reserve_cpu_threads`, `reserve_memory_mb`, `reserve_disk_gb` | CPU는 기존 schema 1의 물리 예약량, schema 2에서는 host 물리 thread 예약량. RAM·디스크는 남길 MiB·GiB. 0도 명시해야 함 |
+| `reserve_cpu_threads`, `reserve_memory_mb`, `reserve_disk_gb` | CPU는 보호할 물리 thread 예약량. host와 별도로 격리할 플랫폼 thread를 합쳐 한 번 차감함. RAM·디스크는 남길 MiB·GiB. 0도 명시해야 함 |
 | `cpu_allocation_ratio`, `committed_vcpu` | 선택 항목 한 쌍. 정수 비율 1 또는 2와 다른 용도로 이미 commit된 vCPU. 생략하거나 1/0이면 기존 schema 1 |
 | `gpu_node` | GPU 노드로 운영할지 명시한 boolean. 실제 GPU의 존재나 사용 가능 상태를 자동 판정하는 값이 아님 |
 | `database`, `database_hostname`, `database_system_identifier`, `database_socket_dir` | 새 플랫폼 DB의 이름, PostgreSQL 호스트 이름, 실제 PostgreSQL system identifier, 로컬 socket 경로 |
@@ -74,7 +74,7 @@ dry-run은 `BEGIN READ ONLY` 안에서 조회만 합니다. INSERT를 실행했�
 `labels.placement_capacity`에 다음 세 값을 함께 보존합니다.
 
 - `physical`: 실측 CPU thread, RAM MiB, disk GiB
-- `reserved`: 명시한 물리 예약량. schema 2 CPU는 host 물리 thread 예약량
+- `reserved`: 명시한 물리 예약량. schema 2 CPU는 host와 별도로 격리할 플랫폼의 물리 thread 예약량
 - `allocatable`: RAM·디스크는 실측 값에서 예약량을 한 번 뺀 값. CPU는 아래 정책 계산 값
 
 기본 입력은 label `schema_version: 1`과 기존 세 용량 그룹, `measured_at`을 유지합니다.
@@ -82,16 +82,22 @@ dry-run은 `BEGIN READ ONLY` 안에서 조회만 합니다. INSERT를 실행했�
 `cpu_policy: {allocation_ratio, committed_vcpu}`를 함께 기록합니다.
 
 CPU 배치 가능량은 `(physical.cpu_threads - reserved.cpu_threads) × allocation_ratio - committed_vcpu`입니다.
-물리 thread와 host 예약량은 물리 단위로 보존하고 다른 용도의 commit은 vCPU 단위로
+물리 thread와 보호 예약량은 물리 단위로 보존하고 다른 용도의 commit은 vCPU 단위로
 기록합니다. 플랫폼 DB에 이미 등록된 VM은 배치 consumer가 합산하므로
-그 vCPU를 `committed_vcpu`에 다시 포함하지 마세요. host 예약량이나 같은 외부 VM을
+그 vCPU를 `committed_vcpu`에 다시 포함하지 마세요. 보호 예약량이나 같은 외부 VM을
 두 번 차감하지 않도록 현재 인벤토리와 운영자 정책을 함께 검토하세요.
 예를 들어 물리 24, host 예약 4, 비율 2, 별도 commit 17이면 새 플랫폼 vCPU
 예산은 23입니다. 이 값은 사용률·속도 보장이나 kernel 제한을 설정하는 값이 아닙니다.
 RAM과 디스크의 예약 정책은 이 비율로 바뀌지 않습니다.
 
+플랫폼 물리 core를 학생 영역과 분리한다면 host 4thread와 플랫폼 8thread의 합계
+12thread를 물리 예약으로 먼저 차감합니다. 물리 24/32thread에서 학생 영역만 2:1로
+공유하고 외부 보존 VM 5/3vCPU를 별도 commit하면 admission은 19/37vCPU입니다.
+이미 물리 예약으로 뺀 플랫폼 CT vCPU를 별도 commit에 다시 넣지 마세요.
+실제 SMT·cgroup·시작 경계 검증은 [CPU 격리 런북](cpu-isolation.md)을 따릅니다.
+
 한 필드만 지정하거나 bool·소수·문자열·음수·지원하지 않는 비율·정수 범위 초과를
-주면 거부합니다. host 예약량이 물리량 이상이거나 commit이 공유 예산을 모두
+주면 거부합니다. 보호 예약량이 물리량 이상이거나 commit이 공유 예산을 모두
 소비해도 거부합니다. CPU label 예산은 signed 64-bit 범위를 사용하고 DB의
 `cpu_threads` 컬럼에는 실제 물리 thread 수를 유지합니다. 기존 GPU 표시와 다른 label은
 보존합니다. API가 `allocatable`을 직접 사용해야 하며, 이미 차감된 `memory_mb`에서

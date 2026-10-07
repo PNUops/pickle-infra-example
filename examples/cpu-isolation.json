@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "node": "node-example",
+  "physical_cores": 12,
+  "host_core_ids": [0, 1],
+  "platform_core_ids": [2, 3, 4, 5],
+  "platform_cts": [
+    {"vmid": 200, "cores": 2, "core_ids": [2]},
+    {"vmid": 201, "cores": 4, "core_ids": [3, 4]},
+    {"vmid": 202, "cores": 2, "core_ids": [2]},
+    {"vmid": 203, "cores": 2, "core_ids": [5]},
+    {"vmid": 204, "cores": 2, "core_ids": [3]}
+  ],
+  "parked_ct_ids": [],
+  "committed_vcpu": 5,
+  "expected_kernel": "7.0.14-15-pve",
+  "expected_pve_release": "9.2.11",
+  "expected_systemd_major": 257,
+  "required_code_sha256": {
+    "/usr/share/perl5/PVE/QemuServer.pm": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/usr/share/perl5/PVE/API2/Qemu.pm": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/usr/share/perl5/PVE/GuestHelpers.pm": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/usr/share/perl5/PVE/LXC.pm": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/usr/share/perl5/PVE/LXC/Config.pm": "0000000000000000000000000000000000000000000000000000000000000000",
+    "/usr/share/perl5/PVE/Service/pvestatd.pm": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "clone_inheritance_review_ref": "REPLACE with the exact installed-code inheritance review"
+}
