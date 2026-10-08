@@ -270,6 +270,11 @@ core/8thread를 합친 `reserve_cpu_threads=12`를 먼저 차감하고 학생 �
 CT mask와 QEMU hook의 영속화·실패 경계는 [CPU 격리 런북](runbooks/cpu-isolation.md)에
 있습니다. 이 도구는 host IP·부팅 인자·IRQ 정책을 바꾸지 않으며 I/O와 latency 검증은 별도입니다.
 
+학생 VM이 모두 중지된 뒤에도 child cpuset controller를 유지하는
+`examples/pickle-student-cpu-controller.service.template`은 같은 학생 mask의 idle process를
+`qemu.slice`에 둡니다. 템플릿의 보호 배치와 별도 소유 기록, 부팅 순서와 원복 조건은
+[CPU 격리 런북](runbooks/cpu-isolation.md#학생-child-controller-유지)에 있습니다.
+
 이 예시본에는 `proxmox-api-principal.md`(Proxmox API 서비스 principal 권한 분리와 token custody), `new-environment.md`(신규 환경 관통 구축 순서 — 환경별로 바꿀 값 표와
 사람만 할 수 있는 단계·절차가 없는 지점 명시), `node-intake.md`(비Proxmox 노드 편입 절차 —
 실측 체크리스트, 운영자 접속 키 설치, 대역외 관리 평면 점검), `drift-resolution.md`(DB와
