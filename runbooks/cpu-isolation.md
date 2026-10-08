@@ -105,6 +105,99 @@ PVE GET의 storage content CSV는 같은 capability 집합이어도 순서가 �
 경우에만 순서를 정렬합니다. 중복·누락·다른 capability·문자열 아닌 값은
 거부하며 digest, raw `storage.cfg` SHA와 다른 설정 필드는 그대로 CAS 비교합니다.
 
+## 학생 child controller 유지
+
+마지막 QEMU가 중지되면 systemd는 `qemu.slice`의 child controller를 회수할 수
+있습니다. slice 자체의 `AllowedCPUs`와 effective mask가 학생 집합이어도
+`cgroup.subtree_control`은 비게 됩니다. 기존 pre-start는 이 상태를 성공으로
+취급하지 않습니다. `examples/pickle-student-cpu-controller.service.template`은 학생
+집합의 idle process 하나를 같은 slice에 두어 child cpuset 요구를 유지합니다.
+
+템플릿의 `{student_cpus}`는 **현재 native topology에서 산출한 `masks.student`의
+정확한 문자열**로 채웁니다. 온전한 SMT pair 분류와 현 policy를 다시 검증하고,
+CPU 번호 offset이나 문서의 범위를 실제값으로 대신하지 마세요. 압축 범위와
+나열형이 같은 집합을 나타내더라도 검토된 배치의 문자열과 바이트를 그대로 사용합니다.
+이 템플릿은 설치 프로그램이 아니며 기존 `cpu-isolation.py`의 정책·프로그램·설치
+manifest를 바꾸거나 부모 cpuset을 직접 적용하지 않습니다.
+
+unit은 `Type=exec`, `Slice=qemu.slice`, 같은 학생 `AllowedCPUs`,
+`ExecStart=/usr/bin/sleep infinity`, `Restart=always`를 사용합니다.
+기존 CPU unit에 `Requires`와 `After`를 두고, `pve-guests.service`보다 먼저
+시작합니다. `WantedBy=multi-user.target pve-guests.service`가 만드는 두 `.wants`
+링크만 추가합니다. `pve-guests.service`의 강한 `Requires`로 연결하면 controller의
+수동 정지가 PVE의 `stopall`로 전파될 수 있으므로 `.requires` 링크를 만들지 않습니다.
+CPU unit → qemu slice → 학생 controller → PVE guest 시작 순서이며,
+기존 CPU oneshot의 `RemainAfterExit`나 준비 기록으로 실제 프로세스 관측을 대신하지 않습니다.
+
+별도 승인된 창에서 다음을 먼저 확인합니다.
+
+- 기존 CPU unit의 enabled/active 상태, 원래 policy·프로그램·hook·guest/storage
+  config·설치 기록의 SHA와 소유·mode·inode·mtime/ctime가 일치합니다.
+- QEMU guest·numeric scope·process·전체 thread가 모두0이고, parent의 direct
+  process도0입니다. 학생 requested/effective mask와 플랫폼 exclusive root,
+  host mask를 actual 읽기 자료로 확인합니다. unknown child·task·미분류 guest는 거부합니다.
+- 새 unit 파일, runtime unit·override·drop-in과 같은 이름의 enable/alias 링크가
+  없고, 새 별도 소유 디렉터리와 시도 namespace도 없습니다. 기존 파일을 교체하지 않습니다.
+- source가 운영 중인 준비 단계라면 실제 source 상태를 다시 관측합니다. 이 과정이
+  source 동결·서비스 정지·운영 DB 쓰기·공개 진입 전환을 허용하지 않습니다.
+
+새 후보는 root 소유 보호 경로에 만들고 unit 문법을 검증합니다. 기존 후보와 실패
+자료를 재사용하거나 덮어쓰지 않습니다.
+
+```bash
+systemd-analyze verify /root/new-student-controller/pickle-student-cpu-controller.service
+```
+
+독립 검토와 실제 node·unit/program SHA·새 nonce·UTC 시작/종료를 묶은 승인 아래에서
+unit을 root:root·0644로 **exclusive 배치**하고, 원본 inventory와 소유 기록은
+`/etc/pickle/student-cpu-controller/<새 nonce>/`의 root:root·0700 디렉터리 안에
+0600으로 보존합니다. 승인된 새 unit만 start/enable하며 기존 CPU unit과 guest를
+재시작하지 않습니다. 아래 명령은 보호 배치와 모든 선행 검사를 완료한 뒤의 순서입니다.
+
+```bash
+systemctl daemon-reload
+systemctl start pickle-student-cpu-controller.service
+# Complete process ownership and whole-CPU verification before enabling.
+systemctl enable pickle-student-cpu-controller.service
+```
+
+다음 읽기 검증은 단순 `active` 응답과 구분합니다.
+
+- 실제 MainPID·프로세스 birth·실행 파일·argv·cgroup이 소유한 sleep process와
+  일치하고, 해당 unit의 모든 실제 TID affinity가 학생 집합 안에 있습니다.
+- `qemu.slice` child cpuset과 requested/effective mask가 유효하며 기존 전체 CPU
+  검증, normal root partition과 원래 파일/guest/storage 메타데이터 보존이 통과합니다.
+- unit 바이트와 실제 fragment/drop-in, root 소유·mode를 대조하고 정확한
+  `multi-user.target.wants`와 `pve-guests.service.wants` 두 링크만 같은 unit을 가리킵니다.
+- enable 뒤에도 같은 실제 owner와 원래 상태를 다시 조회하고 별도 완료 기록을
+  남깁니다. 타임아웃·unknown PID·추가 alias·CAS 불일치는 partial로 보존하며 자동 replay하지 않습니다.
+
+```bash
+systemctl show pickle-student-cpu-controller.service \
+  -p MainPID -p ControlGroup -p FragmentPath -p DropInPaths -p ActiveState -p UnitFileState
+python3 /usr/local/libexec/pickle-cpu-isolation.py check \
+  --output /root/new-student-controller-after.json
+```
+
+같은 승인 정책의 영속 unit은 새 guest가 없는 동안에도 학생 controller를 유지합니다.
+그 사실만으로 reboot·첫 정상 clone·새 io-wq/vhost·I/O 부하 검증을 완료했다고
+기록하지 마세요. 이전 mask를 저장한 io-wq context나 새로운 escape는 실제 TID
+census에서 거부하고 원래 관측을 보존합니다. projection으로 특정 원인을 분류한
+결과는 actual 전체 검증이나 CPU readiness가 아닙니다.
+
+원복은 별도의 현재 승인 창과 실제 QEMU0, completed ownership, 변경없는 unit
+바이트/stat·두 링크·현재 PID/birth/cgroup을 모두 확인한 뒤에만 자기 unit을
+stop/disable하고 회수합니다. 다른 alias가 있거나 현재 PID가 달라졌으면 자동
+원복하지 않습니다. `.wants` 관계를 유지하므로 이 정리가 PVE 전체 guest 정지로
+전파되지 않습니다. 원래 empty parent와 기존 CPU/guest/storage 상태를 다시
+대조하며 완료·실패 기록은 보존합니다. 기존 policy·프로그램·설치 manifest와
+source는 이 원복의 대상이 아닙니다.
+
+child controller 수명주기는 [systemd 257 cgroup 구현](https://github.com/systemd/systemd/blob/v257/src/core/cgroup.c),
+의존성과 enable 링크는 [systemd 257 unit 명세](https://github.com/systemd/systemd/blob/v257/man/systemd.unit.xml)를
+참조합니다. [PVE guest unit](https://github.com/proxmox/pve-manager/blob/master/services/pve-guests.service)의
+`ExecStop`은 전체 guest 정지 동작이므로 약한 시작 의존성을 유지합니다.
+
 ## 승인 창의 설치 순서와 실패
 
 독립 검토자는 manifest 전량, 실제 설치 코드 SHA와 unit ordering을 확인합니다.

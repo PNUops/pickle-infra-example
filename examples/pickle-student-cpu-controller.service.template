@@ -1,0 +1,15 @@
+[Unit]
+Description=Keep the student CPU controller active
+Requires=pickle-cpu-isolation.service
+After=pickle-cpu-isolation.service
+Before=pve-guests.service
+[Service]
+Type=exec
+Slice=qemu.slice
+AllowedCPUs={student_cpus}
+ExecStart=/usr/bin/sleep infinity
+Restart=always
+RestartSec=1s
+KillMode=control-group
+[Install]
+WantedBy=multi-user.target pve-guests.service
