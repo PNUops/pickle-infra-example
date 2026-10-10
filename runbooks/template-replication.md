@@ -32,6 +32,32 @@ TARGET_ROOT=/root/template-replication-target
 - root disk를 read-only로 열어 SSH host key가 없고 machine-id가 `uninitialized`이며 cloud-init
   instance state가 비어 있음을 확인했습니다.
 
+source template의 build manifest는 image-builder `main`에 커밋돼 있어야 하고, 그 안의
+`recipeRevision`은 `main`이 거쳐 온 커밋이어야 합니다. `-modified`가 붙은 값과 `unknown`은
+커밋되지 않은 변경으로, `main`에 없는 커밋은 머지되지 않은 토픽 브랜치로 빌드했다는 뜻입니다.
+그런 template은 복제하지 않습니다. image-builder 체크아웃이 있는 build host(pve-node의
+`/pickle/image-builder`)에서 확인합니다.
+
+```bash
+set -euo pipefail
+IB=/pickle/image-builder
+git -C "$IB" fetch --quiet origin main
+mapfile -t MANIFESTS < <(git -C "$IB" ls-tree --name-only origin/main manifests/ |
+  grep -E -- "-${SOURCE_VMID}\.json\$")
+test "${#MANIFESTS[@]}" -eq 1
+REVISION=$(git -C "$IB" show "origin/main:${MANIFESTS[0]}" | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["recipeRevision"])')
+case "$REVISION" in
+  ''|unknown|*-modified) echo "recipe revision is not a commit: $REVISION" >&2; exit 1 ;;
+esac
+git -C "$IB" merge-base --is-ancestor "$REVISION" origin/main
+git -C "$IB" show "origin/main:${MANIFESTS[0]}" | sha256sum | cut -d' ' -f1
+```
+
+마지막 줄의 SHA-256이 「Root image와 cloud-init 확인」의 `SOURCE_MANIFEST_SHA256`입니다. 빌더는
+레포지토리의 manifest와 guest의 `/etc/pickle/image.json`에 같은 내용을 쓰므로, 그 검사가 복원한
+image가 이 manifest로 만든 것인지 확인합니다.
+
 target에서는 VMID 1102가 cluster inventory와 모든 node config에 없어야 합니다. target
 storage에도 `vm-1102-*`와 `base-1102-*` volume이 없어야 하며 archive, raw VMA와 복원 disk를
 수용할 여유가 있어야 합니다. target VMID를 쓰는 HA resource와 실행 중인 task도 없어야 합니다.
