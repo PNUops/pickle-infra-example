@@ -33,8 +33,9 @@ TARGET_ROOT=/root/template-replication-target
   instance state가 비어 있음을 확인했습니다.
 
 source template의 build manifest는 image-builder `main`에 커밋돼 있어야 하고, 그 안의
-`recipeRevision`은 `main`이 거쳐 온 커밋이어야 합니다. `-modified`가 붙은 값과 `unknown`은
-커밋되지 않은 변경으로, `main`에 없는 커밋은 머지되지 않은 토픽 브랜치로 빌드했다는 뜻입니다.
+`recipeRevision`은 `main`이 거쳐 온 커밋이어야 합니다. `-modified`가 붙은 값은 커밋되지 않은
+변경으로, `unknown`은 빌드한 체크아웃의 커밋을 읽지 못했다는 뜻으로, `main`에 없는 커밋은
+머지되지 않은 토픽 브랜치로 빌드했다는 뜻입니다.
 그런 template은 복제하지 않습니다. image-builder 체크아웃이 있는 build host(pve-node의
 `/pickle/image-builder`)에서 확인합니다.
 
