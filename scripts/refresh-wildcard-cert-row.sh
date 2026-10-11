@@ -26,7 +26,10 @@
 #
 # Environment (same names and defaults as apply-platform-inventory.sh):
 #   PICKLE_APP_CTID        101      container running PostgreSQL + the api
+#   PICKLE_DB_CTID         app ID   separate PostgreSQL container, when selected
+#   PICKLE_DB_CT_HOSTNAME  pickle-app
 #   PICKLE_PROXY_CTID      100      container holding the certbot lineage
+#   PICKLE_PROXY_CT_HOSTNAME reverse-proxy
 #   PICKLE_DB              pickle_dev
 #   PICKLE_ROOT_DOMAIN     pusan.dev
 #   PICKLE_WILDCARD_CERT   /etc/letsencrypt/live/<root>/fullchain.pem
@@ -34,12 +37,12 @@ set -euo pipefail
 
 export PATH="/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
-CTID="${PICKLE_APP_CTID:-101}"
+CTID="${PICKLE_DB_CTID:-${PICKLE_APP_CTID:-101}}"
 PROXY_CTID="${PICKLE_PROXY_CTID:-100}"
 # shellcheck source=scripts/lib/ct.sh
 . "$(dirname "$0")/lib/ct.sh"
-require_ct "$CTID" pickle-app
-require_ct "$PROXY_CTID" reverse-proxy
+require_ct "$CTID" "${PICKLE_DB_CT_HOSTNAME:-pickle-app}"
+require_ct "$PROXY_CTID" "${PICKLE_PROXY_CT_HOSTNAME:-reverse-proxy}"
 DB="${PICKLE_DB:-pickle_dev}"
 
 ROOT_DOMAIN="${PICKLE_ROOT_DOMAIN:-pusan.dev}"

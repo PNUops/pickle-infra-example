@@ -187,6 +187,10 @@ DB/PBS 도구는 Python 3와 `proxmox-backup-client`, source의 PostgreSQL 18 cl
 메일은 별도 설치 및 활성화가 필요합니다. 키 보관, 보존 정책과 전체 서비스 복원 시험은
 [DB/PBS 런북](runbooks/db-pbs-backup.md)에 있습니다. 사용자 VM 정기 백업은 이 도구의 대상이 아닙니다.
 
+`production-health.py`는 분리 운영 container의 서비스, DB, 정기 작업과 인증서를
+선택 config로 점검합니다. 정기 점검과 와일드카드 갱신 소유, expiry row 인계 절차는
+[운영 점검 런북](runbooks/production-ops.md)에 있습니다.
+
 `candidate-core-vzdump-hook.sh`는 예시 후보 노드 pve-node-2의 CT 1200/1201/1202/1204를
 PBS로 백업하기 전 노드·스토리지·정족수·설정·실행 상태를 확인합니다. 등록 절차는
 [후보 코어 백업 런북](runbooks/candidate-core-backup.md)에 있습니다.
