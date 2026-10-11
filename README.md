@@ -397,6 +397,19 @@ DB 백업 테스트는 PBS 응답을 대신하는 메모리 객체로 snapshot �
 [pickle-secrets-example](https://github.com/PNUops/pickle-secrets-example)에서 따로
 설명합니다.
 
+## NetBird 관리와 내부 NTP
+
+관리 peer는 root 전용 일회용 key 파일로 등록하며 DNS·route·SSH config를 보존합니다.
+신규 관리 peer의 선택 버전은 NetBird 0.80.0이며 기존 peer를 일괄 업그레이드하지 않습니다.
+VPN NTP server는 distro chrony deb를 별도 경로에 추출하고 기존 시간 client를 유지합니다.
+
+| 도구 | 용도 |
+|---|---|
+| `enroll-management-peer.sh` | setup-key-file과 명시적 apply로 새 management peer 등록 |
+| `install-vpn-ntp-server.sh` | exact overlay 주소와 client allowlist로 clock-control 없는 NTP server 구성 |
+
+실행·보호·검증·원복은 [NetBird 관리/NTP 런북](runbooks/netbird-management-ntp.md)을 따릅니다.
+
 ## 전체 아키텍처
 
 <!-- arch:begin -->
