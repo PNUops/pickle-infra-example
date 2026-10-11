@@ -125,7 +125,7 @@ sanitize_host_allowed() {
     # Public infrastructure these scripts genuinely fetch from.
     github.com | *.github.com | githubusercontent.com | *.githubusercontent.com) return 0 ;;
     *.debian.org | *.ubuntu.com | *.postgresql.org | *.proxmox.com | *.docker.com) return 0 ;;
-    nginx.org) return 0 ;;
+    nginx.org | chrony-project.org) return 0 ;;
     pkgs.netbird.io | docs.netbird.io | www.dell.com) return 0 ;;
     *.letsencrypt.org | *.cloudflare.com | *.npmjs.org | *.golang.org | *.maven.org) return 0 ;;
   esac
@@ -228,6 +228,14 @@ sanitization_selftest() {
   fi
   if sanitize_host_allowed packages.nginx.org; then
     echo 'sanitization selftest: the nginx package-host exception became broader than exact' >&2
+    return 1
+  fi
+  if ! sanitize_host_allowed chrony-project.org; then
+    echo 'sanitization selftest: the exact official chrony documentation host was rejected' >&2
+    return 1
+  fi
+  if sanitize_host_allowed packages.chrony-project.org; then
+    echo 'sanitization selftest: the chrony documentation-host exception became broader than exact' >&2
     return 1
   fi
   for probe in '25.0.4.1+1-1~deb13u1' 'JRE_VERSION="25.0.4.1+1-1~deb13u1"' \
