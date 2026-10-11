@@ -1,0 +1,10 @@
+[Unit]
+Description=Read-only health snapshot for the selected production containers
+After=pve-guests.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/pickle-production-ops.env
+ExecStart=/bin/bash ${PICKLE_OPS_RELEASE}/cron-wrap.sh production-health -- /usr/bin/python3 -I -B ${PICKLE_OPS_RELEASE}/production-health.py --config /etc/pickle-production-health.json
+# The selected 29 probes each have a 12-second bound.
+TimeoutStartSec=600

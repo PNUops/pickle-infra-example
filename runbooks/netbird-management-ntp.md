@@ -24,10 +24,17 @@ client route는 비활성으로 등록합니다. 기존 WireGuard·공개 진입
 
 각 host의 새 root0700 journal에 원래 package 상태, netbird unit/config 존재 여부,
 SSH·resolver·network/WireGuard의 bytes/권한과 route/rule·listener·nft 상태를 보관합니다.
-키와 기존 NetBird config는 host 보호 공간에만 둡니다. 다른 backup을 덮어쓰지 않습니다.
+키와 기존 NetBird config는 host 보호 공간에만 둡니다. NetBird 0.80.0의 실제 default
+profile은 `/var/lib/netbird/default.json`이며 private key를 포함하므로 Mac/Git/출력으로
+반출하지 않습니다. `/etc/netbird`가 있으면 그 경로도 함께 확인합니다. 기존 profile이나
+Cloud peer가 있으면 disconnected 상태만으로 새 peer라고 판단하지 않으며 재등록 전에
+기존 상태와 자기 partial을 확인합니다. 다른 backup을 덮어쓰지 않습니다.
+이 default profile 확인과 보호 백업은 실행자의 사전 절차입니다. 현재 enrollment
+script가 해당 경로까지 자동 검사/백업한다고 가정하지 않습니다.
 Cloud peers/groups/policies도 token 없이 보호 기록으로 보관합니다.
 
-Default policy가 disabled이며 동명 peer/group/policy와 기존 `/etc/netbird` 설정이 없는지
+Default policy가 disabled이며 동명 peer/group/policy와 기존 `/etc/netbird` 또는
+`/var/lib/netbird/default.json` profile이 없는지
 확인합니다. 기존 연결 peer나 불명확한 partial은 재등록하지 않습니다. Binary/package
 설치와 Cloud 변경 전에 구체 diff·원복을 검토합니다. Client 시각 변경은 별도 검토입니다.
 
@@ -81,19 +88,27 @@ Cloud API는 기존 운영자의 보호된 token-file client를 사용합니다.
 | POST `/api/setup-keys` | 각 새 group ID를 `auto_groups`로 지정한 host별 one-off key. `usage_limit:1`, 짧은 `expires_in`, `ephemeral:false` |
 | GET `/api/peers`, GET 새 group | 실제 node-a/relay-node ID·IPv4·connected와 membership1 확인; All의5→7 자동 membership만 예상 |
 | POST `/api/groups` | `platform-ntp-clients`: 실제 node-a/node-b/node-c/witness-host/backup-guest peer ID 다섯 개만 |
-| POST `/api/policies` | 아래3개 rule를 새 enabled policy에 추가. source/destination은 실제 group ID |
+| POST `/api/policies` | 아래3개 rule를 각각 **one-rule enabled policy3개**로 생성. source/destination은 실제 group ID |
 
 ```json
-{"name":"management-and-ntp","enabled":true,"rules":[
- {"name":"operator-node-a","enabled":true,"action":"accept","bidirectional":false,
-  "protocol":"tcp","ports":["22"],"sources":["<existing operators ID>"],"destinations":["<new management-node-a ID>"]},
- {"name":"operator-relay","enabled":true,"action":"accept","bidirectional":false,
-  "protocol":"tcp","ports":["22"],"sources":["<existing operators ID>"],"destinations":["<new management-aws ID>"]},
- {"name":"host-ntp","enabled":true,"action":"accept","bidirectional":false,
-  "protocol":"udp","ports":["123"],"sources":["<new platform-ntp-clients ID>"],"destinations":["<new management-aws ID>"]}
-]}
+[
+ {"name":"management-node-a-ssh","enabled":true,"rules":[
+  {"name":"operator-node-a","enabled":true,"action":"accept","bidirectional":false,
+   "protocol":"tcp","ports":["22"],"sources":["<existing operators ID>"],"destinations":["<new management-node-a ID>"]}]},
+ {"name":"management-aws-ssh","enabled":true,"rules":[
+  {"name":"operator-relay","enabled":true,"action":"accept","bidirectional":false,
+   "protocol":"tcp","ports":["22"],"sources":["<existing operators ID>"],"destinations":["<new management-aws ID>"]}]},
+ {"name":"platform-host-ntp","enabled":true,"rules":[
+  {"name":"host-ntp","enabled":true,"action":"accept","bidirectional":false,
+   "protocol":"udp","ports":["123"],"sources":["<new platform-ntp-clients ID>"],"destinations":["<new management-aws ID>"]}]}
+]
 ```
 
+위 배열의 세 객체를 각각 별도 POST합니다. 실제 Cloud 적용에서 한 policy에 세 rule를
+보낸 요청이200이었으나 GET에는 첫 rule만 관측됐으므로 one-rule 방식으로 각 scope를
+독립 readback합니다. 모든 NetBird 버전의 보편적 제한이라고 단정하지 않습니다.
+GET의 source/destination group 객체는 실제 ID로 대조합니다. All group의 자동 peer
+count 증가를 policy 설정 변경이라고 오인하지 않으며 membership은 별도로 확인합니다.
 위 angle-bracket 값은 실제 응답으로 대체하는 API 입력 자리입니다. 실행 receipt가 아닙니다.
 All/default 정책·기존11개 정책·학생 subnet·routing resource·DNS 설정은 변경하지 않습니다.
 
@@ -139,6 +154,14 @@ Chrony가 이미 있는 host에서는 native `chronyd -Q -t 15 -f /dev/null 'ser
 큰 offset/불명확한 결과는 Root 검토 전 client 설정을 변경하지 않습니다.
 
 Client의 기존 source·설정을 보존하고 exact AWS-IP만 추가하는 변경은 별도로 검토합니다.
+Chrony는 기존 config의 `sourcedir`가 읽는 새 `.sources` 파일을 root0644로 설치하고
+`chronyc reload sources`로 선택합니다. 기존 daemon PID와 pool을 보존합니다.
+Timesyncd는 새 `.conf.d` directory0755와 drop-in0644에 `[Time]`/`NTP=<AWS-IP>`를
+설치한 뒤 해당 time unit만 재시작합니다. 초기 작은 clock correction이 발생할 수 있으므로
+적용 전 낮은 RTT offset과 영향, 적용 후 실제 source/kernel sync를 확인합니다.
+파일 생성 시 mode 인자는 process umask에 의해 제한됩니다. `umask077` 아래에서
+0644/0755를 요청해도 실제0600/0700이 될 수 있으므로 새 public config의 정확한
+uid/mode/contents를 읽어 확인합니다. Private profile/key/journal은0600/0700을 유지합니다.
 기존 chrony restart·makestep/clockstep을 수행하지 않습니다. 새 source 선택·reach·ref time,
 NTPSynchronized와 기존 서비스/인증/backup을 확인하고 core monitor의 **자연 실행**을
 관측합니다. Monitor gate를 우회하거나 과거 FAILED state를 지우지 않습니다.

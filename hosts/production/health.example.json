@@ -1,0 +1,21 @@
+{
+  "expected_host": "example-platform-host",
+  "containers": {
+    "200": ["nginx.service", "pickle-proxy-agent.service"],
+    "201": ["pickle-api.service"],
+    "202": ["sshpiperd.service", "pickle-ssh-transit-front.service", "sshgw-terminal-bridge.service"],
+    "203": ["llm-gateway-production.service"],
+    "204": ["postgresql@18-main.service"]
+  },
+  "app_ctid": 201,
+  "gateway_ctid": 203,
+  "gateway_health_url": "http://198.18.1.40:8081/healthz",
+  "db_ctid": 204,
+  "proxy_ctid": 200,
+  "database": "example_prod",
+  "certificates": [
+    "/etc/letsencrypt/live/console.example.com/fullchain.pem",
+    "/etc/letsencrypt/live/llm.example.com/fullchain.pem",
+    "/etc/letsencrypt/live/example.com/fullchain.pem"
+  ]
+}

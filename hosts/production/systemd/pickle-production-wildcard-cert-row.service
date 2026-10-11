@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh the production wildcard certificate expiry row
+After=pve-guests.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/pickle-production-ops.env
+ExecStart=/bin/bash ${PICKLE_OPS_RELEASE}/cron-wrap.sh production-wildcard-cert-row -- /bin/bash ${PICKLE_OPS_RELEASE}/refresh-wildcard-cert-row.sh
+TimeoutStartSec=300

@@ -1,0 +1,10 @@
+[Unit]
+Description=Production container health snapshot every ten minutes
+
+[Timer]
+OnCalendar=*:0/10
+RandomizedDelaySec=30
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
