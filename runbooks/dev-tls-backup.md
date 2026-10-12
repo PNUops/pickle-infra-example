@@ -2,9 +2,19 @@
 
 2026-10-12 사전 준비를 적용했다. 개발 전용 namespace/user/token과 두 호스트의
 새 복구자료, frozen exporter/worker, 별도 SSH pin과 forced reader, unit 파일이 설치됐다.
-service는 loaded/static/inactive이고 timer는 daemon-reload 후 loaded/disabled/inactive다.
-인증서 lineage는 아직 없으며 실제 TLS snapshot backup/restore와 timer 활성화는 수행하지 않았다.
-아래 첫 인수시험과 복구 절차는 해당 lineage 발급 후의 다음 단계다.
+사전 준비 시 service는 loaded/static/inactive이고 timer는 loaded/disabled/inactive였다.
+아래 현재 commissioning 결과와 초기 disabled 상태를 구분한다.
+2026-10-13 HTTP-01 신규 lineage 발급과 실제 PBS snapshot backup과 node-restore의 독립 exact snapshot 복구를 검증했다.
+같은 lineage의 hook 없는 renewal dry-run 성공 보고와 종료, 이후 source 전체 digest와
+복구점 일치도 확인했다. 2026-10-13 03:54–04:00 KST에 개발 전용 TLS/SNI 선택과 두 번째 graceful reload,
+공개 strict TLS/console/API/Host 검증을 마쳤다. 새 timer만 enabled/active/waiting이며
+15분 calendar/Persistent=yes다. 첫 자연 trigger는 04:15:00 KST에 실행되고
+04:15:02에 ExecMainStatus=0/Result=success로 종료한 것을 04:17 KST에 확인했다.
+이때 timer의 다음 실행은 04:30 KST였다. 기존 route의 status/leaf/expiry가
+전후 같고 선택 시 실제 source digest와 기존 복구점도 같았다. 첫 scheduled run의
+unit 상태만 관측했으므로 그 실행이 같은 복구점을 재사용했다고 주장하지 않는다.
+수동 worker의 source/복구점 대조와 scheduled unit 성공은 별도 증거다.
+아래 인수시험과 복구 절차는 설치 재현 및 장애 복구 시의 재검증에 사용한다.
 
 ## 경로와 권한
 
@@ -128,10 +138,11 @@ CMS는 AES-256-GCM이며 node-dev OpenSSL 3.5.6과 node-restore OpenSSL 3.5.7 na
 service를 수동 실행해 첫 복구점이 검증된 다음 공개 TLS를 활성화한다.
 실패는 systemd failed 상태와 고정 journald 실패 메시지로 남는다. 성공에는 snapshot과
 certificate/CMS SHA만 journald에 기록한다. 설치 인수시험과 운영 점검에서는 최근 성공이
-30분을 넘지 않는지 확인한다. worker는 매 실행 source와 restored backup의 fingerprint를
-직접 비교한다. freshness 자동 감시/외부 알림은 현재 worker에 구현됐다고 주장하지 않는다.
+30분을 넘지 않는지 확인한다. worker는 매 실행 source와 이전 복구 검증으로 저장한 fingerprint를 비교한다.
+변경·신규·이전 복구점 소실 때만 새 backup과 exact restore를 수행하며,
+변경이 없으면 해당 snapshot 존재를 확인한 뒤 새 restore를 생략한다. freshness 자동 감시/외부 알림은 현재 worker에 구현됐다고 주장하지 않는다.
 정기 worker `scripts/dev-tls-backup.py`와 timer/service는 위의 frozen 경로와 systemd 경로에
-설치됐지만 timer는 활성화하지 않았다.
+설치됐고 위의 공개 commissioning 뒤 개발 전용 timer만 활성화했다.
 worker는 native client의 exact snapshot restore와 CMS 복호화, cert/key 일치를 확인한다.
 timer 설치 전 실패/restore 테스트와 별도 복구 사본의 인수시험을 마친다.
 
@@ -165,3 +176,30 @@ root 0600 파일에 먼저 보관하고 CMS-GCM으로 node-restore에만 전달�
 건드리지 않는다. PBS 접근 해제는 새 user 둘을 disable하고 해당 dev-tls ACL 네 줄만
 제거한다. namespace/snapshot/key/token 원본과 두 custody 자료는 삭제하지 않는다.
 기존 운영 resource나 서비스 재시작은 rollback에 포함하지 않는다.
+
+## HTTP-01 commissioning의 파일 모드
+
+root 작업 runner의 umask 0077을 HTTP-01 webroot 생성과 Certbot 호출에 그대로 상속하면
+새 공개 challenge 디렉터리가 0700이 되어 nginx worker가 읽지 못한다. 최초 발급에서
+CA 404가 났고, 새 소유 webroot/challenge 경로를 0755로 정정한 다음 실제 공인 주소의
+dummy challenge 일치와 제거를 확인해 재시도했다. Certbot은 명시적으로 umask 0022에서
+호출한다. private key는 Certbot이 정한 root 0600인지 별도 검증한다. 신규 live/archive
+lineage 디렉터리는 0700, renewal config는 0600으로 보호하며 기존 lineage는 수정하지 않는다.
+
+첫 복구점의 예시 표기는 `host/node-dev-dev-tls/<EXAMPLE_SNAPSHOT_TIME>`다. 실제 9-member
+content/symlink 및 cert/key/SAN 비교가 통과했고, dry-run 뒤 worker가 현재 source digest와
+동일한 원격 복구점 존재를 확인해 새 snapshot을 만들지 않았다. dry-run의 초기 supervisor는
+실패했지만 native 출력의 simulated renewals 성공, 종료된 실제 process, 최종 nginx-t와
+기존 파일 보존은 독립 확인했다. supervisor 실패 원인을 확정했다고 주장하지 않는다.
+
+## 실제 공개 commissioning 검증 범위
+
+2026-10-13 공개 console은 검토한 index SHA와 일치했고 `/api/v1/me`는 인증 없이 401,
+`/llm/v1/models`와 `/terminal/ws`는 404였다. 기존 default reject를 보존하므로 잘못된
+HTTP Host는 연결 종료로 거부되며 HTTP 421이라고 기록하지 않는다. `/v1/models`는
+SPA fallback HTML이고 공개 LLM endpoint로 광고하지 않으며 404라고 주장하지 않는다.
+새 public TLS leaf의 DER SHA와 PEM SHA는 서로 다른 표현의 hash이므로 구분한다.
+
+선택 이후 CT901의 actual PID/open JAR FD SHA/readiness를 확인했다.
+쿠키 인증 시험은 수행하지 않았다. 소스에 정의된 Secure/__Host/HttpOnly 속성과 실제 HTTPS 쿠키
+응답의 실측은 다른 증거이며 실행하지 않은 실측을 성공으로 기록하지 않는다.

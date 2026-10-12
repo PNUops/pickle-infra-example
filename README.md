@@ -440,10 +440,15 @@ VPN NTP server는 distro chrony deb를 별도 경로에 추출하고 기존 시�
 
 ## 개발 TLS 암호화 백업
 
+개발 전용 TLS/SNI 선택과 15분 backup timer 활성화 후 공개 console/API/Host 검증을 마쳤습니다.
+독립 exact snapshot 복구와 갱신 dry-run을 확인했으며, 첫 자연 timer 실행도 exit 0으로
+종료했습니다. 기존 TLS route는 유지했고, scheduled 실행의 snapshot 내용과 로그인 쿠키
+응답을 별도 실측했다고 주장하지 않습니다.
+
 `dev-tls-export.py`는 지정된 개발 인증서·개인 키 bundle을 CMS recipient 공개 인증서로
 호스트 안에서 암호화합니다. `dev-tls-backup.py`는 크기·SHA와 recipient를 대조한 암호문을
-PBS에 보관하고, 독립 복구에서 원래 파일 hash를 확인합니다. 평문 키는 개발 호스트·서버
-내 보호 경로에만 남깁니다. 예제 설정은 `hosts/`의 `dev-tls-backup.example.json`, 실행·복구
+PBS에 보관하고, 독립 복구에서 원래 파일 hash를 확인합니다. 평문 키는 플랫폼 호스트와 독립 복구 서버의
+보호 경로에만 남깁니다. 예제 설정은 `hosts/`의 `dev-tls-backup.example.json`, 실행·복구
 절차는 [개발 TLS 백업 런북](runbooks/dev-tls-backup.md)에 있습니다. 개발 CI SSH key의
 custody와 GitHub secret 등록은 별도 절차이며 이 TLS 백업을 설정했다고 완료되지 않습니다.
 
