@@ -1,0 +1,39 @@
+{
+  "reader_hostname": "example-backup-host",
+  "reader_profile": "/root/example-pbs-selected/production.json",
+  "reader_profile_sha256": "EXAMPLE_READER_PROFILE_SHA256",
+  "native_library_dir": "/opt/pickle/db-backup/bin/lib",
+  "native_library_sha256": {
+    "db_pbs_backup.py": "EXAMPLE_NATIVE_DB_LIBRARY_SHA256",
+    "isolated_core.py": "EXAMPLE_NATIVE_CORE_LIBRARY_SHA256"
+  },
+  "database": "pickle_prod",
+  "instance_id": "EXAMPLE_DATABASE_INSTANCE_ID",
+  "expected_system_identifier": "EXAMPLE_DATABASE_SYSTEM_IDENTIFIER",
+  "namespace": "example-platform",
+  "backup_id": "application-db-production",
+  "expected_schema_version": 137,
+  "maximum_point_age_seconds": 600,
+  "temporary_root": "/root/pickle-release-backup-readback",
+  "postgres_restore_command": [
+    "ssh",
+    "-F",
+    "/etc/pickle/deploy-backup-source-ssh.conf",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=yes",
+    "-o",
+    "UpdateHostKeys=no",
+    "pickle-backup-source",
+    "pct",
+    "exec",
+    "914",
+    "--",
+    "runuser",
+    "-u",
+    "postgres",
+    "--",
+    "/usr/lib/postgresql/18/bin/pg_restore"
+  ]
+}

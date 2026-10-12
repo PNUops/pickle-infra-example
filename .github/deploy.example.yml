@@ -1,0 +1,279 @@
+# Inactive example: this file is outside .github/workflows.
+# Manual, commit-pinned build and deployment on separate runners. Service code
+# never runs in the job that receives root SSH credentials. Production stages
+# and checks an artifact; its service transition needs a separate approval.
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: target environment
+        required: true
+        type: choice
+        options: [dev, prod]
+      target:
+        description: service
+        required: true
+        type: choice
+        options: [api, console, llm-gateway]
+      commit:
+        description: full service commit SHA
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      filename: ${{ steps.metadata.outputs.filename }}
+      sha256: ${{ steps.metadata.outputs.sha256 }}
+    steps:
+      - name: Check out selected service
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.target == 'api' && 'PNUops/pickle-api' || inputs.target == 'console' && 'PNUops/pickle-console' || 'PNUops/pickle-llm-gateway' }}
+          ref: ${{ inputs.commit }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify commit is on the environment release line
+        working-directory: source
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'full lowercase commit SHA required' >&2; exit 1; }
+          [ "$(git rev-parse HEAD)" = "$COMMIT" ] || { echo 'checkout commit mismatch' >&2; exit 1; }
+          if [ "$ENVIRONMENT" = dev ]; then line=develop; else line=main; fi
+          git fetch origin "refs/heads/$line:refs/remotes/origin/$line"
+          git merge-base --is-ancestor "$COMMIT" "origin/$line" || {
+            echo "commit is not on $line" >&2; exit 1;
+          }
+      - name: Set up Java
+        if: inputs.target == 'api'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Set up Node
+        if: inputs.target == 'console'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Set up Go
+        if: inputs.target == 'llm-gateway'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: source/go.mod
+      - name: Verify and build
+        working-directory: source
+        env:
+          TARGET: ${{ inputs.target }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            api)
+              bash scripts/verify.sh
+              mvn -q -DskipTests clean package
+              jars=(target/pickle-api-*.jar)
+              [ "${#jars[@]}" -eq 1 ] || { echo 'expected one API JAR' >&2; exit 1; }
+              cp -- "${jars[0]}" ../artifact.jar
+              ;;
+            console)
+              npm ci --prefer-offline --no-audit --no-fund
+              env -u VITE_VM_NETWORK_POLICY_ENABLED -u VITE_PUBLIC_SOURCE_POLICY_ENABLED bash scripts/verify.sh
+              if [ "$ENVIRONMENT" = dev ]; then
+                VITE_DEPLOY_TARGET=development npm run --silent build
+                for forbidden in llm.example.com ssh.example.com console.example.com; do
+                  if grep -R -F -q "$forbidden" dist; then
+                    echo 'development bundle contains an operating endpoint' >&2; exit 1
+                  fi
+                done
+              fi
+              tar -czf ../artifact.tar.gz -C dist .
+              ;;
+            llm-gateway)
+              bash scripts/verify.sh
+              mkdir -p ../gateway-build
+              CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o ../gateway-build/llm-gateway ./cmd/llm-gateway
+              CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o ../gateway-build/llm-keygen ./cmd/llm-keygen
+              tar -czf ../artifact.tar.gz -C ../gateway-build llm-gateway llm-keygen
+              ;;
+            *) exit 1 ;;
+          esac
+      - name: Record artifact digest
+        id: metadata
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          filename=artifact.tar.gz
+          [ "$TARGET" = api ] && filename=artifact.jar
+          [ -f "$filename" ] && [ ! -L "$filename" ] || exit 1
+          echo "filename=$filename" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$filename" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Transfer artifact between isolated jobs
+        uses: actions/upload-artifact@v7
+        with:
+          name: pinned-service-artifact
+          path: ${{ steps.metadata.outputs.filename }}
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy-development:
+    if: inputs.environment == 'dev'
+    needs: build
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download isolated build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: pinned-service-artifact
+          path: payload
+      - name: Send development artifact through the fixed receiver
+        env:
+          TARGET: ${{ inputs.target }}
+          COMMIT: ${{ inputs.commit }}
+          FILENAME: ${{ needs.build.outputs.filename }}
+          DIGEST: ${{ needs.build.outputs.sha256 }}
+          DEV_HOST: ${{ secrets.EXAMPLE_DEV_HOST }}
+          DEV_PORT: ${{ secrets.EXAMPLE_DEV_PORT }}
+          DEV_KNOWN_HOSTS: ${{ secrets.EXAMPLE_DEV_KNOWN_HOSTS }}
+          DEV_DEPLOY_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] && [[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          case "$TARGET" in api) expected=artifact.jar ;; console|llm-gateway) expected=artifact.tar.gz ;; *) exit 1 ;; esac
+          [ "$FILENAME" = "$expected" ] || exit 1
+          [ -f "payload/$FILENAME" ] && [ ! -L "payload/$FILENAME" ] || exit 1
+          [ "$(find payload -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] || exit 1
+          [ "$(sha256sum "payload/$FILENAME" | cut -d ' ' -f 1)" = "$DIGEST" ] || exit 1
+          [ -n "$DEV_DEPLOY_KEY" ] && [ -n "$DEV_KNOWN_HOSTS" ] || exit 1
+          [[ "$DEV_HOST" =~ ^[A-Za-z0-9.-]+$ ]] && [[ "$DEV_PORT" =~ ^[0-9]{1,5}$ ]] || exit 1
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEV_DEPLOY_KEY" > ~/.ssh/id_dev_deploy
+          printf '%s\n' "$DEV_KNOWN_HOSTS" > ~/.ssh/dev_known_hosts
+          chmod 600 ~/.ssh/id_dev_deploy ~/.ssh/dev_known_hosts
+          export ARTIFACT_PATH="payload/$FILENAME"
+          export RECEIVER_ACTION=apply
+          [ "$TARGET" != llm-gateway ] || export RECEIVER_ACTION=check
+          python3 -c 'import json,os,pathlib,shutil,sys; p=pathlib.Path(os.environ["ARTIFACT_PATH"]); h={"version":1,"action":os.environ["RECEIVER_ACTION"],"target":os.environ["TARGET"],"commit":os.environ["COMMIT"],"sha256":os.environ["DIGEST"],"size":p.stat().st_size}; sys.stdout.buffer.write((json.dumps(h,separators=(",",":"))+"\n").encode()); sys.stdout.buffer.flush(); f=p.open("rb"); shutil.copyfileobj(f,sys.stdout.buffer)' | \
+            ssh -F /dev/null -i ~/.ssh/id_dev_deploy -p "$DEV_PORT" \
+              -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              -o UpdateHostKeys=no -o ConnectTimeout=10 -o UserKnownHostsFile="$HOME/.ssh/dev_known_hosts" \
+              "root@$DEV_HOST" pickle-dev-deploy-v1
+
+  deploy-production:
+    if: inputs.environment == 'prod'
+    needs: build
+    environment: prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted deployment tool
+        uses: actions/checkout@v7
+        with:
+          path: infra-example
+          ref: refs/heads/main
+          persist-credentials: false
+      - name: Download pinned artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: pinned-service-artifact
+          path: payload
+      - name: Verify transferred artifact
+        env:
+          FILENAME: ${{ needs.build.outputs.filename }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET" = api ]; then expected=artifact.jar; else expected=artifact.tar.gz; fi
+          [ "$FILENAME" = "$expected" ] || { echo 'artifact type mismatch' >&2; exit 1; }
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          [ -f "payload/$FILENAME" ] && [ ! -L "payload/$FILENAME" ] || exit 1
+          [ "$(find payload -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] || exit 1
+          [ "$(sha256sum "payload/$FILENAME" | cut -d ' ' -f 1)" = "$EXPECTED_SHA256" ] || {
+            echo 'artifact digest changed between jobs' >&2; exit 1;
+          }
+      - name: Stage and check target
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          TARGET: ${{ inputs.target }}
+          COMMIT: ${{ inputs.commit }}
+          FILENAME: ${{ needs.build.outputs.filename }}
+          DIGEST: ${{ needs.build.outputs.sha256 }}
+          HOP_HOST: ${{ secrets.EXAMPLE_DEV_HOST }}
+          HOP_PORT: ${{ secrets.EXAMPLE_DEV_PORT }}
+          HOP_KEY: ${{ secrets.EXAMPLE_HOP_SSH_KEY }}
+          HOP_KNOWN_HOSTS: ${{ secrets.EXAMPLE_DEV_KNOWN_HOSTS }}
+          PROD_HOST: ${{ secrets.EXAMPLE_PROD_HOST }}
+          PROD_PORT: ${{ secrets.EXAMPLE_PROD_PORT }}
+          PROD_KEY: ${{ secrets.EXAMPLE_PROD_SSH_KEY }}
+          PROD_KNOWN_HOSTS: ${{ secrets.EXAMPLE_PROD_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] && [[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          case "$ENVIRONMENT:$TARGET" in prod:api|prod:console|prod:llm-gateway) ;; *) exit 1 ;; esac
+          host=$PROD_HOST; port=$PROD_PORT; key=$PROD_KEY; known=$PROD_KNOWN_HOSTS
+          [ -n "$host" ] && [ -n "$port" ] && [ -n "$key" ] && [ -n "$known" ] || {
+            echo 'target SSH settings are incomplete' >&2; exit 1;
+          }
+          [[ "$port" =~ ^[0-9]{1,5}$ ]] && [[ "$host" =~ ^[A-Za-z0-9.-]+$ ]] || {
+            echo 'invalid SSH target' >&2; exit 1;
+          }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$HOP_KEY" > ~/.ssh/id_example_hop
+          chmod 600 ~/.ssh/id_example_hop
+          printf '%s\n' "$PROD_KEY" > ~/.ssh/id_example_prod
+          chmod 600 ~/.ssh/id_example_prod
+          printf '%s\n%s\n' "$HOP_KNOWN_HOSTS" "$known" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          [ -n "$HOP_HOST" ] && [ -n "$HOP_PORT" ] && [ -n "$HOP_KEY" ] && [ -n "$HOP_KNOWN_HOSTS" ] || {
+            echo 'trusted example hop settings are incomplete' >&2; exit 1;
+          }
+          [[ "$HOP_PORT" =~ ^[0-9]{1,5}$ ]] && [[ "$HOP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || exit 1
+          jump='  ProxyJump pickle-hop'; target_identity=id_example_prod
+          cat > ~/.ssh/config <<EOF
+          Host pickle-hop
+            HostName $HOP_HOST
+            Port $HOP_PORT
+            User root
+            IdentityFile ~/.ssh/id_example_hop
+            IdentitiesOnly yes
+            BatchMode yes
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+          Host pickle-target
+            HostName $host
+            Port $port
+            User root
+            IdentityFile ~/.ssh/$target_identity
+            IdentitiesOnly yes
+            BatchMode yes
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+          $jump
+          EOF
+          chmod 600 ~/.ssh/config
+          stage="/root/pickle-deploy-staging/$COMMIT/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          ssh -F ~/.ssh/config pickle-target "install -d -m 700 '$stage'"
+          scp -F ~/.ssh/config "payload/$FILENAME" "pickle-target:$stage/$FILENAME"
+          scp -F ~/.ssh/config infra-example/scripts/deploy-environment.py "pickle-target:$stage/deploy-environment.py"
+          ssh -F ~/.ssh/config pickle-target \
+            "python3 '$stage/deploy-environment.py' check '$ENVIRONMENT' '$TARGET' '$COMMIT' '$stage/$FILENAME' '$DIGEST'"
+          echo "production artifact staged and checked; a separate approved release remains required"

@@ -1,5 +1,10 @@
 # 런북: 신규 환경 구축 (빈 호스트에서 동작하는 플랫폼까지)
 
+API·console 배포 단계의 현재 진입점은 [명시 환경 artifact 절차](deploy-environments.md)입니다.
+`deploy-api.sh`·`deploy-console.sh`는 빌드하지 않으며 check/apply, dev/prod, 실제 commit과
+보호 staging artifact·SHA를 요구합니다. 이 문서의 초기 단일 호스트 CT 배치와 과거
+재구축 기록은 현재 보존 source를 재시작하는 권한이 아닙니다.
+
 플랫폼 전체를 아무것도 없는 상태에서 세우는 관통 절차다. Proxmox를 올릴 수 있는 빈
 기계에서 출발해 VM을 프로비저닝하고 콘솔을 서비스하고 SSH에 응답하며 재부팅을 견디는
 배포까지 간다. 이 문서가 담는 것은 순서와 의존, 그리고 환경마다 바뀌는 값이다. 이미
@@ -52,7 +57,7 @@ Proxmox 노드는 [proxmox-node-intake.md](proxmox-node-intake.md)를 따르고(
 | 7 | **HUMAN** 릴레이 인스턴스 생성 후 기동 | 릴레이 기동 런북(비공개 레포) 전 구간(6단계와 WG 페어링, HAProxy, 방화벽), 에이전트는 `scripts/deploy-relay.sh` | 0, 6 |
 | 8 | 리버스 프록시 컨테이너 (공개 웹 진입점) | 주석 8. 컨테이너를 만들면 설정은 에이전트 배포(10단계)와 apply 스크립트(11단계)로 도착한다. 플랫폼 루트마다 Let's Encrypt 와일드카드를 DNS-01 로 발급한다 | 2, 3, 그리고 0 (Cloud DNS 서비스 계정 키) |
 | 9 | 사용자 VM 템플릿 | image-builder 레포지토리(공개. 이 호스트에서는 `/srv/pickle` 아래 체크아웃), OS별 프로파일에서 값 표의 템플릿 VMID로. 재빌드 흐름은 템플릿 재빌드 런북(비공개 레포) | 2 |
-| 10 | 서비스 배포 | `scripts/deploy-api.sh`(api 첫 기동이 Flyway V1에서 최신까지 실행), `deploy-console.sh`, `deploy-proxy-agent.sh`, `deploy-sshgw.sh` | 5, 6, 8. api.env 채워져 있을 것 |
+| 10 | 서비스 배포 | `scripts/deploy-api.sh`와 `deploy-console.sh`의 명시 환경 artifact 진입점(api 첫 기동에 Flyway 실행), `deploy-proxy-agent.sh`, `deploy-sshgw.sh` | 5, 6, 8. api.env 채워져 있을 것 |
 | 11 | 인그레스와 호스트 정책 | `scripts/apply-terminal-ingress.sh` → `scripts/apply-main-domain-vhost.sh`(주석 11) → `scripts/apply-tls-ciphers.sh`. 그다음 `scripts/apply-log-retention.sh`와 `scripts/apply-ops-timers.sh`(주석 11a) | 8, 10. 0 (LE 발급을 위해 DNS와 방화벽이 살아 있을 것) |
 | 12 | 데이터베이스 부트스트랩: 인벤토리, 설정, 약관, OS 카탈로그, 릴레이 토큰 | [db-restore.md](db-restore.md)의 백지 부트스트랩 절, 거기 적힌 번호 순서 전부. dev 프로파일 정리와 실측 순서는 주석 12 | 5에서 10 완료. 인증서 행 때문에 8 |
 | 13 | 최초 운영 데이터 | 주석 13. OS 하나 활성화, 킬 스위치 켜기, 기관 1개 이상과 사양 프리셋 생성, 관리자 계정 확인 | 12 |

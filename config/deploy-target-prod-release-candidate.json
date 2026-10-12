@@ -1,0 +1,92 @@
+{
+  "environment": "prod",
+  "host": "example-prod-host",
+  "chat_db": {
+    "ctid": 914,
+    "hostname": "example-db-prod",
+    "name": "pickle_prod"
+  },
+  "api_rollback_policy": "fix-forward",
+  "allowed_commits": {
+    "api": "EXAMPLE_API_COMMIT_SHA",
+    "console": "EXAMPLE_CONSOLE_COMMIT_SHA",
+    "llm-gateway": "EXAMPLE_LLM_GATEWAY_COMMIT_SHA"
+  },
+  "targets": {
+    "api": {
+      "ctid": 911,
+      "hostname": "example-app-prod",
+      "unit": "pickle-api.service",
+      "env_file": "/etc/pickle/production.env",
+      "db_url_prefix": "jdbc:postgresql://198.19.0.21:5432/pickle_prod",
+      "active_path": "/opt/pickle/api/production-current.jar",
+      "legacy_exec_path": "/opt/pickle/api/production-example/pickle-api.jar",
+      "legacy_sha256": "EXAMPLE_API_ARTIFACT_SHA256",
+      "release_dir": "/opt/pickle/api/releases",
+      "health_url": "http://127.0.0.1:8080/actuator/health/readiness",
+      "startup_wrapper": "/usr/local/libexec/pickle-api-start.py",
+      "startup_wrapper_sha256": "c500d605d5ae4cc6dc435b9e2a7a73c0164765281a2d228d6964a1794c24a1cd"
+    },
+    "console": {
+      "ctid": 911,
+      "hostname": "example-app-prod",
+      "webroot": "/var/www/pickle-console",
+      "http_host": "pickle-prod.example.com"
+    },
+    "llm-gateway": {
+      "ctid": 913,
+      "hostname": "example-llmgw-prod",
+      "unit": "llm-gateway-production.service",
+      "env_file": "/etc/pickle/llm-gateway-production.env",
+      "active_path": "/opt/pickle/llm-gateway/bin/current-production",
+      "legacy_exec_path": "/opt/pickle/llm-gateway/bin/llm-gateway-example",
+      "legacy_sha256": "EXAMPLE_LLM_GATEWAY_ARTIFACT_SHA256",
+      "keygen_path": "/opt/pickle/llm-gateway/bin/llm-keygen",
+      "release_dir": "/opt/pickle/llm-gateway/releases",
+      "probe_ctid": 910,
+      "health_url": "http://198.19.0.40:8081/healthz"
+    }
+  },
+  "chat_compatibility_file": "/var/lib/pickle-deploy/prod/chat-compatibility.json",
+  "production_release_approval_file": "/etc/pickle/deploy-approvals/prod-release-candidate.json",
+  "backup_verification": {
+    "command": [
+      "ssh",
+      "-F",
+      "/etc/pickle/deploy-backup-reader-ssh.conf",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=yes",
+      "-o",
+      "UpdateHostKeys=no",
+      "pickle-backup-reader",
+      "python3",
+      "/opt/pickle/deploy/bin/verify-production-backup.py",
+      "--config",
+      "/etc/pickle/deploy-backup-reader.json"
+    ],
+    "verifier_sha256": "b51070d0cd316b08a38bf1084a64db08f3c99333d703d9afa1c8098a7be0d466",
+    "reader_hostname": "example-backup-host",
+    "database": "pickle_prod",
+    "instance_id": "EXAMPLE_DATABASE_INSTANCE_ID",
+    "expected_system_identifier": "EXAMPLE_DATABASE_SYSTEM_IDENTIFIER",
+    "expected_schema_version": 137,
+    "maximum_point_age_seconds": 600,
+    "maximum_verification_age_seconds": 120,
+    "recovery_scope": "independent encrypted file recovery, native TOC and recovered Flyway data"
+  },
+  "historical_full_sql_restore": {
+    "completion_file": "/root/example-pbs-sql-native/native-sql-complete.json",
+    "completion_sha256": "EXAMPLE_HISTORICAL_SQL_RESTORE_SHA256",
+    "scope": "2026-10-10 isolated same-point SQL restore; retained historical drill, not a new current-point SQL restore"
+  },
+  "release_version": "0.100/V140 future candidate",
+  "release_candidate_ready": false,
+  "expected_artifact_sha256": {
+    "api": "REPLACE_WITH_VERIFIED_RELEASE_ARTIFACT_SHA256",
+    "console": "REPLACE_WITH_VERIFIED_RELEASE_ARTIFACT_SHA256",
+    "llm-gateway": "REPLACE_WITH_VERIFIED_RELEASE_ARTIFACT_SHA256"
+  },
+  "source_cutoff": "Stored 0.99 source pins are historical; final matched 0.100 API/console and enforcing gateway sources are pending"
+}

@@ -1,0 +1,32 @@
+{
+  "host": "example-dev-host",
+  "manifest": "/etc/pickle/deploy-targets/dev.json",
+  "target_ctids": {
+    "api": 901,
+    "console": 901,
+    "llm-gateway": 901
+  },
+  "database_ctid": 902,
+  "forbidden_ctids": [
+    904,
+    905
+  ],
+  "staging_root": "/root/pickle-deploy-staging/dev-receiver",
+  "lock_parent": "/var/lib/pickle-dev-deploy/locks",
+  "trusted_tool": "/opt/pickle/dev-deploy/deploy-environment.py",
+  "trusted_tool_sha256": "f45662d4bca9d5c4e924e1f767c7ff0d91d0507e706890d227301abcd1db8c3f",
+  "maximum_bytes": {
+    "api": 268435456,
+    "console": 67108864,
+    "llm-gateway": 67108864
+  },
+  "receive_timeout_seconds": 120,
+  "deployment_timeout_seconds": 300,
+  "maximum_expanded_bytes": {
+    "console": 268435456,
+    "llm-gateway": 134217728
+  },
+  "maximum_archive_entries": 4096,
+  "maximum_staging_bytes": 1073741824,
+  "minimum_free_bytes": 1073741824
+}

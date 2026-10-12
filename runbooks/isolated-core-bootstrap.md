@@ -203,7 +203,13 @@ MAINTENANCE 노드 등록, agent 연결, 사용자 VM, PBS 복구, RPO/RTO 검�
 `allow-api-start`를 만들거나 JobRunr를 켜는 것도 그 다음 실행의 명시적 단계다.
 DB가 별도 LXC이므로 app 컨테이너 안의 PostgreSQL을 가정하는 운영 명령을 재사용하지 않는다.
 
-### 후보 콘솔 첫 배포
+### 후보 콘솔 첫 배포 기록
+
+이 절의 CTID·hostname override와 호스트 빌드 예시는 2026-09-27 후보 절차의 기록입니다.
+현재 `deploy-console.sh`는 이 호출을 빌드·대상 조회 전에 거부합니다. 실제 개발·운영
+배포는 [명시 환경 artifact 절차](deploy-environments.md)의 root 보호 target 설정과
+사전 빌드 artifact를 사용합니다. 아래 옛 후보 명령은 현재 운영이나 보존 source에서
+실행하는 절차가 아닙니다.
 
 `deploy-console.sh`는 호스트의 console 체크아웃에서 빌드한 뒤 app LXC의 nginx를
 reload하고, 게스트의 `127.0.0.1:80`에서 index와 JavaScript 번들을 확인한다. 후보

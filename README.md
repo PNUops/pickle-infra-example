@@ -100,18 +100,40 @@ runbooks/         운영 절차                                    // 이 예시
 | 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh`, `bootstrap-isolated-core.sh`, `bootstrap-isolated-services.sh`, `bootstrap-candidate-llm.sh` |
 | 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 물리 예약·CPU 공유 용량 기록) |
 | CPU 경계 | `cpu-isolation.py` (whole-SMT 후보·native 조회, 설치·적용은 기본 차단과 별도 승인 창) |
-| 배포 | `deploy-api.sh`, `deploy-console.sh`(기본 설정 검증 후 요청한 Vite 기능 플래그로 최종 빌드), `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
+| 배포 | `deploy-environment.py`(환경·artifact 검사 예시), `pickle-api-start.py`(열린 JAR descriptor를 유지하는 시작 wrapper), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `pickle-api-start.py`(열린 JAR descriptor를 유지하는 시작 wrapper), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `deploy-api.sh`, `deploy-console.sh`(명시 환경·artifact 진입점), `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `register-image.py`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
 | 운영 | `db-backup.sh`, `db-pbs-backup.sh`, `candidate-core-vzdump-hook.sh`, `core-pbs-monitor.py`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py`, `pbs-capacity-probe.py`, `pbs-capacity-monitor.py` |
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh`, `smoke-signup.sh` |
 
-`deploy-console.sh`는 기본적으로 hostname이 `pickle-app`인 LXC만 받습니다. 다른
-후보 LXC에는 `CTID`와 `EXPECTED_CT_HOSTNAME`을 함께 지정합니다. 실제 hostname과
-다르면 설치 전에 중단합니다. 후보의 백업·격리 복원 절차는
-`runbooks/isolated-core-bootstrap.md`에 있습니다.
-배포 스크립트는 정적 산출물 `dist/`를 nginx가 읽을 수 있게 조정합니다. 배포 로그는
-호출자가 별도 보호 경로에 둡니다.
+`deploy-api.sh`, `deploy-console.sh`, `deploy-llm-gateway.sh`는
+`<check|apply> <dev|prod> <commit> <artifact> <sha256>`을 받아 환경 배포 도구에 전달합니다.
+기본 호출과 CTID·hostname·체크아웃 override는 빌드나 대상 조회 전에 거부합니다.
+Target 설정은 보존 source CT를 제외하며 artifact는 root 보호 staging 경로에서 선택합니다.
+빌드와 Vite flag 선택은 별도 build job에서 수행합니다.
+
+개발 CI는 새 전용 key와 frozen forced-command receiver로 artifact만 전달합니다.
+운영 key는 별도 production job이 사용합니다. Receiver 설치·secret 등록은 별도 검토 후 준비합니다.
+
+새 [개발·운영 배포 예시](runbooks/deploy-environments.md)는 root 소유 대상 설정과
+40자리 commit, artifact SHA-256을 검사합니다. 이 공개 레포지토리의
+`config/deploy-target-{dev,prod}.json`은 예약 주소·예시 이름을 사용하므로 실제
+운영 파일로 설치하지 않습니다. 비공개 운영 workflow는 개발 배포와 운영 artifact
+stage/check를 분리하며 이 예시 레포지토리에는 실행 workflow를 싣지 않습니다.
+운영 `apply`는 artifact와 복구 범위에 결합된 root 보호 승인 창 및 실제 PBS 독립
+파일 복원·TOC·Flyway 대조를 요구합니다. 현재 고정 production unit은 apply를 거부합니다.
+개발·운영 API의 명시 rollback 정책, 실행 프로세스가 연 artifact의 inode·SHA,
+개발 effective environment·loopback authority와 Chat-free 정상 키를 포함한 독립
+호환 검증 결과를 검사합니다. Console archive는 root 소유·directory 0755·file 0644로
+정규화합니다.
+운영 `apply`는 artifact와 복구 범위에 결합된 root 보호 승인 창 및 실제 PBS 독립
+파일 복원·TOC·Flyway 대조를 요구합니다. 현재 고정 production unit은 apply를 거부합니다.
+개발·운영 API의 명시 rollback 정책, 실행 프로세스가 연 artifact의 inode·SHA,
+개발 effective environment·loopback authority와 Chat-free 정상 키를 포함한 독립
+호환 검증 결과를 검사합니다. Console archive는 root 소유·directory 0755·file 0644로
+정규화합니다. 초기 mock과 별도 실연동 개발 manifest, 독립 reader 설정의 예시는
+`config/deploy-target-dev-real.json`과 `config/deploy-backup-reader.json`에 있습니다.
+자리표시자는 실제 검증한 배치 값으로 교체하며 기존 운영 helper는 수정하지 않습니다.
 
 `create-pbs-vm.sh`는 명시한 UEFI loader와 vars template을 host capability 및 firmware
 descriptor와 대조합니다. cloud-init seed는 read-only virtio block으로 연결합니다.
@@ -414,6 +436,8 @@ VPN NTP server는 distro chrony deb를 별도 경로에 추출하고 기존 시�
 
 실행·보호·검증·원복은 [NetBird 관리/NTP 런북](runbooks/netbird-management-ntp.md)을 따릅니다.
 
+배포 workflow 예시는 `.github/deploy.example.yml`에 있습니다. GitHub Actions 실행 폴더 밖의 비활성 예시이며 실제 배포 workflow를 설치했다고 표현하지 않습니다. 개발 전용 key와 운영 key 분리 조건을 예시 파일에도 검증합니다.
+
 ## 개발 TLS 암호화 백업
 
 `dev-tls-export.py`는 지정된 개발 인증서·개인 키 bundle을 CMS recipient 공개 인증서로
@@ -424,6 +448,8 @@ PBS에 보관하고, 독립 복구에서 원래 파일 hash를 확인합니다. 
 custody와 GitHub secret 등록은 별도 절차이며 이 TLS 백업을 설정했다고 완료되지 않습니다.
 
 ## 전체 아키텍처
+
+Dev 배포는 root 보호 manifest의 `approved_artifacts[target][source_commit]` digest pin을 요구합니다. CI에서 같은 commit을 다시 빌드해 digest가 달라지면 검증한 실제 artifact의 수동 pin 갱신이 필요하며, 검토된 gateway archive pin이 없으면 배포를 거부합니다.
 
 <!-- arch:begin -->
 ```mermaid
