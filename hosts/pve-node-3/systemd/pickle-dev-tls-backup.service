@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify and back up the development TLS lineage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+TimeoutStartSec=300
+ExecStart=/bin/bash -c 'exec /usr/bin/flock -n /run/pickle-dev-tls-backup.lock /usr/bin/python3 -I /usr/local/libexec/pickle-dev-tls-backup.py'

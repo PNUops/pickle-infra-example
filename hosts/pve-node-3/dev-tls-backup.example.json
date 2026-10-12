@@ -1,0 +1,18 @@
+{
+  "hostname": "node-restore",
+  "lineage": "dev.example.com",
+  "namespace": "dev-tls",
+  "backup_id": "node-dev-dev-tls",
+  "ssh_port": 22,
+  "ssh_destination": "root@198.18.0.11",
+  "known_hosts": "/etc/pickle-dev-tls/node-dev-known-hosts",
+  "ssh_key": "/etc/pickle-dev-tls/read_ed25519",
+  "recipient_certificate": "/etc/pickle-dev-tls/recipient.pem",
+  "recipient_key": "/etc/pickle-dev-tls/recipient.key",
+  "writer_repository": "pickle-dev-tls@pbs!writer@100.64.0.20:example-store",
+  "reader_repository": "pickle-dev-tls-read@pbs!reader@100.64.0.20:example-store",
+  "writer_token": "/etc/pickle-dev-tls/writer-token",
+  "reader_token": "/etc/pickle-dev-tls/reader-token",
+  "pbs_key": "/etc/pickle-dev-tls/pbs-key.json",
+  "pbs_fingerprint": "REPLACE_WITH_VERIFIED_PBS_TLS_FINGERPRINT"
+}

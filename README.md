@@ -414,6 +414,15 @@ VPN NTP server는 distro chrony deb를 별도 경로에 추출하고 기존 시�
 
 실행·보호·검증·원복은 [NetBird 관리/NTP 런북](runbooks/netbird-management-ntp.md)을 따릅니다.
 
+## 개발 TLS 암호화 백업
+
+`dev-tls-export.py`는 지정된 개발 인증서·개인 키 bundle을 CMS recipient 공개 인증서로
+호스트 안에서 암호화합니다. `dev-tls-backup.py`는 크기·SHA와 recipient를 대조한 암호문을
+PBS에 보관하고, 독립 복구에서 원래 파일 hash를 확인합니다. 평문 키는 개발 호스트·서버
+내 보호 경로에만 남깁니다. 예제 설정은 `hosts/`의 `dev-tls-backup.example.json`, 실행·복구
+절차는 [개발 TLS 백업 런북](runbooks/dev-tls-backup.md)에 있습니다. 개발 CI SSH key의
+custody와 GitHub secret 등록은 별도 절차이며 이 TLS 백업을 설정했다고 완료되지 않습니다.
+
 ## 전체 아키텍처
 
 <!-- arch:begin -->
