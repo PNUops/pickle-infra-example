@@ -83,6 +83,47 @@ DNS noop, SSH host `ssh.example.com`와 port22를 고정합니다. 새 platform 
 운영 DNS·메일·OpenRouter 자동 polling은 여전히 열지 않습니다. 공개 중계는 이 후보가
 변경하지 않습니다. 현재 개발 pin은 검증했던 0.99 snapshot을 보존합니다. 승인된 0.100/V140 guard 재통합과 matching console의 검증·packaging 이후 최종 source pin을 갱신합니다. 이후의 별개 기능을 이 cutoff에 자동 포함하지 않습니다.
 
+## 운영 DB 사본을 사용하는 개발 환경
+
+`config/deploy-target-dev-copy.json`은 `development_mode=production-copy`와
+API의 `PICKLE_DEV_DATA_MODE=production-copy`가 함께 있어야 선택됩니다. 배포 대상은
+계속 dev이며 CT901/902·`pickle_dev`·전용 DB 로그인과 verify-full TLS를 사용합니다.
+API profile은 `isolated`로 고정하고 관리자 MFA를 CLI로 켭니다. 이 profile은 개발 시더를
+실행하지 않으며 메일 발송과 spool 기록을 거부합니다. 운영 계정·비밀번호 hash·MFA·
+기관 권한·멤버십·이력·설정·node/VM/relay endpoint를 사본 안에 그대로 보존합니다.
+운영 API보다 새 스키마의 기존 migration이 추가 필드와 Chat 권한을 변환할 수 있으므로
+원본 dump의 row 검증과 migration 후 검증을 구분합니다.
+
+운영 writer는 계속 실행하고 PostgreSQL의 일관된 snapshot dump를 별도 개발 DB에
+복원합니다. 개인정보·ciphertext·암호화 key는 서버의 보호된 경로와 메모리에서만
+처리하고 Mac·Git·로그에 저장하지 않습니다. 기존 합성 DB는
+`pickle_dev_synthetic_20261013`으로 보존하고 incoming DB를 검증·migration한 뒤
+개발 API만 정지한 창에서 `pickle_dev`를 선택합니다. 원본 운영 DB와 기존 개발 VM은
+삭제하지 않습니다. 일반 배포 명령은 이 DB 복제나 이름 변경을 수행하지 않습니다.
+
+원래 비밀번호는 DB의 hash로 유지합니다. 같은 MFA와 암호화한 VM 자격을 읽으려면
+보호 전송한 `PICKLE_CREDENTIALS_KEY`가 필요합니다. LLM 본문과 OpenRouter 관리 자격은
+각각 `PICKLE_LLM_BODY_READ_KEYS`·`PICKLE_OPENROUTER_CREDENTIAL_READ_KEYS`가
+관련 row를 실제로 열 수 있는지 내용 출력 없이 확인합니다. 개발 JWT는 독립 key를
+유지하므로 개발 주소에서 새로 로그인합니다. Google identity 연결 row는 보존하지만
+개발 Google OAuth client는 별도 승인·구성 전까지 비활성입니다. 비밀번호 없는 Google
+전용 계정의 로그인 시험은 그 구성을 마련한 뒤 진행합니다.
+
+JobRunr worker·dashboard·direct LLM rollup/quota·OpenRouter polling·VM 제어와
+외부 control bearer는 CLI에서 비활성으로 고정합니다. DNS는 `none`, proxy·terminal·
+OpenRouter client는 loopback으로 고정하고 production-copy의 gateway 배포는 거부합니다.
+CT901의 `inet pickle_dev_app`는 input CT900 HTTP만, output 전용 CT902 DB5432만
+허용하며 IPv4/IPv6 기본 정책은 DROP입니다. `check`/`apply`는 이 실제 ruleset,
+선택 process의 isolated/MFA/worker/control 인자, V140/failed0, fresh worker0,
+보존 합성 DB 존재를 대조합니다. 복제한 JobRunr heartbeat는 2분 동안 과거 worker가
+살아 있는 것처럼 보일 수 있으므로 row를 지우지 않고 시간이 지난 뒤 다시 확인합니다.
+
+복구할 때는 개발 API를 정지하고 복제 DB를 별도 이름으로 보존한 뒤 기존 합성 DB를
+`pickle_dev`로 다시 선택합니다. 보호 보관한 이전 개발 env·wrapper·manifest·nft bytes를
+같은 조합으로 되돌리고 DB TLS·스키마·실행 artifact·readiness를 확인한 후 개발 API만
+시작합니다. 복제 이후 시험으로 생긴 데이터도 보존하며 기존 백업·key는 삭제하지 않습니다.
+운영 프로세스와 공개 중계는 이 절차에서 변경하지 않습니다.
+
 ## 기존 파일명의 명시 환경 진입점
 
 `deploy-api.sh`, `deploy-console.sh`, `deploy-llm-gateway.sh`는 현재 같은 보호 target·artifact 도구를 호출합니다.

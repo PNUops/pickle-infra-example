@@ -8,6 +8,7 @@ builds from a mutable checkout, changes ingress, or chooses a different LXC.
 import argparse
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -29,10 +30,46 @@ STAGING = Path("/root/pickle-deploy-staging")
 CONFIG_DIR = Path("/etc/pickle/deploy-targets")
 RECEIPTS = Path("/var/lib/pickle-deploy")
 TARGETS = ("api", "console", "llm-gateway")
+COPY_MODE = "production-copy"
+COPY_REQUIRED_ENV = {
+    "PICKLE_DEV_DATA_MODE": COPY_MODE,
+    "PICKLE_DEV_REAL_INTEGRATIONS_ENABLED": "false", "PICKLE_DEV_JOBRUNR_ENABLED": "false",
+    "PICKLE_DEV_ENABLE_GATEWAYS": "false", "PICKLE_MFA_ENFORCE_ADMIN": "true",
+    "PICKLE_JOBRUNR_DASH_ENABLED": "false", "PICKLE_ISOLATED_BOOTSTRAP_ENABLED": "false",
+    "PICKLE_LLM_QUOTA_DIRECT_ENABLED": "false", "PICKLE_LLM_USAGE_ROLLUP_DIRECT_ENABLED": "false",
+    "PICKLE_OPENROUTER_DIRECT_POLLING_ENABLED": "false", "PICKLE_DNS_PROVIDER": "none",
+    "PICKLE_DNS_PRUNE_ORPHANS": "false", "PICKLE_RELAY_RETIREMENT_ENABLED": "false",
+    "PICKLE_VM_FIREWALL_ENABLED": "false", "PICKLE_PROXMOX_TOKEN_ID": "",
+    "PICKLE_PROXMOX_TOKEN_SECRET": "", "PICKLE_PROXY_AGENT_TOKEN": "",
+    "PICKLE_TERMINAL_CONTROL_TOKEN": "", "PICKLE_SSHGW_TOKEN": "",
+    "PICKLE_SSHGW_SOURCE_IP": "127.0.0.1", "PICKLE_LLM_GATEWAY_TOKEN": "",
+    "PICKLE_LLM_GATEWAY_PREVIOUS_TOKEN": "", "PICKLE_LLM_GATEWAY_SOURCE_IP": "127.0.0.1",
+    "PICKLE_GOOGLE_CLIENT_ID": "", "PICKLE_GOOGLE_CLIENT_SECRET": "",
+    "PICKLE_SMTP_USERNAME": "", "PICKLE_SMTP_PASSWORD": "",
+}
+COPY_ENDPOINTS = {"PICKLE_PROXY_AGENT_URL": "http://127.0.0.1:19443",
+                  "PICKLE_TERMINAL_BRIDGE_URL": "http://127.0.0.1:18083",
+                  "PICKLE_OPENROUTER_URL": "http://127.0.0.1:18085"}
 
 
 class Refusal(Exception):
     """A deployment precondition was not met."""
+
+
+def check_data_mode(config):
+    entry = config.get("targets", {}).get("api", {})
+    mode = entry.get("required_env", {}).get("PICKLE_DEV_DATA_MODE", "synthetic")
+    if mode not in ("synthetic", COPY_MODE):
+        raise Refusal("unknown development data mode")
+    if mode == COPY_MODE:
+        if config.get("environment") != "dev" or config.get("development_mode") != COPY_MODE:
+            raise Refusal("production-copy mode requires its explicit development manifest")
+        required = entry.get("required_env", {})
+        if any(required.get(key) != value for key, value in (COPY_REQUIRED_ENV | COPY_ENDPOINTS).items()):
+            raise Refusal("production-copy manifest lacks runtime isolation rules")
+    elif config.get("development_mode") == COPY_MODE:
+        raise Refusal("production-copy manifest does not select its protected data mode")
+    return mode
 
 
 def run(*argv, capture=True, check=True):
@@ -85,10 +122,13 @@ def load_config(environment, path=None):
             or not re.fullmatch(r"[a-z][a-z0-9_]*", database)
             or urllib.parse.urlsplit(api_url.removeprefix("jdbc:")).path != "/" + database):
         raise Refusal("API database selection differs from the backup and Chat DB target")
+    check_data_mode(config)
     return config
 
 
 def check_manifest(config, target, commit, expected_sha=None):
+    if check_data_mode(config) == COPY_MODE and target == "llm-gateway":
+        raise Refusal("gateway deployment is disabled for a production-copy database")
     allowed = config.get("allowed_commits", {}).get(target)
     if not isinstance(allowed, str) or not COMMIT.fullmatch(allowed):
         raise Refusal("target has no pinned compatible commit")
@@ -317,6 +357,24 @@ def check_production_backup(config):
 
 
 def check_development_scope(config):
+    if check_data_mode(config) == COPY_MODE:
+        scope = config.get("development_scope", {})
+        database = config["chat_db"]
+        if (scope.get("database_ctid") != database["ctid"]
+                or scope.get("database_name") != database["name"]
+                or type(scope.get("schema_version")) is not int
+                or not re.fullmatch(r"pickle_dev_synthetic_[0-9]{8}", scope.get("preserved_database_name", ""))):
+            raise Refusal("production-copy scope lacks its dedicated and preserved database identities")
+        check_copy_network(config)
+        check_ct(database)
+        sql = "select json_build_object('database', current_database(), 'schema', (select max(version::int) from flyway_schema_history where success), 'failed', (select count(*) from flyway_schema_history where not success), 'workers', (select count(*) from jobrunr_backgroundjobservers where lastheartbeat > now()-interval '2 minutes'), 'preserved', exists(select 1 from pg_database where datname='" + scope["preserved_database_name"] + "'))"
+        observed = json.loads(guest(database["ctid"], "runuser", "-u", "postgres", "--", "psql",
+                                    "-XqAt", "-h", "/var/run/postgresql", "-p", "5432", "-U", "postgres",
+                                    "-w", "-v", "ON_ERROR_STOP=1", "-d", database["name"], "-c", sql).stdout)
+        if observed != {"database": database["name"], "schema": scope["schema_version"],
+                        "failed": 0, "workers": 0, "preserved": True}:
+            raise Refusal("production-copy DB schema, worker hold or preserved synthetic DB differs")
+        return
     if config.get("development_mode") != "real":
         return
     scope = config.get("development_scope", {})
@@ -333,6 +391,48 @@ def check_development_scope(config):
     sequence = {"minimum": scope["vmid_minimum"], "maximum": scope["vmid_maximum"], "cycle": False}
     if observed != {"nodes": [node], "pools": [pool], "images": [image], "sequence": sequence, "marker": scope["dev_environment_marker"]}:
         raise Refusal("real development DB inventory or bounded VMID sequence differs from the manifest")
+
+
+def check_copy_network(config):
+    api = config["targets"]["api"]
+    try:
+        database_ip = str(ipaddress.IPv4Address(urllib.parse.urlsplit(
+            api["db_url_prefix"].removeprefix("jdbc:")).hostname))
+        ingress_ip = str(ipaddress.IPv4Address(config["development_scope"]["ingress_source_ip"]))
+        nft = json.loads(guest(api["ctid"], "nft", "-j", "list", "ruleset").stdout)["nftables"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise Refusal("production-copy network identity or ruleset is invalid") from exc
+    tables = [row["table"] for row in nft if "table" in row]
+    chains = [row["chain"] for row in nft if "chain" in row]
+    if (len(tables) != 1 or tables[0].get("family") != "inet" or tables[0].get("name") != "pickle_dev_app"
+            or len(chains) != 2 or {row.get("hook") for row in chains} != {"input", "output"}
+            or any(row.get("family") != "inet" or row.get("table") != "pickle_dev_app"
+                   or row.get("name") != row.get("hook") or row.get("type") != "filter"
+                   or row.get("prio") != 0 or row.get("policy") != "drop" for row in chains)):
+        raise Refusal("production-copy guest lacks its exact default-deny network")
+    def match(left, right):
+        return {"match": {"op": "==", "left": left, "right": right}}
+    established = [{"match": {"op": "in", "left": {"ct": {"key": "state"}},
+                               "right": ["established", "related"]}}, {"accept": None}]
+    expected = {
+        "input": [[match({"meta": {"key": "iifname"}}, "lo"), {"accept": None}], established,
+                  [match({"payload": {"protocol": "ip", "field": "saddr"}}, ingress_ip),
+                   match({"payload": {"protocol": "tcp", "field": "dport"}}, 80), {"accept": None}]],
+        "output": [[match({"meta": {"key": "oifname"}}, "lo"), {"accept": None}], established,
+                   [match({"payload": {"protocol": "ip", "field": "daddr"}}, database_ip),
+                    match({"payload": {"protocol": "tcp", "field": "dport"}}, 5432), {"accept": None}]],
+    }
+    observed = {name: [] for name in expected}
+    for row in nft:
+        if "rule" not in row:
+            continue
+        rule = row["rule"]
+        if (rule.get("family") != "inet" or rule.get("table") != "pickle_dev_app"
+                or rule.get("chain") not in observed):
+            raise Refusal("production-copy network has another rule scope")
+        observed[rule["chain"]].append(rule.get("expr"))
+    if observed != expected:
+        raise Refusal("production-copy guest permits traffic outside ingress and its dedicated DB")
 
 
 def check_ct(entry):
@@ -386,6 +486,7 @@ for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
     if key in ('PATH','PYTHONPATH','PYTHONHOME','CLASSPATH','ENV','BASH_ENV','GODEBUG'): sys.exit(1)
     values[key]=value
 rules=json.loads(sys.argv[2])
+if values.get('PICKLE_DEV_DATA_MODE','synthetic')!=rules['data_mode']: sys.exit(1)
 for key,want in rules['required'].items():
     if values.get(key,'')!=want: sys.exit(1)
 for key in rules['nonempty']:
@@ -408,6 +509,7 @@ if upstream:
     if not endpoints or any(not local_endpoint(v,upstream) for v in endpoints): sys.exit(1)
 """
     rules = json.dumps({"required": required, "prefixes": prefixes, "nonempty": nonempty,
+                        "data_mode": required.get("PICKLE_DEV_DATA_MODE", "synthetic"),
                         "upstream_prefix": entry.get("upstream_prefix"), "allowed_env": entry.get("allowed_env")})
     if guest(entry["ctid"], "python3", "-c", probe, entry["env_file"], rules,
              check=False).returncode:
@@ -462,7 +564,9 @@ sys.exit(1 if any(row.partition('=')[0] not in safe for row in rows) else 0)
             raise Refusal("API startup wrapper is not protected")
     elif target == "api":
         profiles = [part for part in argv if part.startswith("--spring.profiles.active=")]
-        if profiles != [f"--spring.profiles.active={environment}"]:
+        data_mode = entry.get("required_env", {}).get("PICKLE_DEV_DATA_MODE", "synthetic")
+        profile = "isolated" if environment == "dev" and data_mode == COPY_MODE else environment
+        if profiles != [f"--spring.profiles.active={profile}"]:
             raise Refusal("API effective profile does not match environment")
     elif environment == "dev" and argv != [entry["active_path"]]:
         raise Refusal("development gateway has an ExecStart override")
@@ -470,6 +574,8 @@ sys.exit(1 if any(row.partition('=')[0] not in safe for row in rows) else 0)
         if not entry.get("required_env") or not entry.get("prefix_env"):
             raise Refusal("development target lacks endpoint allowlist")
         check_env_rules(entry)
+        if target == "api" and entry.get("required_env", {}).get("PICKLE_DEV_DATA_MODE") == COPY_MODE:
+            check_copy_process(entry)
     if target == "api":
         prefix = entry.get("db_url_prefix")
         if not prefix or not prefix.startswith("jdbc:postgresql://"):
@@ -512,6 +618,39 @@ sys.exit(0 if valid else 1)
     if environment == "prod" and guest_property(ctid, unit, "ActiveState") != "active":
         raise Refusal("production unit is not active")
     return managed
+
+
+def check_copy_process(entry):
+    pid = guest_property(entry["ctid"], entry["unit"], "MainPID")
+    if pid == "0":
+        return
+    if not re.fullmatch(r"[1-9][0-9]*", pid):
+        raise Refusal("production-copy API process identity is invalid")
+    probe = """import pathlib,sys
+p=pathlib.Path('/proc')/sys.argv[1]
+argv=p.joinpath('cmdline').read_bytes().decode().split(chr(0))
+env=dict(row.split(b'=',1) for row in p.joinpath('environ').read_bytes().split(b'\\0') if b'=' in row)
+expected={
+ '--spring.profiles.active':'isolated', '--server.address':'127.0.0.1',
+ '--spring.config.location':'classpath:/application.yml',
+ '--jobrunr.background-job-server.enabled':'false', '--jobrunr.dashboard.enabled':'false',
+ '--pickle.mfa.enforce-admin':'true', '--pickle.isolated-bootstrap.enabled':'false',
+ '--pickle.llm.quota-direct.enabled':'false', '--pickle.llm.usage-rollup-direct.enabled':'false',
+ '--pickle.openrouter.direct-polling.enabled':'false', '--pickle.dns.provider':'none',
+ '--pickle.dns.prune-orphans':'false', '--pickle.relay-retirement.enabled':'false',
+ '--pickle.vm-firewall.enabled':'false', '--pickle.proxmox.token-id':'', '--pickle.proxmox.token-secret':'',
+ '--pickle.proxy-agent.base-url':'http://127.0.0.1:19443', '--pickle.proxy-agent.token':'',
+ '--pickle.terminal.bridge-control-base-url':'http://127.0.0.1:18083', '--pickle.terminal.bridge-control-token':'',
+ '--pickle.sshgw.token':'', '--pickle.sshgw.allowed-source-ip':'127.0.0.1',
+ '--pickle.llm-gateway.token':'', '--pickle.llm-gateway.previous-token':'', '--pickle.llm-gateway.allowed-source-ip':'127.0.0.1',
+ '--pickle.openrouter.base-url':'http://127.0.0.1:18085', '--pickle.oauth.google.client-id':'', '--pickle.oauth.google.client-secret':''}
+for key,value in expected.items():
+ if [arg for arg in argv if arg.partition('=')[0]==key] != [key+'='+value]: sys.exit(1)
+if env.get(b'PICKLE_DEV_DATA_MODE')!=b'production-copy': sys.exit(1)
+if any(key.startswith((b'SPRING_',b'JAVA_',b'JDK_',b'_JAVA',b'LD_')) for key in env): sys.exit(1)
+"""
+    if guest(entry["ctid"], "python3", "-c", probe, pid, check=False).returncode:
+        raise Refusal("production-copy running API does not enforce its isolated execution rules")
 
 
 def artifact(path, expected_sha):

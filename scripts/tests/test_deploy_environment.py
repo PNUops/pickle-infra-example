@@ -21,6 +21,186 @@ SPEC.loader.exec_module(deploy)
 
 
 class DeployEnvironmentTest(unittest.TestCase):
+    def copy_config(self):
+        return json.loads((SCRIPT.parents[1] / "config/deploy-target-dev-copy.json").read_text())
+
+    def test_copy_mode_requires_explicit_manifest_and_every_isolation_rule(self):
+        config = self.copy_config()
+        self.assertEqual(deploy.check_data_mode(config), "production-copy")
+        for key, value in (deploy.COPY_REQUIRED_ENV | deploy.COPY_ENDPOINTS).items():
+            changed = self.copy_config()
+            changed["targets"]["api"]["required_env"][key] = "unexpected"
+            with self.subTest(key=key), self.assertRaises(deploy.Refusal):
+                deploy.check_data_mode(changed)
+        for environment, mode in (("prod", "production-copy"), ("dev", "real")):
+            config = self.copy_config()
+            config["environment"] = environment
+            config["development_mode"] = mode
+            with self.assertRaisesRegex(deploy.Refusal, "explicit development manifest"):
+                deploy.check_data_mode(config)
+        config = self.copy_config()
+        config["targets"]["api"]["required_env"].pop("PICKLE_DEV_DATA_MODE")
+        with self.assertRaisesRegex(deploy.Refusal, "protected data mode"):
+            deploy.check_data_mode(config)
+
+    def test_copy_mode_refuses_gateway_before_artifact_or_guest_access(self):
+        config = self.copy_config()
+        with self.assertRaisesRegex(deploy.Refusal, "gateway deployment is disabled"), \
+             patch.object(deploy, "guest") as guest:
+            deploy.check_manifest(config, "llm-gateway", config["allowed_commits"]["llm-gateway"], "a" * 64)
+        guest.assert_not_called()
+
+    def test_environment_mode_cannot_switch_without_the_matching_manifest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            env = Path(folder) / "env"
+            env.write_text("PICKLE_DEV_DATA_MODE=production-copy\nPICKLE_DNS_PROVIDER=noop\n")
+            entry = {"ctid": 901, "env_file": str(env), "required_env": {"PICKLE_DNS_PROVIDER": "noop"}}
+            with patch.object(deploy, "guest", side_effect=lambda _ct, *argv, **kwargs:
+                              subprocess.run(argv, capture_output=True, text=True)):
+                with self.assertRaisesRegex(deploy.Refusal, "env or endpoint"):
+                    deploy.check_env_rules(entry)
+
+    def copy_nft(self):
+        def match(left, right):
+            return {"match": {"op": "==", "left": left, "right": right}}
+        rows = [{"metainfo": {"json_schema_version": 1}},
+                {"table": {"family": "inet", "name": "pickle_dev_app"}}]
+        for name, direction, field, address, port in (("input", "iifname", "saddr", "198.18.0.10", 80),
+                                                     ("output", "oifname", "daddr", "198.18.0.60", 5432)):
+            rows.append({"chain": {"family": "inet", "table": "pickle_dev_app", "name": name,
+                                   "type": "filter", "hook": name, "prio": 0, "policy": "drop"}})
+            for expressions in ([match({"meta": {"key": direction}}, "lo"), {"accept": None}],
+                                [{"match": {"op": "in", "left": {"ct": {"key": "state"}},
+                                             "right": ["established", "related"]}}, {"accept": None}],
+                                [match({"payload": {"protocol": "ip", "field": field}}, address),
+                                 match({"payload": {"protocol": "tcp", "field": "dport"}}, port), {"accept": None}]):
+                rows.append({"rule": {"family": "inet", "table": "pickle_dev_app", "chain": name,
+                                      "expr": expressions}})
+        return {"nftables": rows}
+
+    def test_copy_network_rejects_hypervisor_egress_missing_drop_and_other_tables(self):
+        config = self.copy_config()
+        for change in (None, "hypervisor", "accept-policy", "extra-table", "missing-rule"):
+            nft = self.copy_nft()
+            if change == "hypervisor":
+                extra = dict(nft["nftables"][-1]["rule"])
+                extra["expr"] = [{"accept": None}]
+                nft["nftables"].append({"rule": extra})
+            elif change == "accept-policy":
+                nft["nftables"][2]["chain"]["policy"] = "accept"
+            elif change == "extra-table":
+                nft["nftables"].append({"table": {"family": "inet", "name": "other"}})
+            elif change == "missing-rule":
+                nft["nftables"].pop()
+            with patch.object(deploy, "guest", return_value=type("Result", (), {"stdout": json.dumps(nft)})()):
+                if change is None:
+                    deploy.check_copy_network(config)
+                else:
+                    with self.subTest(change=change), self.assertRaises(deploy.Refusal):
+                        deploy.check_copy_network(config)
+
+    def test_copy_scope_preserves_copied_inventory_and_requires_no_worker(self):
+        config = self.copy_config()
+        result = {"database": "pickle_dev", "schema": 140, "failed": 0, "workers": 0, "preserved": True}
+        with patch.object(deploy, "check_ct"), patch.object(deploy, "check_copy_network"), \
+             patch.object(deploy, "guest", side_effect=lambda *_args: type("Result", (), {"stdout": json.dumps(result)})()) as guest:
+            deploy.check_development_scope(config)
+            self.assertNotIn("nodes", guest.call_args.args[-1])
+            self.assertNotIn("dev_environment_marker", guest.call_args.args[-1])
+            result["workers"] = 1
+            with self.assertRaisesRegex(deploy.Refusal, "worker hold"):
+                deploy.check_development_scope(config)
+            result["workers"] = 0
+            result["preserved"] = False
+            with self.assertRaisesRegex(deploy.Refusal, "preserved synthetic DB"):
+                deploy.check_development_scope(config)
+
+    def test_copy_wrapper_holds_jar_and_enforces_auth_and_external_isolation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            jar = Path(folder) / "releases" / "api.jar"
+            jar.parent.mkdir()
+            jar.write_bytes(b"selected immutable JAR")
+            isolated = """import importlib.util,os,sys,types
+from pathlib import Path
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location('wrapper',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+jar=Path(sys.argv[2])
+def execute(path,argv,env):
+    assert os.read(9,4096)==b'selected immutable JAR' and os.get_inheritable(9)
+    assert '--spring.profiles.active=isolated' in argv and '--spring.profiles.active=dev' not in argv
+    for arg in ('--pickle.mfa.enforce-admin=true','--jobrunr.background-job-server.enabled=false',
+                '--jobrunr.dashboard.enabled=false','--pickle.proxmox.token-secret=',
+                '--pickle.dns.provider=none','--pickle.openrouter.direct-polling.enabled=false',
+                '--pickle.llm.quota-direct.enabled=false','--pickle.llm.usage-rollup-direct.enabled=false',
+                '--pickle.proxy-agent.token=','--pickle.terminal.bridge-control-token=',
+                '--pickle.llm-gateway.token=','--pickle.oauth.google.client-secret='):
+        assert arg in argv,arg
+    assert env['PICKLE_CREDENTIALS_KEY']=='retained-encryption-key'
+    assert env['PICKLE_DEV_DATA_MODE']=='production-copy'
+    assert env['PICKLE_DB_PASSWORD']=='development-password'
+    assert not any(key in env for key in ('SPRING_APPLICATION_JSON','JAVA_TOOL_OPTIONS','LD_PRELOAD'))
+with patch.object(sys,'argv',['wrapper','/opt/pickle/api/current-dev.jar','dev']), patch.object(m.Path,'resolve',return_value=jar), patch.object(m.Path,'parent',new_callable=lambda:property(lambda self:Path('/opt/pickle/api/releases'))), patch.object(m,'require_protected_directories'), patch.object(m.os,'fstat',return_value=types.SimpleNamespace(st_uid=0,st_mode=0o100640)), patch.object(m.os,'execve',side_effect=execute), patch.dict(os.environ,{'PICKLE_DEV_DATA_MODE':'production-copy','PICKLE_CREDENTIALS_KEY':'retained-encryption-key','PICKLE_DB_PASSWORD':'development-password','PICKLE_DEV_JOBRUNR_ENABLED':'true','PICKLE_MFA_ENFORCE_ADMIN':'false','PICKLE_PROXMOX_TOKEN_SECRET':'forbidden','SPRING_APPLICATION_JSON':'{}','JAVA_TOOL_OPTIONS':'evil','LD_PRELOAD':'evil'}):
+    m.main()
+os.close(9)
+"""
+            subprocess.run([sys.executable, "-c", isolated, str(SCRIPT.parent / "pickle-api-start.py"), str(jar)], check=True)
+
+    def test_copy_wrapper_rejects_unknown_mode_and_production_selection(self):
+        spec = importlib.util.spec_from_file_location("api_start", SCRIPT.parent / "pickle-api-start.py")
+        wrapper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(wrapper)
+        for environment, mode in (("dev", "unknown"), ("prod", "production-copy")):
+            with self.assertRaisesRegex(RuntimeError, "invalid development data mode"):
+                wrapper.execution_arguments(environment, {"PICKLE_DEV_DATA_MODE": mode})
+
+    def test_copy_process_rejects_missing_mfa_wrong_profile_worker_and_duplicate_flags(self):
+        spec = importlib.util.spec_from_file_location("api_start", SCRIPT.parent / "pickle-api-start.py")
+        wrapper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(wrapper)
+        entry = self.copy_config()["targets"]["api"]
+        with tempfile.TemporaryDirectory() as folder:
+            original_path = Path
+            proc = Path(folder)
+            class ProcPath:
+                def __truediv__(self, _part):
+                    return self
+                def joinpath(self, part):
+                    return original_path(folder) / part
+            arguments = ["/usr/bin/java", "-jar", "/proc/self/fd/9",
+                         "--spring.config.location=classpath:/application.yml"]
+            arguments += wrapper.execution_arguments("dev", {"PICKLE_DEV_DATA_MODE": "production-copy"})
+            def execute_probe(_ct, *argv, **kwargs):
+                try:
+                    with patch.object(sys, "argv", ["probe", "123"]), patch("pathlib.Path", return_value=ProcPath()):
+                        exec(argv[2], {})
+                except SystemExit as exc:
+                    return type("Result", (), {"returncode": exc.code})()
+                return type("Result", (), {"returncode": 0})()
+            for change in (None, "profile", "mfa", "worker", "duplicate", "override", "mode"):
+                values = dict(PICKLE_DEV_DATA_MODE="production-copy")
+                selected = list(arguments)
+                if change == "profile":
+                    selected[selected.index("--spring.profiles.active=isolated")] = "--spring.profiles.active=dev"
+                elif change == "mfa":
+                    selected.remove("--pickle.mfa.enforce-admin=true")
+                elif change == "worker":
+                    selected[selected.index("--jobrunr.background-job-server.enabled=false")] = "--jobrunr.background-job-server.enabled=true"
+                elif change == "duplicate":
+                    selected.append("--pickle.mfa.enforce-admin=false")
+                elif change == "override":
+                    values["SPRING_APPLICATION_JSON"] = "{}"
+                elif change == "mode":
+                    values["PICKLE_DEV_DATA_MODE"] = "synthetic"
+                (proc / "cmdline").write_bytes(("\0".join(selected) + "\0").encode())
+                (proc / "environ").write_bytes(b"\0".join((key + "=" + value).encode() for key, value in values.items()))
+                with patch.object(deploy, "guest_property", return_value="123"), \
+                     patch.object(deploy, "guest", side_effect=execute_probe):
+                    if change is None:
+                        deploy.check_copy_process(entry)
+                    else:
+                        with self.subTest(change=change), self.assertRaisesRegex(deploy.Refusal, "isolated execution"):
+                            deploy.check_copy_process(entry)
+
     def test_manifest_refuses_unselected_commit(self):
         config = {"allowed_commits": {"api": "a" * 40}}
         with self.assertRaisesRegex(deploy.Refusal, "differs"):

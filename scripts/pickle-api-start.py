@@ -18,6 +18,7 @@ ALLOWED_ENV = frozenset(
     PICKLE_DEV_DB_NAME
     PICKLE_DEV_DB_PORT
     PICKLE_DEV_DB_USER
+    PICKLE_DEV_DATA_MODE
     PICKLE_DEV_ENABLE_GATEWAYS
     PICKLE_DEV_IP_POOL_CIDR
     PICKLE_DEV_IP_POOL_DNS
@@ -125,6 +126,38 @@ ALLOWED_ENV = frozenset(
 )
 
 
+def execution_arguments(environment, values):
+    mode = values.get("PICKLE_DEV_DATA_MODE", "synthetic")
+    if mode not in ("synthetic", "production-copy") or (environment == "prod" and mode != "synthetic"):
+        raise RuntimeError("invalid development data mode for this environment")
+    profile = "isolated" if mode == "production-copy" else environment
+    address = "127.0.0.1" if environment == "dev" else "0.0.0.0"
+    arguments = [f"--spring.profiles.active={profile}", f"--server.address={address}"]
+    if mode == "production-copy":
+        # A restored queue and inventory may refer to live infrastructure. Keep
+        # every copied record while refusing external effects at runtime.
+        arguments.extend([
+            "--jobrunr.background-job-server.enabled=false", "--jobrunr.dashboard.enabled=false",
+            "--pickle.mfa.enforce-admin=true", "--pickle.isolated-bootstrap.enabled=false",
+            "--pickle.llm.quota-direct.enabled=false", "--pickle.llm.usage-rollup-direct.enabled=false",
+            "--pickle.openrouter.direct-polling.enabled=false", "--pickle.dns.provider=none",
+            "--pickle.dns.prune-orphans=false", "--pickle.relay-retirement.enabled=false",
+            "--pickle.vm-firewall.enabled=false", "--pickle.proxmox.token-id=",
+            "--pickle.proxmox.token-secret=", "--pickle.proxy-agent.base-url=http://127.0.0.1:19443",
+            "--pickle.proxy-agent.token=", "--pickle.terminal.bridge-control-base-url=http://127.0.0.1:18083",
+            "--pickle.terminal.bridge-control-token=", "--pickle.sshgw.token=",
+            "--pickle.sshgw.allowed-source-ip=127.0.0.1", "--pickle.llm-gateway.token=",
+            "--pickle.llm-gateway.previous-token=", "--pickle.llm-gateway.allowed-source-ip=127.0.0.1",
+            "--pickle.openrouter.base-url=http://127.0.0.1:18085",
+            "--pickle.oauth.google.client-id=", "--pickle.oauth.google.client-secret=",
+        ])
+    elif environment == "prod":
+        arguments.extend(["--jobrunr.background-job-server.enabled=true", "--jobrunr.dashboard.enabled=false",
+                          "--pickle.network-policy.enabled=true", "--pickle.vm-firewall.enabled=true",
+                          "--pickle.dns.provider=google"])
+    return arguments
+
+
 def require_protected_directories(path):
     for selected in (path, *path.parents):
         metadata = selected.lstat()
@@ -157,14 +190,9 @@ def main():
                           if key in ALLOWED_ENV}
     environment_values.update(PATH="/usr/bin:/bin", LANG="C.UTF-8")
     heap = "-Xmx1g" if environment == "dev" else "-Xmx2g"
-    address = "127.0.0.1" if environment == "dev" else "0.0.0.0"
     argv = ["/usr/bin/java", "-Xms256m", heap, "-jar", "/proc/self/fd/9",
-            "--spring.config.location=classpath:/application.yml",
-            f"--spring.profiles.active={environment}", f"--server.address={address}"]
-    if environment == "prod":
-        argv.extend(["--jobrunr.background-job-server.enabled=true", "--jobrunr.dashboard.enabled=false",
-                     "--pickle.network-policy.enabled=true", "--pickle.vm-firewall.enabled=true",
-                     "--pickle.dns.provider=google"])
+            "--spring.config.location=classpath:/application.yml"]
+    argv.extend(execution_arguments(environment, environment_values))
     os.execve("/usr/bin/java", argv, environment_values)
 
 

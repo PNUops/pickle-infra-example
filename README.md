@@ -135,6 +135,18 @@ stage/check를 분리하며 이 예시 레포지토리에는 실행 workflow를 
 `config/deploy-target-dev-real.json`과 `config/deploy-backup-reader.json`에 있습니다.
 자리표시자는 실제 검증한 배치 값으로 교체하며 기존 운영 helper는 수정하지 않습니다.
 
+운영 DB 사본으로 시험하는 개발 환경은 보호 manifest의
+`PICKLE_DEV_DATA_MODE=production-copy`를 사용합니다. 같은 개발 CT·DB 배치에서
+API의 `isolated` profile을 선택하며, 복제한 계정·비밀번호·MFA·기관 권한과 이력을
+유지합니다. 관리자 MFA는 계속 요구합니다. JobRunr·외부 polling·메일·DNS 쓰기와
+VM 제어를 중단하고 guest outbound를 개발 DB로 제한합니다. Gateway 배포도 거부합니다.
+Google 계정 연결 기록은 보존하지만 개발용 Google OAuth는 별도 구성 전까지 사용할
+수 없습니다. 기존 합성 DB는 별도 이름으로 보존하고 복원 절차에서 다시 선택할 수 있습니다.
+
+이 환경 배포 예시는 개발 CT901·DB902, DB 주소 `198.18.0.60`과
+`example-dev-host`를 사용합니다. Source commit과 artifact SHA는 `EXAMPLE_*`
+자리표시자이며 실제 배치 전에 검증한 값으로 교체합니다.
+
 `create-pbs-vm.sh`는 명시한 UEFI loader와 vars template을 host capability 및 firmware
 descriptor와 대조합니다. cloud-init seed는 read-only virtio block으로 연결합니다.
 
