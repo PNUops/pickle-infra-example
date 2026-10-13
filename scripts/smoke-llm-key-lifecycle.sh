@@ -7,6 +7,9 @@
 # organisation, leaves a retained audit trail, and then exercises request ->
 # typed approval context -> approval -> token issue -> one real chat call ->
 # limit replacement -> suspend -> resume -> revoke.
+#
+# Targets the api from contract v0.98.0 on: the request, approval and limit
+# steps send and check the chat capability, which an older api refuses.
 # This lifecycle deliberately keeps creditLimit at 0.00 so it exercises the
 # TOKEN axis without requiring a registered OpenRouter business account.
 # Positive CREDIT first binding and cross-org account isolation require a real
