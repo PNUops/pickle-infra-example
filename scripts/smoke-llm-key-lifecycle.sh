@@ -121,13 +121,16 @@ ORG_ID=$(jq -r '[.managedOrgs[]? | select(.role == "ORG_ADMIN")][0].orgId // emp
 [ -n "$WORKSPACE_ID" ] && [ -n "$ORG_ID" ] \
   || { ko 'workspace and organisation ids'; exit 1; }
 
+# The capabilities the key asks for are required since contract v0.98.0, and a
+# request without them is a 422. chat is what the one real completion below
+# needs once the gateway enforces it.
 REQUEST_BODY=$(jq -nc --arg workspace "$WORKSPACE_ID" --arg org "$ORG_ID" \
   --arg name "LLM smoke $TS" \
   '{type:"LLM_API_KEY",displayName:$name,workspaceId:$workspace,orgId:$org,
     purpose:"배포 후 LLM API lifecycle smoke",courseOrProject:null,extraNote:null,
     reqStartDate:null,reqEndDate:null,reqIndefinite:true,
     llmKey:{usagePlan:"1-token 실제 호출과 상태 전이 검증",reqRpm:20,reqTpm:1000,
-      reqDailyTokens:10000}}')
+      reqDailyTokens:10000,reqPassthroughEndpoints:["chat"]}}')
 request 'create LLM key request' 201 -X POST "$BASE/requests" \
   -H "Authorization: Bearer $REQUESTER_TOKEN" -H 'Content-Type: application/json' \
   -d "$REQUEST_BODY" || exit 1
@@ -146,6 +149,8 @@ jq -e '.type == "LLM_API_KEY" and .llmKey != null and .vm == null' "$BODY" >/dev
   && ok 'approval context selects only llmKey' \
   || { ko 'approval context selects only llmKey'; exit 1; }
 
+# No grantedPassthroughEndpoints on purpose: an approval that leaves the list
+# out grants what was requested, which the detail read below checks.
 APPROVAL_BODY='{"grantedStartDate":null,"grantedEndDate":null,"comment":"LLM lifecycle smoke","llmKey":{"grantedRpm":20,"grantedTpm":1000,"grantedConcurrency":2,"grantedDailyTokens":10000,"grantedCreditLimit":0.00,"grantedCreditLimitReset":null}}'
 request 'approve LLM request' 200 -X POST "$BASE/admin/requests/$REQUEST_ID/approve" \
   -H "Authorization: Bearer $APPROVER_TOKEN" -H 'Content-Type: application/json' \
@@ -164,6 +169,12 @@ jq -e '.content[0] | (has("token") or has("tokenHash") or has("tokenPrefix")) | 
   "$BODY" >/dev/null && ok 'admin list contains no key secret' \
   || { ko 'admin list contains no key secret'; exit 1; }
 
+request 'admin detail after approval' 200 "$BASE/admin/llm/keys/$KEY_ID" \
+  -H "Authorization: Bearer $APPROVER_TOKEN" || exit 1
+jq -e '.passthroughEndpoints == ["chat"]' "$BODY" >/dev/null \
+  && ok 'approval without a list grants the requested chat' \
+  || { ko 'approval without a list grants the requested chat'; exit 1; }
+
 request 'issue plaintext key once' 200 --sensitive -X POST "$BASE/llm-keys/$KEY_ID/token" \
   -H "Authorization: Bearer $REQUESTER_TOKEN" || exit 1
 LLM_TOKEN=$(jq -r '.token // empty' "$BODY")
@@ -181,15 +192,30 @@ request 'one real chat completion' 200 -X POST "$LLM_BASE/chat/completions" \
   -H "Authorization: Bearer $LLM_TOKEN" -H 'Content-Type: application/json' \
   -d "$CHAT_BODY" || exit 1
 
-# Every limit the endpoint replaces, including the money-axis model allow list:
-# a body missing any one of them is a 422, because the replacement is total.
-# null is unrestricted for the list, unlike creditLimit where null is refused.
-LIMIT_BODY='{"rpm":30,"tpm":2000,"concurrency":2,"dailyTokens":20000,"creditLimit":0.00,"creditLimitReset":null,"creditAllowedModels":null}'
-request 'replace all seven limits' 200 -X PUT "$BASE/admin/llm/keys/$KEY_ID/limits" \
+# Every limit the endpoint replaces: a body missing any one of them is a 422,
+# because the replacement is total. Three of the nine carry a list or a set,
+# and their empty values do not agree with each other -- an empty allow list is
+# unrestricted, an empty deny list is nothing blocked, and empty capabilities
+# are none granted, chat included. creditLimit is the odd one the other way:
+# null is refused there, and closing the money axis is 0. The capabilities are
+# sent as ["chat"] rather than null so the key keeps chat after the
+# replacement, as a real edit would.
+LIMIT_BODY='{"rpm":30,"tpm":2000,"concurrency":2,"dailyTokens":20000,"creditLimit":0.00,"creditLimitReset":null,"creditAllowedModels":null,"creditDeniedModels":null,"passthroughEndpoints":["chat"]}'
+request 'replace all nine limits' 200 -X PUT "$BASE/admin/llm/keys/$KEY_ID/limits" \
   -H "Authorization: Bearer $APPROVER_TOKEN" -H 'Content-Type: application/json' \
   -d "$LIMIT_BODY" || exit 1
+# All nine, not the six that are easy to read back. A step named for replacing
+# nine values that only checks some of them passes while the rest are dropped,
+# and the three list-shaped ones are exactly where that would happen: they
+# travel through their own normalisers and land in their own columns.
+#
+# `== []` and not `| length == 0`: jq gives a null a length of zero, so the
+# shorter form would also accept a field that is not in the response at all,
+# which is the failure this line exists to catch.
 jq -e '.rpm == 30 and .tpm == 2000 and .concurrency == 2 and .dailyTokens == 20000
   and .creditLimit == 0 and .creditLimitReset == null
+  and .creditAllowedModels == [] and .creditDeniedModels == []
+  and .passthroughEndpoints == ["chat"]
   and .creditAxisConnected == false' \
   "$BODY" >/dev/null && ok 'admin detail returns replaced limits' \
   || { ko 'admin detail returns replaced limits'; exit 1; }
