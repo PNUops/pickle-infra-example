@@ -4,6 +4,14 @@
 현재 복구 가능한 시점을 확인하는 절차다. 도구 작성과 실제 설치를 구분한다. 아래
 설정과 timer는 아직 배치됐다는 뜻이 아니며 실제 PBS 연결과 복원 인수시험이 필요하다.
 
+DB가 Proxmox LXC 안에 있으면 `container_source` 설정으로 host runner에서 `pct exec`를
+호출한다. PostgreSQL dump, globals와 pg_restore 목록 검사는 guest의 PostgreSQL 18
+절대 경로와 postgres peer 계정으로 실행하고 PBS client, 키, spool과 timer는 host에 둔다.
+`container_source`가 없으면 기존 DB host-local socket 방식을 유지한다. 매 dump 직전에
+host hostname, CTID와 config SHA, guest hostname, machine-id, guest IP, PostgreSQL 18
+system identifier와 local peer primary를 확인한다. Monitor는 pct나 source CT에 접근하지
+않고 PBS 원격 snapshot, manifest와 receipt만 읽는다.
+
 정기 대상은 플랫폼 DB와 비밀번호를 제외한 PostgreSQL role 정의다. 사용자 VM 디스크는
 정기 대상으로 추가하지 않는다. API env, 인증서, gateway 설정과 업로드 파일은 별도의
 플랫폼 설정 백업 대상이며 이 DB dump만으로 복구되지 않는다.
@@ -18,7 +26,7 @@
    postgres peer 인증을 명시하여 다른 DB로 접속하는 것을 막는다.
 2. root 전용 임시 디렉터리에 `pg_dump -Fc`, `pg_dumpall --globals-only --no-role-passwords`를
    만든다. 시간과 DB 신원, dump/role SHA-256을 별도 manifest에 기록한다.
-3. client-side encryption을 명시하여 PBS `host/<backup_id>/<time>`에 업로드한다.
+3. client-side encryption을 명시하여 host에서 PBS `host/<backup_id>/<time>`에 업로드한다.
 4. PBS에서 그 archive를 새 경로로 실제 restore하고 세 파일의 SHA-256을 원본과 비교한다.
    반환된 dump의 `pg_restore --list`도 통과해야 한다.
 5. 성공 receipt를 별도의 암호화된 `verification.pxar`로
@@ -115,6 +123,28 @@ Monitor 쪽 설정은 같은 논리 UUID, DB명, namespace와 backup ID를 사�
 auth ID와 `password_file`은 reader token으로 바꾼다. key 파일은 monitor의 보호된 사본을
 지정한다. `mail_config_file`도 monitor에서만 설정한다. source 로컬 상태를 복사하지 않는다.
 
+LXC source를 사용하는 경우 위 설정에 다음 객체를 추가한다. 모든 값은 예시이며
+`guest_hostname`은 `expected_hostname`과 같아야 한다. `config_sha256`은 source host의
+`/etc/pve/nodes/<host_hostname>/lxc/<ctid>.conf` SHA-256이고 `machine_id`는 guest의
+`/etc/machine-id` 값이다. Monitor와 source host는 서로 달라야 한다.
+
+```json
+{
+  "container_source": {
+    "host_hostname": "pve-node-2",
+    "ctid": 904,
+    "guest_hostname": "pickle-db",
+    "machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}
+```
+
+객체를 생략하거나 null로 지정하면 host-local socket 방식을 사용한다. LXC source의
+백업 unit은 해당 container unit 뒤에 실행하도록 순서만 지정하며 container를 시작하지
+않는다. 복원 dump의 목록 검사는 host 파일 descriptor를 guest의 `pg_restore --list`에
+stdin으로 전달한다. PBS 자격증명과 암호화 키는 source host와 monitor에만 둔다.
+
 두 실행 환경에 아래 파일을 같은 상대 구조로 설치한다. 기존 파일을 덮어쓰지 말고
 처음 설치인지 확인한다.
 
@@ -145,7 +175,7 @@ bash scripts/db-pbs-backup.sh --config /etc/pickle-db-backup/config.json --statu
 bash scripts/db-pbs-backup.sh --config /etc/pickle-db-backup/config.json --render-units
 ```
 
-source에는 출력된 `pickle-db-pbs-backup.service/.timer`, monitor에는
+source host에는 출력된 `pickle-db-pbs-backup.service/.timer`, monitor에는
 `pickle-db-pbs-monitor.service/.timer`만 설치한다. 첫 backup과 독립 조회, 복원 시험을
 통과한 뒤 source의 `/etc/pickle-db-backup/enable-backup` marker와 해당 timer를 활성화한다.
 Monitor timer에는 source marker를 조건으로 넣지 않는다. timer의 명령은 설치 경로의

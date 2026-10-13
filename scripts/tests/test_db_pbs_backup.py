@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline workflow tests using an in-memory PBS substitute; no real backups or mail."""
 import copy
-from dataclasses import replace
+from dataclasses import asdict, replace
 import importlib.util
 import io
 import json
@@ -33,6 +33,12 @@ def config(root):
                          str(root / 'escrow.json'), str(root / 'state'), str(root / 'monitor-state'), None)
 
 
+def container_config(c):
+    return replace(c, expected_hostname='db-example', container_source={
+        'host_hostname': 'pve-example', 'ctid': 904, 'guest_hostname': 'db-example',
+        'machine_id': 'a' * 32, 'config_sha256': 'b' * 64})
+
+
 def index(c, epoch=EPOCH, proofs=False):
     return {'backup-type': 'host', 'backup-id': c.backup_id + ('-verified' if proofs else ''), 'backup-time': epoch,
             'signature': 'b' * 64, 'unprotected': {'key-fingerprint': ':'.join(['cc'] * 32)},
@@ -50,6 +56,12 @@ class Runner:
         label = kwargs.get('label')
         if label == self.fail:
             raise backup.BackupError('simulated failure')
+        if label == 'container guest hostname':
+            return b'db-example\n'
+        if label == 'container machine identity':
+            return b'a' * 32 + b'\n'
+        if label == 'container source address':
+            return json.dumps([{'addr_info': [{'local': self.c.source_address}]}]).encode()
         if kwargs.get('output'):
             kwargs['output'].write_bytes(b'PGDMP-example' if 'consistent dump' in label else b'CREATE ROLE example;')
         if label == 'database source address':
@@ -213,6 +225,105 @@ class BackupWorkflowTest(unittest.TestCase):
             self.assertEqual(args[args.index('-U') + 1], 'postgres')
             self.assertIn('-w', args)
             self.assertFalse(any(key.startswith('PG') for key in kwargs['env']))
+
+    def test_container_source_checks_identity_and_uses_pct_exec(self):
+        c = container_config(self.c)
+        runner = Runner(c)
+        with patch.object(backup, 'digest', return_value='b' * 64), \
+                patch.object(Path, 'is_file', return_value=True):
+            observed = backup.check_source(c, runner)
+        self.assertEqual(observed['container_source']['ctid'], 904)
+        labels = [kwargs.get('label') for _, kwargs in runner.calls]
+        self.assertIn('container guest hostname', labels)
+        self.assertIn('container machine identity', labels)
+        self.assertIn('container source address', labels)
+        source_call = next(args for args, kwargs in runner.calls if kwargs.get('label') == 'database identity and schema')
+        self.assertEqual(source_call[:4], ['pct', 'exec', '904', '--'])
+        self.assertNotIn('database source address', labels)
+
+    def test_container_source_identity_mismatch_stops_before_database_query(self):
+        c = replace(container_config(self.c), container_source={
+            'host_hostname': 'pve-example', 'ctid': 904, 'guest_hostname': 'wrong-guest',
+            'machine_id': 'a' * 32, 'config_sha256': 'b' * 64})
+        runner = Runner(c)
+        with patch.object(backup, 'digest', return_value='b' * 64), \
+                patch.object(Path, 'is_file', return_value=True), \
+                self.assertRaisesRegex(backup.BackupError, 'hostname changed'):
+            backup.check_source(c, runner)
+        self.assertNotIn('database identity and schema', [kwargs.get('label') for _, kwargs in runner.calls])
+
+    def test_container_source_dump_and_readback_commands_use_guest_postgres(self):
+        c = container_config(self.c)
+        runner = Runner(c)
+        with patch.object(backup, 'check_source', return_value={
+                'database': c.database, 'system_identifier': c.expected_system_identifier,
+                'recovery': False, 'major': 18, 'schema': 1, 'failed_migrations': 0,
+                'database_bytes': 1024}):
+            record = backup.run_backup(c, runner, lambda *_: Client(c))
+        self.assertEqual(record['status'], 'VERIFIED')
+        for label in ('PostgreSQL consistent dump', 'database roles without passwords'):
+            command = next(args for args, kwargs in runner.calls if kwargs.get('label') == label)
+            self.assertEqual(command[:4], ['pct', 'exec', '904', '--'])
+            self.assertTrue(any(item.startswith('/usr/lib/postgresql/18/bin/') for item in command))
+        for args, kwargs in runner.calls:
+            if args[:2] == ['pct', 'exec']:
+                self.assertNotIn(str(c.password_file), args)
+                self.assertNotIn(str(c.encryption_key_file), args)
+        restore = next(args for args, kwargs in runner.calls if kwargs.get('label') == 'restored PostgreSQL archive readability')
+        self.assertEqual(restore[:4], ['pct', 'exec', '904', '--'])
+        restore_kwargs = next(kwargs for args, kwargs in runner.calls if kwargs.get('label') == 'restored PostgreSQL archive readability')
+        self.assertIsNotNone(restore_kwargs.get('stdin_path'))
+        self.assertFalse(any(args[:2] == ['pct', 'push'] for args, _ in runner.calls))
+
+    def test_real_runner_supports_bytes_fd_stream_output_file_and_exclusive_stdin(self):
+        runner = backup.Runner()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / 'source.dump'
+            source.write_bytes(b'file-stream')
+            output = root / 'output.dump'
+            echo = [sys.executable, '-c', 'import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())']
+            self.assertEqual(runner.run(echo, data=b'bytes'), b'bytes')
+            self.assertEqual(runner.run(echo, stdin_path=source), b'file-stream')
+            self.assertEqual(runner.run(echo, stdin_path=source, output=output), b'')
+            self.assertEqual(output.read_bytes(), b'file-stream')
+            with self.assertRaises(backup.BackupError):
+                runner.run(echo, data=b'bytes', stdin_path=source)
+
+    def test_monitor_status_stays_remote_only_when_container_source_is_unavailable(self):
+        c = container_config(self.c)
+        _, client = self.successful_backup()
+        client.c = c
+        client.unavailable = False
+        class NoPctRunner(Runner):
+            def run(self, args, **kwargs):
+                if args[:1] == ['pct']:
+                    raise AssertionError('monitor invoked pct')
+                return super().run(args, **kwargs)
+        runner = NoPctRunner(c)
+        shutil.rmtree(self.c.state_dir)
+        report = backup.freshness(c, runner, lambda *_: client, clock=lambda: EPOCH + 1)
+        self.assertEqual(report['status'], 'HEALTHY')
+        self.assertEqual(runner.calls, [])
+
+    def test_container_source_units_use_pve_after_only_and_monitor_is_remote_only(self):
+        c = container_config(self.c)
+        source_unit = backup.unit_files(c)['pickle-db-pbs-backup.service']
+        monitor_unit = backup.unit_files(c)['pickle-db-pbs-monitor.service']
+        self.assertIn('After=network-online.target pve-container@904.service', source_unit)
+        self.assertNotIn('Requires=postgresql@18-main.service', source_unit)
+        self.assertNotIn('pct', monitor_unit)
+
+    def test_container_source_rejects_same_monitor_host_and_missing_required_config(self):
+        with self.assertRaises(backup.BackupError):
+            replace(container_config(self.c), monitor_hostname='pve-example').validate()
+        with tempfile.TemporaryDirectory() as td:
+            value = asdict(self.c)
+            del value['database']
+            path = Path(td) / 'config.json'
+            path.write_text(json.dumps(value))
+            with self.assertRaises(backup.BackupError):
+                backup.Config.load(path)
 
     def test_mutable_server_notes_do_not_change_the_backup_but_changed_signature_does(self):
         _, client = self.successful_backup()

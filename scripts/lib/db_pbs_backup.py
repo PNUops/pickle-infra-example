@@ -66,12 +66,16 @@ class Config:
     state_dir: str
     monitor_state_dir: str
     mail_config_file: str | None
+    container_source: dict | None = None
 
     @classmethod
     def load(cls, path: Path) -> Config:
         value = json.loads(path.read_text())
-        if not isinstance(value, dict) or set(value) != {f.name for f in fields(cls)}:
+        required = {f.name for f in fields(cls) if f.name != 'container_source'}
+        expected = required | {'container_source'}
+        if not isinstance(value, dict) or not set(value) <= expected or set(value) not in (required, expected):
             raise BackupError('Configuration must contain exactly the documented fields')
+        value.setdefault('container_source', None)
         result = cls(**value)
         result.validate()
         return result
@@ -89,6 +93,20 @@ class Config:
             raise BackupError('An application schema baseline is required')
         import ipaddress
         ipaddress.IPv4Address(self.source_address)
+        if self.container_source is not None:
+            if not isinstance(self.container_source, dict) or set(self.container_source) != {
+                    'host_hostname', 'ctid', 'guest_hostname', 'machine_id', 'config_sha256'}:
+                raise BackupError('container_source must contain exactly the documented fields')
+            if not re.fullmatch(r'[a-z][a-z0-9-]{0,62}', self.container_source['host_hostname']):
+                raise BackupError('Invalid container source host hostname')
+            if not re.fullmatch(r'[a-z][a-z0-9-]{0,62}', self.container_source['guest_hostname']):
+                raise BackupError('Invalid container source guest hostname')
+            if type(self.container_source['ctid']) is not int or not 100 <= self.container_source['ctid'] <= 999:
+                raise BackupError('Invalid container source CTID')
+            if not re.fullmatch(r'[0-9a-f]{32}', self.container_source['machine_id']):
+                raise BackupError('Invalid container source machine identity')
+            if not re.fullmatch(r'[0-9a-f]{64}', self.container_source['config_sha256']):
+                raise BackupError('Invalid container source config SHA-256')
         if not re.fullmatch(r'[A-Za-z0-9_.-]+@pbs![A-Za-z0-9_-]+@[A-Za-z0-9.-]+(?::[0-9]+)?:[A-Za-z0-9_-]+', self.repository):
             raise BackupError('Use an explicit remote PBS API-token repository without an embedded password')
         if not re.fullmatch(r'[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+){0,6}', self.namespace):
@@ -100,7 +118,10 @@ class Config:
             value = getattr(self, name)
             if value is not None and (not Path(value).is_absolute() or '..' in Path(value).parts):
                 raise BackupError(f'{name} must be an explicit absolute path')
-        if self.monitor_hostname == self.expected_hostname or self.monitor_state_dir == self.state_dir:
+        source_hostname = self.container_source['host_hostname'] if self.container_source else self.expected_hostname
+        if self.container_source and self.container_source['guest_hostname'] != self.expected_hostname:
+            raise BackupError('Container guest hostname must match expected_hostname')
+        if self.monitor_hostname == source_hostname or self.monitor_state_dir == self.state_dir:
             raise BackupError('Monitoring must have a separate host identity and state directory')
         for name in ('password_file', 'encryption_key_file', 'encryption_password_file', 'escrow_receipt_file'):
             value = getattr(self, name)
@@ -119,18 +140,21 @@ def plan(c: Config) -> dict:
                                  'restored custom dump is readable'],
             'freshness_probe': 'current remote manifest plus archive identity, never local checkpoint alone',
             'routine_guest_vm_backups': False, 'mail_sent': False,
-            'boundary': 'File-level verified recovery point; full database and service recovery remains a separate drill'}
+            'boundary': 'File-level verified recovery point; full database and service recovery remains a separate drill',
+            'container_source': c.container_source}
 
 
-def unit_files() -> dict[str, str]:
+def unit_files(c: Config | None = None) -> dict[str, str]:
     executable = '/bin/bash /opt/pickle/db-backup/bin/db-pbs-backup.sh --config /etc/pickle-db-backup/config.json'
     service = ('[Service]\nType=oneshot\nUser=root\nUMask=0077\nNoNewPrivileges=true\n'
                'PrivateTmp=true\nNice=10\nIOSchedulingClass=best-effort\nIOSchedulingPriority=7\n')
     return {
         'pickle-db-pbs-backup.service':
             '[Unit]\nDescription=Encrypted PostgreSQL backup and PBS readback\n'
-            'Requires=postgresql@18-main.service\nAfter=network-online.target postgresql@18-main.service\n'
-            'Wants=network-online.target\nConditionPathExists=/etc/pickle-db-backup/enable-backup\n'
+            + ('After=network-online.target pve-container@' + str(c.container_source['ctid']) + '.service\n'
+               if c is not None and c.container_source else
+               'Requires=postgresql@18-main.service\nAfter=network-online.target postgresql@18-main.service\n')
+            + 'Wants=network-online.target\nConditionPathExists=/etc/pickle-db-backup/enable-backup\n'
             + service + 'TimeoutStartSec=1200\nExecStart=' + executable + ' --run\n',
         'pickle-db-pbs-backup.timer':
             '[Unit]\nDescription=Back up the application database every five minutes\n'
@@ -149,11 +173,22 @@ def unit_files() -> dict[str, str]:
 
 
 class Runner:
-    def run(self, args, *, data=None, env=None, output=None, label='command', timeout=240) -> bytes:
-        with open(output, 'xb') if output is not None else _no_output_file() as target:
-            result = subprocess.run(args, input=data, stdin=subprocess.DEVNULL if data is None else None,
-                                    stdout=target if target else subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=env, timeout=timeout)
+    def run(self, args, *, data=None, stdin_path=None, env=None, output=None, label='command', timeout=240) -> bytes:
+        if data is not None and stdin_path is not None:
+            raise BackupError('stdin data and stdin_path are mutually exclusive')
+        source = stdin_path.open('rb') if stdin_path is not None else None
+        try:
+            with open(output, 'xb') if output is not None else _no_output_file() as target:
+                kwargs = {'stdout': target if target else subprocess.PIPE,
+                          'stderr': subprocess.PIPE, 'env': env, 'timeout': timeout}
+                if data is not None:
+                    kwargs['input'] = data
+                else:
+                    kwargs['stdin'] = source if source is not None else subprocess.DEVNULL
+                result = subprocess.run(args, **kwargs)
+        finally:
+            if source is not None:
+                source.close()
         if result.returncode:
             raise BackupError(label + f' failed (exit {result.returncode})')
         return result.stdout if output is None else b''
@@ -196,9 +231,39 @@ def lock(path: Path, *, blocking: bool = True):
 
 
 def require_local_host(c: Config, *, monitor=False) -> None:
-    expected = c.monitor_hostname if monitor else c.expected_hostname
+    expected = c.monitor_hostname if monitor else (c.container_source['host_hostname'] if c.container_source else c.expected_hostname)
     if os.geteuid() != 0 or socket.gethostname().split('.')[0] != expected:
-        raise BackupError('This operation requires root on the expected database container')
+        raise BackupError('This operation requires root on the expected backup host')
+
+
+def guest_command(c: Config, args: list[str]) -> list[str]:
+    return ['pct', 'exec', str(c.container_source['ctid']), '--', *args]
+
+
+def guest_postgres_command(c: Config, args: list[str]) -> list[str]:
+    return guest_command(c, ['env', '-i', 'PATH=/usr/lib/postgresql/18/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                             'LANG=C.UTF-8', *args])
+
+
+def check_container_source(c: Config, runner: Runner) -> dict:
+    source = c.container_source
+    config_path = Path('/etc/pve/nodes') / source['host_hostname'] / 'lxc' / (str(source['ctid']) + '.conf')
+    if not config_path.is_file() or digest(config_path) != source['config_sha256']:
+        raise BackupError('Container configuration identity changed')
+    hostname = runner.run(guest_command(c, ['hostname', '-s']), label='container guest hostname').decode().strip()
+    if hostname != source['guest_hostname']:
+        raise BackupError('Container guest hostname changed')
+    machine_id = runner.run(guest_command(c, ['cat', '/etc/machine-id']), label='container machine identity').decode().strip()
+    if machine_id != source['machine_id']:
+        raise BackupError('Container machine identity changed')
+    addresses = json.loads(runner.run(guest_command(c, ['/usr/sbin/ip', '-j', '-4', 'address', 'show']),
+                                      label='container source address'))
+    if not any(item.get('local') == c.source_address
+               for link in addresses for item in link.get('addr_info', [])):
+        raise BackupError('The expected container database address is not assigned')
+    return {'host_hostname': source['host_hostname'], 'ctid': source['ctid'],
+            'guest_hostname': hostname, 'machine_id': machine_id,
+            'config_sha256': source['config_sha256'], 'source_address': c.source_address}
 
 
 def require_state(c: Config, *, monitor=False) -> Path:
@@ -403,18 +468,23 @@ def postgres_environment() -> dict[str, str]:
 
 
 def check_source(c: Config, runner: Runner) -> dict:
-    addresses = json.loads(runner.run(['ip', '-j', 'address', 'show'], label='database source address'))
-    if not any(a.get('local') == c.source_address for link in addresses for a in link.get('addr_info', [])):
-        raise BackupError('The expected primary database address is not assigned here')
+    identity = check_container_source(c, runner) if c.container_source else None
+    if not c.container_source:
+        addresses = json.loads(runner.run(['ip', '-j', 'address', 'show'], label='database source address'))
+        if not any(a.get('local') == c.source_address for link in addresses for a in link.get('addr_info', [])):
+            raise BackupError('The expected primary database address is not assigned here')
     sql = ("SELECT json_build_object('database',current_database(),'system_identifier',"
            "(SELECT system_identifier::text FROM pg_control_system()),'recovery',pg_is_in_recovery(),"
            "'major',current_setting('server_version_num')::int/10000,'schema',"
            "(SELECT max(version::int) FROM flyway_schema_history WHERE success),"
            "'failed_migrations',(SELECT count(*) FROM flyway_schema_history WHERE NOT success),"
            "'database_bytes',pg_database_size(current_database()));")
-    raw = runner.run(['runuser', '-u', 'postgres', '--', PG_BIN + 'psql', '-X', '-qAt',
+    command = ['runuser', '-u', 'postgres', '--', PG_BIN + 'psql', '-X', '-qAt',
                       '-h', PG_SOCKET, '-p', '5432', '-U', 'postgres', '-w',
-                      '-v', 'ON_ERROR_STOP=1', '-d', c.database, '-c', sql],
+                      '-v', 'ON_ERROR_STOP=1', '-d', c.database, '-c', sql]
+    if c.container_source:
+        command = guest_postgres_command(c, command)
+    raw = runner.run(command,
                      env=postgres_environment(), label='database identity and schema')
     observed = json.loads(raw)
     if (observed.get('database') != c.database or observed.get('system_identifier') != c.expected_system_identifier
@@ -422,6 +492,8 @@ def check_source(c: Config, runner: Runner) -> dict:
             or observed.get('failed_migrations') != 0
             or not isinstance(observed.get('schema'), int) or observed['schema'] < c.minimum_schema_version):
         raise BackupError('The source is not the configured primary application database')
+    if identity:
+        observed['container_source'] = identity
     return observed
 
 
@@ -448,7 +520,7 @@ def clean_owned_failed_spool(c: Config, state: Path) -> None:
         shutil.rmtree(directory)
 
 
-def verify_readback(payload: Path, restored: Path, runner: Runner) -> dict[str, str]:
+def verify_readback(payload: Path, restored: Path, runner: Runner, c: Config | None = None) -> dict[str, str]:
     expected = {'database.dump', 'roles.sql', 'manifest.json'}
     if {p.name for p in restored.iterdir()} != expected:
         raise BackupError('Restored payload has missing or unexpected files')
@@ -458,7 +530,14 @@ def verify_readback(payload: Path, restored: Path, runner: Runner) -> dict[str, 
         if not returned.is_file() or returned.is_symlink() or digest(original) != digest(returned):
             raise BackupError('PBS readback checksum mismatch')
         hashes[name] = digest(returned)
-    runner.run([PG_BIN + 'pg_restore', '--list', str(restored / 'database.dump')], label='restored PostgreSQL archive readability')
+    if c is None or c.container_source is None:
+        runner.run([PG_BIN + 'pg_restore', '--list', str(restored / 'database.dump')],
+                   label='restored PostgreSQL archive readability')
+    else:
+        runner.run(guest_postgres_command(c, ['runuser', '-u', 'postgres', '--', PG_BIN + 'pg_restore',
+                                               '--list']),
+                   stdin_path=restored / 'database.dump', env=postgres_environment(),
+                   label='restored PostgreSQL archive readability')
     return hashes
 
 
@@ -484,11 +563,16 @@ def run_backup(c: Config, runner: Runner, client_factory=Client) -> dict:
                   'recovery_point_epoch': epoch, 'status': 'STARTED'}
         atomic_json(run / 'attempt.json', record)
         try:
-            runner.run(['runuser', '-u', 'postgres', '--', PG_BIN + 'pg_dump', '--format=custom',
-                        '-h', PG_SOCKET, '-p', '5432', '-U', 'postgres', '-w', '--dbname', c.database],
+            dump_command = ['runuser', '-u', 'postgres', '--', PG_BIN + 'pg_dump', '--format=custom',
+                            '-h', PG_SOCKET, '-p', '5432', '-U', 'postgres', '-w', '--dbname', c.database]
+            roles_command = ['runuser', '-u', 'postgres', '--', PG_BIN + 'pg_dumpall', '--globals-only', '--no-role-passwords',
+                             '-h', PG_SOCKET, '-p', '5432', '-U', 'postgres', '-w']
+            if c.container_source:
+                dump_command = guest_postgres_command(c, dump_command)
+                roles_command = guest_postgres_command(c, roles_command)
+            runner.run(dump_command,
                        env=postgres_environment(), output=payload / 'database.dump', label='PostgreSQL consistent dump')
-            runner.run(['runuser', '-u', 'postgres', '--', PG_BIN + 'pg_dumpall', '--globals-only', '--no-role-passwords',
-                        '-h', PG_SOCKET, '-p', '5432', '-U', 'postgres', '-w'],
+            runner.run(roles_command,
                        env=postgres_environment(), output=payload / 'roles.sql', label='database roles without passwords')
             atomic_json(payload / 'manifest.json', {'instance_id': c.instance_id, 'source': source,
                         'recovery_point_epoch': epoch, 'dump_sha256': digest(payload / 'database.dump'),
@@ -497,7 +581,7 @@ def run_backup(c: Config, runner: Runner, client_factory=Client) -> dict:
             fingerprint = manifest_fingerprint(c, client.index(snapshot), epoch)
             restored = run / 'readback'
             client.restore(snapshot, restored)
-            hashes = verify_readback(payload, restored, runner)
+            hashes = verify_readback(payload, restored, runner, c)
             record.update(status='VERIFIED', verified_epoch=int(time.time()),
                           manifest_fingerprint=fingerprint, payload_sha256=hashes,
                           database=c.database, system_identifier=c.expected_system_identifier,
@@ -702,7 +786,7 @@ def main() -> int:
     try:
         c = Config.load(args.config)
         if args.render_units:
-            print(json.dumps(unit_files(), indent=2))
+            print(json.dumps(unit_files(c), indent=2))
         elif args.initialize:
             initialize(c)
             print('Created protected state; no timer or remote backup was started.')
