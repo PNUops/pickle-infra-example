@@ -31,7 +31,7 @@ Unit·env를 자동 교체하지 않으며 기존 release도 삭제하지 않습
 
 ## 메모리 증설과 큰 응답 상한
 
-게이트웨이 기본값(큰 본문 슬롯 16개, Key당 4개, 응답 상한 128 MiB)은 16 GiB 컨테이너와
+게이트웨이 기본값(큰 본문 슬롯 16개, Key별 몫 없음, 응답 상한 128 MiB)은 16 GiB 컨테이너와
 유닛의 `MemoryMax=15872M`, `MemoryHigh=14848M`, `GOMEMLIMIT=13312MiB`를 전제로 합니다.
 새 바이너리가 옛 사다리 위에서 돌지 않도록 컨테이너, 유닛, 바이너리 순으로 올립니다.
 
@@ -42,6 +42,6 @@ pct exec <CTID> -- systemctl show <UNIT> -p MemoryMax -p MemoryHigh -p Environme
 ```
 
 되돌리기는 반대 순서입니다. 바이너리를 이전 release로 되돌리거나 환경 파일에 옛 값
-(`LLMGW_CHAT_LARGE_BODY_SLOTS=8`, `LLMGW_CHAT_LARGE_BODY_SLOTS_PER_KEY=2`, 두 응답 상한
-`33554432`)을 적은 뒤 유닛을 되돌리고, 컨테이너는 마지막에 줄입니다. 먼저 줄이면 이미 쓰는
-메모리 아래로 한도가 내려가 OOM 킬이 날 수 있습니다.
+(`LLMGW_CHAT_LARGE_BODY_SLOTS=8`, 두 응답 상한 `33554432`)을 적은 뒤 유닛을 되돌리고, 컨테이너는 마지막에 줄입니다. 먼저 줄이면 이미 쓰는
+메모리 아래로 한도가 내려가 OOM 킬이 날 수 있습니다. Key별 몫은 env로 되살릴 수 없으므로
+필요하면 바이너리를 되돌립니다.
