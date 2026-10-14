@@ -28,3 +28,20 @@ API·console 성공 receipt와 현재 Chat 호환 검증이 gateway 적용보다
 별도 승인 창, 실제 독립 backup/recovery 검증이 필요합니다. Health 또는 실제 실행
 artifact 검증이 실패하면 호환성이 확인된 daemon·keygen의 이전 symlink를 복구합니다.
 Unit·env를 자동 교체하지 않으며 기존 release도 삭제하지 않습니다.
+
+## 메모리 증설과 큰 응답 상한
+
+게이트웨이 기본값(큰 본문 슬롯 16개, Key당 4개, 응답 상한 128 MiB)은 16 GiB 컨테이너와
+유닛의 `MemoryMax=15872M`, `MemoryHigh=14848M`, `GOMEMLIMIT=13312MiB`를 전제로 합니다.
+새 바이너리가 옛 사다리 위에서 돌지 않도록 컨테이너, 유닛, 바이너리 순으로 올립니다.
+
+```bash
+pct set <CTID> --memory 16384                        # 즉시 적용
+pct exec <CTID> -- systemctl daemon-reload           # 유닛 세 값 반영 뒤
+pct exec <CTID> -- systemctl show <UNIT> -p MemoryMax -p MemoryHigh -p Environment
+```
+
+되돌리기는 반대 순서입니다. 바이너리를 이전 release로 되돌리거나 환경 파일에 옛 값
+(`LLMGW_CHAT_LARGE_BODY_SLOTS=8`, `LLMGW_CHAT_LARGE_BODY_SLOTS_PER_KEY=2`, 두 응답 상한
+`33554432`)을 적은 뒤 유닛을 되돌리고, 컨테이너는 마지막에 줄입니다. 먼저 줄이면 이미 쓰는
+메모리 아래로 한도가 내려가 OOM 킬이 날 수 있습니다.
