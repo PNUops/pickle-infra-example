@@ -51,13 +51,15 @@ manager가 application 변수를 주입하면 거부합니다. 선택 env 파일
 Console artifact에 운영 주소가 포함되면 배포를 거부합니다. `pickle-dev.example.com`의
 공개 TLS와 CT900 경로는 별도 승인 전까지 확인된 접속 경로로 취급하지 않습니다.
 
-현재 운영 API unit은 고정 `production-example/pickle-api.jar`를,
-gateway unit은 고정 `llm-gateway-example`을 실행합니다. 운영 API의 준비 대상 명령은
+현재 운영 API unit은 고정 `production-example/pickle-api.jar`를, gateway unit은 drop-in
+`40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-16 수동 배포).
+이전 판의 고정 경로도 남아 있습니다. 운영 API의 준비 대상 명령은
 `/usr/local/libexec/pickle-api-start.py /opt/pickle/api/production-current.jar prod`이며,
 gateway는 관리 symlink `current-production`과 기존 명령 경로 `llm-keygen`을
 선택해야 합니다. 운영 `apply`는 고정 artifact unit을 허용하지 않습니다. 관리형 unit 준비 외에도
 artifact에 결합된 root 보호 승인 창과 실제 PBS 독립 파일 복원 검증을 모두 요구합니다.
-현재 운영 unit은 고정 경로 그대로이며 이번 준비에서 변경·재시작하지 않았습니다. `check`는 현재 고정 ExecStart와 기록된
+운영 unit은 관리형 경로로 전환하지 않은 고정 경로 상태입니다. 운영 호스트에는 아직 이 도구, `/etc/pickle/deploy-targets/prod.json`,
+승인과 호환 기록 경로가 설치되지 않았습니다(2026-10-16 확인). 설치하면 `check`는 현재 고정 ExecStart와 기록된
 artifact SHA를 읽기 전용으로 대조할 수 있습니다. 이 준비가 서비스 재시작이나 공개 중계 변경을
 요구한다면 대상·영향·복구 방법과 작업 창을 정해 별도로 승인받습니다.
 
@@ -164,10 +166,10 @@ job 사이 산출물에는 [upload-artifact v7](https://github.com/actions/uploa
 ProxyJump와 example-prod-host 자체 신뢰 핀·키를 사용합니다. 이 경로의 도달성과 GitHub 비밀 설정은
 실제 stage/check 전에 별도 확인해야 합니다. 공개 중계 설정은 workflow가 바꾸지 않습니다.
 
-`config/deploy-target-prod.json`은 실제 운영 0.95 baseline의 source SHA를 사용합니다.
-API example-api-source와 consoleexample-console-source는 현재 고정 artifact의 source이며 신규 0.99 commit으로
-표시하지 않습니다. 별도 `config/deploy-target-prod-release-candidate.json`은 미활성
-0.100/V140의 미집행 후보입니다. 파일에 남은 0.99 API·console SHA는 과거 검증한 snapshot이며 최종 0.100 source로 확인된 값이 아닙니다. API·console 새 source, 검증된 Chat 집행 gateway source와 세 artifact
+`config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-10-16부터
+0.104/V141 판이고, 산출물은 고정 artifact 수동 배포로 올렸습니다. 별도
+`config/deploy-target-prod-release-candidate.json`은 그 전의 미활성 0.100/V140 미집행 후보이며
+이번 배포에 쓰지 않았습니다. 파일에 남은 0.99 API·console SHA는 과거 검증한 snapshot이며 최종 0.100 source로 확인된 값이 아닙니다. API·console 새 source, 검증된 Chat 집행 gateway source와 세 artifact
 SHA를 함께 검증하기 전에는 `release_candidate_ready=false`이며 apply를 거부합니다.
 Gateway placeholder와 미확인 digest를 제거하지 않고 READY로 바꿔도 거부합니다.
 운영 workflow는 `check`까지만 실행합니다. `<SHA>`는 artifact SHA-256,
@@ -175,7 +177,8 @@ Gateway placeholder와 미확인 digest를 제거하지 않고 READY로 바꿔�
 `PICKLE_PRODUCTION_RELEASE_APPROVED`는 운영 적용을 허용하지 않습니다.
 
 `config/deploy-backup-reader.json`은 example-backup-host 독립 DB reader의 현재 선택 profile,
-배치된 기존 native library SHA, 실제 DB instance/system ID와 V137을 고정한 후보입니다.
+배치된 기존 native library SHA, 실제 DB instance/system ID와 현재 스키마 버전(2026-10-16부터 V141)을 고정한 후보입니다.
+백업 reader 호스트에 설치한 사본도 레포 판과 같아야 하므로, 이 파일이 바뀌면 호스트 사본을 같은 소유와 권한(root 0600)으로 다시 설치합니다.
 이 파일과 `verify-production-backup.py`를 별도 root 보호 경로에 stage하고, example-prod-host→example-backup-host
 reader 및 example-backup-host→example-prod-host의 native PostgreSQL 읽기 actor를 각각 기존 신뢰 핀·키의 새 전용
 SSH 설정으로 연결합니다. 설정의 `postgres_restore_command`는 기존 CT204의
@@ -188,7 +191,7 @@ receipt를 대조한 뒤 같은 point를 새 임시 폴더로 복원합니다. `
 `manifest.json`의 실제 SHA, native PostgreSQL TOC와 dump에 들어 있는 Flyway COPY를
 검사합니다. 임시 plaintext는 성공·실패 모두 제거합니다. 최신 point는 600초 이내여야 하고,
 root 임의 JSON이나 과거의 SQL 복원 기록만으로 이 확인을 대신하지 않습니다. 호출자는
-매번 새 challenge와 verifier SHA를 대조하고 실제 CT204의 system ID·V137·failed0도 읽습니다.
+매번 새 challenge와 verifier SHA를 대조하고 실제 CT204의 system ID·현재 스키마 버전·failed0도 읽습니다.
 이 경로는 독립 파일 복원·TOC·Flyway 데이터 검증이며 전체 SQL clone/service RTO 시험이
 아닙니다. 기존 완료한 full restore는 보존합니다. 운영 manifest의 `historical_full_sql_restore`는
 이미 완료된 native SQL producer 경로와 SHA를 연결합니다. 이 파일은 root0600으로

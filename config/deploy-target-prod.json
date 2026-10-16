@@ -71,7 +71,7 @@
     "database": "pickle_prod",
     "instance_id": "EXAMPLE_DATABASE_INSTANCE_ID",
     "expected_system_identifier": "EXAMPLE_DATABASE_SYSTEM_IDENTIFIER",
-    "expected_schema_version": 137,
+    "expected_schema_version": 141,
     "maximum_point_age_seconds": 600,
     "maximum_verification_age_seconds": 120,
     "recovery_scope": "independent encrypted file recovery, native TOC and recovered Flyway data"
@@ -81,5 +81,5 @@
     "completion_sha256": "EXAMPLE_HISTORICAL_SQL_RESTORE_SHA256",
     "scope": "2026-10-10 isolated same-point SQL restore; retained historical drill, not a new current-point SQL restore"
   },
-  "release_version": "0.95 operating baseline"
+  "release_version": "0.104/V141 operating release 2026.10.16"
 }
