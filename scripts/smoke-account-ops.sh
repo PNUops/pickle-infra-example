@@ -64,6 +64,22 @@ login(){ curl -sS -o "$B" -X POST "$BASE/auth/login" -H 'Content-Type: applicati
 . "$(dirname "$0")/lib/auth.sh"
 auth(){ echo "Authorization: Bearer $1"; }
 
+# Read the exact current impact before submitting the required delete confirmation.
+# A failed read or missing fingerprint must never become an unconfirmed DELETE.
+delete_workspace_confirmed(){
+  local label="$1" expected="$2" workspace_id="$3" token="$4" fingerprint payload
+  req "$label impact 200" 200 "$BASE/workspaces/$workspace_id/termination-impact" \
+    -H "$(auth "$token")" || return 1
+  fingerprint=$(jq -er '.fingerprint | select(type == "string" and length > 0)' "$B") || {
+    ko "$label impact has no fingerprint"
+    return 1
+  }
+  payload=$(jq -nc --arg fingerprint "$fingerprint" \
+    '{confirmation:{fingerprint:$fingerprint,confirmed:true}}') || return 1
+  req "$label" "$expected" -X DELETE "$BASE/workspaces/$workspace_id" \
+    -H "$(auth "$token")" -H 'Content-Type: application/json' -d "$payload"
+}
+
 # mk_user EMAIL PW NAME → "<accessToken> <userId> <userId_DB>", from the shared
 # factory, which writes the account rather than signing up: this deployment mails
 # for real and the verification token is stored hashed, so the spool this used to
@@ -293,7 +309,7 @@ if has_phase group; then
   req "submit vm request 201" 201 -X POST "$BASE/requests" -H "$(auth "$U3T")" \
     -H 'Content-Type: application/json' -d "$(req_payload "$GID" '그룹삭제 취소 검증용')"
   RID=$(jq -r '.id' "$B")
-  req "delete team 204" 204 -X DELETE "$BASE/workspaces/$GID" -H "$(auth "$U3T")"
+  delete_workspace_confirmed "delete team 204" 204 "$GID" "$U3T"
   # The request id crossed the API as a UUID; the row is keyed by the internal id.
   RID_DB=$(pgq "select id from requests where public_id='$RID'")
   [ -n "$RID_DB" ] || ko "  no requests row for public_id $RID (cancel check unverified)"
@@ -304,12 +320,12 @@ if has_phase group; then
     -H 'Content-Type: application/json' \
     -d "{\"kind\":\"PROJECT\",\"name\":\"smoke-acct-team-$TS\"}"
   GID2=$(jq -r '.id' "$B")
-  req "  cleanup second team 204" 204 -X DELETE "$BASE/workspaces/$GID2" -H "$(auth "$U3T")"
+  delete_workspace_confirmed "  cleanup second team 204" 204 "$GID2" "$U3T"
   # Public id out (it goes into the URL), internal id in (workspace_members.user_id
   # is a foreign key and still bigint).
   PGID=$(pgq "select g.public_id from workspaces g join workspace_members gm on gm.workspace_id=g.id
               where gm.user_id=$U3ID_DB and g.kind='PERSONAL' and g.deleted_at is null")
-  req "  personal workspace delete 409" 409 -X DELETE "$BASE/workspaces/$PGID" -H "$(auth "$U3T")"
+  delete_workspace_confirmed "  personal workspace delete 409" 409 "$PGID" "$U3T"
   C=$(jq -r '.code' "$B"); [ "$C" = "WORKSPACE_PERSONAL_UNDELETABLE" ] && ok "  code WORKSPACE_PERSONAL_UNDELETABLE" || ko "  code ($C)"
 fi
 

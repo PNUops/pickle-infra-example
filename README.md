@@ -252,6 +252,11 @@ SSH 도달 확인, 전원 왕복, 삭제, DB 정합 검증까지 한 번에 통�
 실제 메일함으로 가고 api는 토큰의 해시만 저장하므로, 가입 경로로 만들면 토큰을 읽을 방법이
 없기 때문입니다. 로그인 제한 카운터는 그 사용자와 이 호스트 주소의 행만 지웁니다.
 
+`smoke-account-ops.sh`의 workspace 삭제는 해당 대상의 `termination-impact`를 먼저 읽고
+현재 fingerprint와 `confirmed=true`를 JSON 본문으로 전달합니다. 영향 조회 실패나
+fingerprint 누락 시 삭제 요청을 보내지 않습니다. 이 확인 형식을 지원하는 API와 함께
+실행합니다.
+
 회원가입과 메일 인증 경로는 `smoke-signup.sh` 하나가 확인합니다. 실행마다 새 주소
 `signup-<epoch>-<난수>@example.com`으로 `POST /auth/signup`을 보내고, 운영 메일함에 도착한
 인증 메일을 IMAP(`imap.example.com:993`, SSL)으로 읽어 링크의 토큰을 꺼냅니다. 그 토큰으로
