@@ -4,6 +4,7 @@ Description=Collect local operations alerts every minute
 [Timer]
 OnCalendar=*-*-* *:*:00
 RandomizedDelaySec=10
+AccuracySec=1s
 Persistent=true
 Unit=pickle-discord-ops-alerts.service
 

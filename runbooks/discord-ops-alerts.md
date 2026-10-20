@@ -104,8 +104,10 @@ systemctl enable --now pickle-discord-ops-alerts.timer
 systemctl list-timers pickle-discord-ops-alerts.timer
 ```
 
-timer는 1분마다 실행하며 최대 10초의 지연을 둡니다. 한 실행에서 HTTP 요청을
-세 건까지 처리하고 다음 timer가 나머지를 이어갑니다. 기존 API나 DB 재기동은
+timer는 매분 정각을 기준으로 최대 10초의 랜덤 지연을 두고, 타이머 실행을 묶는
+정밀도는 `AccuracySec=1s`로 지정합니다. 호스트 부하나 진행 중인 service로 실제
+실행은 더 늦어질 수 있습니다. 한 실행에서 HTTP 요청을 세 건까지 처리하고 다음
+timer가 나머지를 이어갑니다. 기존 API나 DB 재기동은
 필요하지 않습니다. 새 webhook 설정과 복구 사본의 보호 위치를 운영 기록에 남깁니다.
 
 ## 전송 상태와 복구
