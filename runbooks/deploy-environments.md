@@ -52,7 +52,8 @@ Console artifact에 운영 주소가 포함되면 배포를 거부합니다. `pi
 공개 TLS와 CT900 경로는 별도 승인 전까지 확인된 접속 경로로 취급하지 않습니다.
 
 현재 운영 API unit은 고정 `production-example/pickle-api.jar`를, gateway unit은 drop-in
-`40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-16 수동 배포).
+`40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-16 수동 배포, 게이트웨이는
+2026-10-21에 다시 수동 배포).
 이전 판의 고정 경로도 남아 있습니다. 운영 API의 준비 대상 명령은
 `/usr/local/libexec/pickle-api-start.py /opt/pickle/api/production-current.jar prod`이며,
 gateway는 관리 symlink `current-production`과 기존 명령 경로 `llm-keygen`을
