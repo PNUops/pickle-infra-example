@@ -1,0 +1,5 @@
+{
+  "role": "collector-host",
+  "expected_hostname": "health-collector",
+  "include_policy_attestation": true
+}

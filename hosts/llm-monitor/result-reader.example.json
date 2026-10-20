@@ -1,0 +1,5 @@
+{
+  "role": "model-host",
+  "expected_hostname": "model-host",
+  "include_public_generation": false
+}

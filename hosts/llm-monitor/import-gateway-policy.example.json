@@ -1,0 +1,11 @@
+{
+  "source": "import-gateway",
+  "expected_hostname": "health-collector",
+  "address": "100.64.0.10",
+  "port": 22,
+  "user": "root",
+  "identity_file": "/etc/pickle-llm-health/ssh/gateway-key",
+  "known_hosts_file": "/etc/pickle-llm-health/ssh/known-hosts",
+  "expected_sources": ["upstream-generation"],
+  "include_policy_attestation": true
+}

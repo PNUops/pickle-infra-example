@@ -1,0 +1,26 @@
+{
+  "notifications_enabled": false,
+  "sources": [
+    {
+      "name": "local-host",
+      "report_source": "host-query",
+      "component": "host",
+      "path": "/var/lib/pickle-llm-host-query/result.json",
+      "freshness_seconds": 180,
+      "failure_count": 3
+    },
+    {
+      "name": "local-query",
+      "report_source": "host-query",
+      "path": "/var/lib/pickle-llm-host-query/result.json",
+      "freshness_seconds": 180,
+      "failure_count": 3
+    },
+    {
+      "name": "local-generation",
+      "path": "/var/lib/pickle-llm-local-generation/result.json",
+      "freshness_seconds": 2100,
+      "failure_count": 2
+    }
+  ]
+}

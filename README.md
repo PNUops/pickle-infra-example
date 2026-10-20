@@ -339,6 +339,11 @@ CT mask와 QEMU hook의 영속화·실패 경계는 [CPU 격리 런북](runbooks
 `gpu-passthrough.md`(GPU 패스스루 — Resource Mapping 생성, 토큰 최소 권한, VM 모양(`rombar=0`),
 붙이기·떼기·인계, 카드 상태 확인과 손실 대응, 시험 게스트 정리)를 담았습니다. 나머지 재구축과 복구 절차는 비공개 레포지토리에 둡니다.
 
+| 문서 | 내용 |
+|---|---|
+| `llm-health-monitor.md` | 자체 서빙 실제 생성과 host/query 분리 감시, 무통지 초기 배치와 원복 |
+| `llm-health-external.md` | 외부 HTTPS/TLS 감시, 전용 진단 키 검증과 제한된 SSH 결과 수집 |
+
 ## 플랫폼 DNS 점검
 
 VM 공개 이름은 개별 A 레코드로 ingress를 가리킵니다. 와일드카드 인증서는 DNS-01로
@@ -472,6 +477,16 @@ PBS에 보관하고, 독립 복구에서 원래 파일 hash를 확인합니다. 
 보호 경로에만 남깁니다. 예제 설정은 `hosts/`의 `dev-tls-backup.example.json`, 실행·복구
 절차는 [개발 TLS 백업 런북](runbooks/dev-tls-backup.md)에 있습니다. 개발 CI SSH key의
 custody와 GitHub secret 등록은 별도 절차이며 이 TLS 백업을 설정했다고 완료되지 않습니다.
+
+## 자체 서빙 LLM 정기 감시
+
+`llm-health-probe.py`는 host/query와 정답 생성 결과를 분리하고,
+`service-health-monitor.py`는 로컬 결과의 신선도와 최초 장애·60분 안정 복구를 기록합니다.
+초기 통지는 꺼져 있으며 공개 인증 경로와 원격 수집은 별도 배치입니다. Python3 표준
+라이브러리와 systemd를 쓰며 실행·검증·credential 설치와 원복은
+[LLM 감시 런북](runbooks/llm-health-monitor.md)을 따릅니다.
+공개 HTTPS/TLS 감시와 고정 SSH reader/importer의 배치 및 전용 진단 키 검증은
+[외부 감시와 결과 수집 런북](runbooks/llm-health-external.md)에 있습니다.
 
 ## 전체 아키텍처
 

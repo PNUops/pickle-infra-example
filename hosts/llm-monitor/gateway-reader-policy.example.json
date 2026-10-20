@@ -1,0 +1,5 @@
+{
+  "role": "gateway-host",
+  "expected_hostname": "gateway-host",
+  "include_policy_attestation": true
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=Check application upstream generation every five minutes
+
+[Timer]
+OnBootSec=12min30s
+OnUnitActiveSec=5min
+RandomizedDelaySec=15
+AccuracySec=1s
+Persistent=false
+Unit=pickle-llm-upstream-generation.service
+
+[Install]
+WantedBy=timers.target

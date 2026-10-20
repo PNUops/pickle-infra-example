@@ -1,0 +1,8 @@
+{
+  "source": "public-tls-development",
+  "kind": "tls",
+  "expected_hostname": "public-observer",
+  "allowed_hosts": ["development.example.com"],
+  "url": "https://development.example.com/",
+  "minimum_certificate_seconds": 604800
+}

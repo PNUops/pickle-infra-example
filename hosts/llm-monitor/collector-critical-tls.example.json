@@ -1,0 +1,13 @@
+{
+  "notifications_enabled": false,
+  "sources": [
+    {
+      "name": "public-tls-production",
+      "path": "/var/lib/pickle-public-tls-production/result.json",
+      "component": "critical-tls",
+      "expected_kind": "tls",
+      "freshness_seconds": 180,
+      "failure_count": 1
+    }
+  ]
+}

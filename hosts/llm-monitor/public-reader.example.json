@@ -1,0 +1,6 @@
+{
+  "role": "public-observer",
+  "expected_hostname": "public-observer",
+  "include_public_generation": false,
+  "include_collector_heartbeat": true
+}

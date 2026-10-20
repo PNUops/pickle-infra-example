@@ -1,0 +1,11 @@
+{
+  "source": "import-collector",
+  "expected_hostname": "public-observer",
+  "address": "100.64.0.20",
+  "port": 22,
+  "user": "root",
+  "identity_file": "/etc/pickle-llm-health/ssh/collector-key",
+  "known_hosts_file": "/etc/pickle-llm-health/ssh/known-hosts",
+  "expected_sources": ["collector-heartbeat"],
+  "include_policy_attestation": true
+}

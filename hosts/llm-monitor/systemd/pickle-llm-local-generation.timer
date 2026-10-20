@@ -1,0 +1,13 @@
+[Unit]
+Description=Check local self-hosted generation every fifteen minutes
+
+[Timer]
+OnBootSec=12min
+OnUnitActiveSec=15min
+RandomizedDelaySec=15
+AccuracySec=1s
+Persistent=false
+Unit=pickle-llm-local-generation.service
+
+[Install]
+WantedBy=timers.target

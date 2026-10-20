@@ -1,0 +1,13 @@
+[Unit]
+Description=Check dedicated public generation every five minutes
+
+[Timer]
+OnBootSec=13min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=15
+AccuracySec=1s
+Persistent=false
+Unit=pickle-public-generation.service
+
+[Install]
+WantedBy=timers.target

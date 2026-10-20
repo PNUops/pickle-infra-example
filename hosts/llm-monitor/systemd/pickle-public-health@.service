@@ -1,0 +1,22 @@
+[Unit]
+Description=Check external public HTTPS target %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+StateDirectory=pickle-public-%i
+StateDirectoryMode=0700
+TimeoutStartSec=15
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/pickle/public-service-health-probe.py --config /etc/pickle-llm-health/public-%i.json --state-dir /var/lib/pickle-public-%i

@@ -1,0 +1,13 @@
+[Unit]
+Description=Check external public HTTPS target %i every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+RandomizedDelaySec=5
+AccuracySec=1s
+Persistent=false
+Unit=pickle-public-health@%i.service
+
+[Install]
+WantedBy=timers.target

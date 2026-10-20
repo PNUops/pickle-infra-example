@@ -1,0 +1,8 @@
+{
+  "source": "public-tls-gateway",
+  "kind": "tls",
+  "expected_hostname": "public-observer",
+  "allowed_hosts": ["llm.example.com"],
+  "url": "https://llm.example.com/",
+  "minimum_certificate_seconds": 604800
+}

@@ -1,0 +1,225 @@
+# 외부 HTTPS 감시와 제한된 결과 수집
+
+이 패키지는 외부 호스트에서 공개 console/API의 HTTPS 응답을 관측하고, 고정 SSH reader의
+결과를 collector 호스트로 옮기는 준비 도구입니다. 로컬 생성 감시의 배포와 독립이며 코드와
+템플릿만으로 AWS 감시나 교차 heartbeat가 설치됐다고 기록하지 않습니다. 공통 절차는
+[자체 서빙 LLM 감시](llm-health-monitor.md)를 따릅니다.
+
+## 외부 공개 경로
+
+`public-service-health-probe.py`는 root 소유 0600 설정에 명시한 HTTPS 호스트만 요청합니다.
+실제 observer hostname도 설정과 같아야 합니다. CA/hostname 검증을 끄거나 redirect를
+따라가지 않습니다. console은 HTTP200·HTML content type과 root marker를 확인하고,
+API는 HTTP200·JSON content type과 지정한 필드 값/타입을 확인합니다. SPA HTML이 API
+응답으로 잘못 돌아오는 상황을 정상 처리하지 않습니다. 인증 실패 401/403은 정상 생성의
+증거가 아닙니다.
+
+공개 GET은 DNS/TLS/응답 읽기를 포함해 별도 자식 프로세스에서 총 10초로 제한합니다.
+DNS resolver가 멈춰도 이 상한에 종료됩니다. 인증서가 7일 이내 만료되면 별도 TLS 실패로
+기록합니다. 요청마다 새 TLS 연결을 열며 비밀 header와 body를 결과로 내보내지 않습니다.
+기존 캠퍼스 경로 결과와 외부 공개 결과를 별도 source로 수집해야 감시 위치의 경로 장애를
+운영 서비스 전체 장애와 구분할 수 있습니다.
+DNS 조회 오류나 resolver 단계 timeout은 `DNS_OBSERVATION_UNAVAILABLE`, phase DNS와
+해당 target의 OBSERVER_ERROR로 보수적으로 구분합니다. 단일 resolver 결과로 authoritative
+NXDOMAIN이나 전체 서비스 다운을 확정하지 않습니다. 실제 TLS chain/hostname 오류와
+예상 HTTP/JSON 불일치는 해당 공개 target의 FAILED로 남깁니다.
+
+인증서 보안 오류는 HTTP 경로 장애와 독립적인 `kind=tls` source로 추가합니다.
+`public-tls-production`·`public-tls-development`·`public-tls-gateway`는 실제 HTTP 요청 없이
+CA/hostname 검증과 7일 만료 기준만 확인합니다. 인증서 chain/SAN 검증 실패나 확인된
+7일 이내 만료만 FAILED이고 DNS/TCP/인증서 확인 전 timeout·handshake 불가는
+OBSERVER_ERROR입니다. 별도 HTTP source가 이미 장애여도 새 TLS 보안 incident를 숨기지
+않으며 reason/IP가 바뀔 때마다 사건을 만들지 않습니다.
+
+`collector-critical-tls.example.json`처럼 `component=critical-tls`, `expected_kind=tls`를
+지정한 source만 `failure_count=1`을 허용합니다. collector가 고정 보안 reason을 다시
+확인하며 다른 kind나 TCP/HTTP 오류는 observer로 처리합니다. 일반 source의 2~5회 기준은
+유지합니다. 설정은 `public-tls-<target>.json`, unit은 `pickle-public-health@tls-<target>.timer`를
+사용합니다. 초기 통지는 계속 off이며 배치된 TLS source만 reader의 `tls_sources`에 넣습니다.
+
+`hosts/llm-monitor/`의 public JSON은 예시 도메인이므로 실제 대상과 readiness JSON 경로를
+읽기 확인한 뒤 변경합니다. `public-console.json`, `public-api.json`,
+`public-development.json`으로 설치하면 각각 `pickle-public-health@console.timer`,
+`@api.timer`, `@development.timer`가 1분마다 실행합니다. 기본 파일 hash와 권한, Linux
+`systemd-analyze verify`를 확인하고 통지 off collector에 먼저 연결합니다. 각 결과는
+`/var/lib/pickle-public-<instance>/result.json`에 root 0600으로 남습니다.
+
+## 공개 실제 생성은 기본 차단
+
+`public-generation`은 전용 비학생 진단 identity가 서버에서 준비되고 자체 서빙 모델만
+허용되며 외부 fallback·유료 모델을 서버 정책이 차단하는지 확인한 뒤에만 켭니다. 클라이언트
+header나 설정에 `synthetic`을 쓰는 것으로 학생 무과금이나 서버 라우팅이 보장되지 않습니다.
+이 도구는 서버 정책을 생성하거나 변경하지 않으며 학생 키를 대용하지 않습니다.
+
+기본 `canary_enabled=false`에서는 credential도 읽지 않고 생성 요청도 보내지 않습니다.
+전용 키를 발급한 뒤 별도 운영 검증에서 실제 인증/Chat 인가와 자체 서빙 라우팅, 외부 모델
+금지, 학생 차감 0, 진단 통계/사용량 적재를 확인해야 합니다. 이를 아직 검증하지 못했다면
+timer는 계속 disabled로 두고 collector에도 공개 생성 source를 넣지 않습니다.
+
+키와 검증된 정책의 SHA256, 공개 origin, 고정 모델 alias, 발행/만료 epoch를 root 0600의
+`public-generation-policy.json`에 다음 구조로 보관합니다. 이 attestation은 실제 서버 검증의
+증빙이며 서버 보안 경계의 대체물이 아닙니다. 60초 갱신과 최대 유효기간 180초를 사용하고
+조회 실패/불일치/진단 quota 소진은 `valid=false`로 즉시 차단합니다. 아래의 고정 receipt
+전송 경로도 실제 배치와 신선도 검증을 마쳐야 사용할 수 있습니다. 정책/모델
+라우팅 변경이나 키 회수 시 즉시 timer를 끄고 증빙을 폐기하거나 재검증합니다. 만료된
+증빙을 자동으로 연장하는 작업은 제공하지 않습니다.
+
+```json
+{
+  "kind": "selfhost-only-diagnostic-identity-v1",
+  "valid": true,
+  "gateway_origin": "https://llm.example.com",
+  "model": "self-hosted-general",
+  "key_sha256": "<64 lowercase hex characters>",
+  "server_policy_sha256": "<64 lowercase hex characters>",
+  "issued_at": 0,
+  "expires_at": 0,
+  "student_account": false,
+  "server_enforced": {
+    "operations": ["chat"],
+    "maximum_paid_credits": 0,
+    "maximum_daily_tokens": 64000,
+    "requests_per_minute": 1,
+    "maximum_concurrency": 1,
+    "expires_at": 0,
+    "effective_models": ["self-hosted-general"],
+    "fallback": null,
+    "route": "SELF_HOSTED"
+  },
+  "probe_enforced": {
+    "maximum_output_tokens": 8,
+    "maximum_daily_requests": 312,
+    "minimum_interval_seconds": 300,
+    "total_timeout_seconds": 20
+  }
+}
+```
+
+토큰은 `/etc/pickle-llm-health/diagnostic-token`의 root 0600 파일에서 systemd credential로
+넘깁니다. 공개 생성 wire에는 model/messages/temperature/top_p/max_completion_tokens/stream의
+허용된 6개 필드만 사용합니다. thinking off는 실행 중 vLLM의 검증된 기본값이며 공개 요청의
+`chat_template_kwargs`로 지정하지 않습니다. 직접 DGX probe의 해당 필드와 구분합니다.
+생성은 고정 정답 질문, 최대 출력 8토큰, 전체 20초입니다. 전송 전에
+UTC 일별 횟수를 durable 저장하며 최소 간격 300초, 하루 312시도입니다. 실패/중단도 횟수에
+포함합니다. 서버의 별도 64k 토큰 상한을 이 로컬 시도 수로 대체하지 않습니다.
+출력 8토큰과 312회는 probe의 요청·durable counter 제한입니다. 이 둘이 서버에서도
+집행된다고 attest하지 않습니다. 서버 검증은 Chat·유료 credit 0·64k/day·rpm1·동시1과
+실제 만료, 단일 유효 catalog 모델 및 자체 서빙 route/fallback null을 따로 확인합니다.
+서버 키의 만료는 attestation 유효기간 전체를 덮어야 합니다. 공개 생성 401/403은 전용
+credential/정책 문제인 CREDENTIAL_REJECTED observer 오류이며 DGX 생성 다운으로
+표현하지 않습니다. 인증 없는 models 조회의 401도 실제 생성 정상의 증거가 아닙니다.
+
+## 고정 policy receipt 전달
+
+`read-health-v1` bundle은 opt-in `include_policy_attestation=true`일 때만 top-level
+`policy_attestation`을 포함합니다. 새 SSH 명령이나 추가 임의 파일 경로는 받지 않습니다.
+reader의 `gateway-host` 역할은 `/var/lib/pickle-public-policy/attestation.json`만 읽고,
+`collector-host` 역할은 `/var/lib/pickle-health-import-gateway/policy-attestation.json`만 읽습니다.
+다른 역할에서 이 옵션을 켜면 거부합니다.
+
+`import-gateway-policy.example.json`을 collector 호스트의 `import-gateway.json`으로
+선택하면 receipt는 `/var/lib/pickle-health-import-gateway/policy-attestation.json`에 게시됩니다.
+다음 `collector-host` reader가 같은 파일을 전달하고, 외부 호스트의 `import-collector.json`은
+`/var/lib/pickle-health-import-collector/policy-attestation.json`에 게시합니다. 공개 probe의
+`policy_attestation`을 마지막 경로로 지정합니다. 각 호스트명·IP·key·pin은 실제 검증값으로
+대체하며 공개 예시를 그대로 활성화하지 않습니다.
+
+importer는 key와 SSH 검증 전에 기존 허가를 원자적으로 `valid=false`로 바꿉니다. bundle의
+health와 policy가 모두 검증된 뒤에만 새 receipt를 게시합니다. 누락·전송·형식·파일 게시 오류는
+고정 invalid receipt로 남겨 이전 허가가 재사용되지 않게 합니다. producer나 전송이 멈추면
+180초 원본 만료가 그대로 작동합니다. 가져온 시각으로 issued_at/expires_at을 갱신하지 않습니다.
+
+valid true는 origin/model/hash와 서버 정책의 알려진 필드만 투영하고, producer의 추가 진단값이나
+raw body·secret 필드는 전달하지 않습니다. valid false는 kind/valid/reason/issued_at/expires_at만
+허용합니다. 전체 health+policy bundle은 계속 64KiB 이하입니다. 이 전달은 보호된 원본과
+고정 SSH 경로의 검증 결과를 옮기며 서버 정책을 새로 만들거나 변경하지 않습니다.
+
+## 고정 SSH reader와 importer
+
+`health-result-reader.py`는 `SSH_ORIGINAL_COMMAND`가 정확히 `read-health-v1`일 때만
+고정 결과를 출력합니다. 요청 인자로 파일 경로나 셸 명령을 받지 않습니다. 설정에서 실제
+hostname과 다음 역할 하나를 선택합니다.
+
+| 역할 | 허용된 결과 |
+|---|---|
+| `model-host` | 고정 host-query/local-generation 파일 |
+| `gateway-container` | 고정 upstream-generation 파일 |
+| `gateway-host` | literal CT203에 고정 Python reader와 고정 설정 경로로 `pct exec` |
+| `public-observer` | 고정 public-console/api/development 파일. 별도 검증 후에만 public-generation 포함 |
+| `collector-host` | 고정 `/var/lib/pickle-service-health-monitor/summary.json`의 원본 epoch heartbeat |
+
+reader는 상태·epoch·지연·토큰·부팅 ID·알려진 숫자 지표만 whitelist로 내보냅니다. 본문과
+credential, 임의 문자열 필드는 제거합니다. 파일 조회/형식 오류는 OBSERVER_ERROR이며
+서비스 장애로 바꾸지 않습니다. 실제 결과의 원본 sample epoch를 유지하므로 오래된 결과를
+새로 가져와도 신선해지지 않습니다.
+
+서버 reader의 고정 경로와 Python 모듈, 설정의 모든 부모는 root 소유이며 group/other 쓰기
+권한이 없어야 합니다. 결과가 root 0600이므로 reader도 보호 경계 안에서 실행합니다.
+운영자가 별도 scoped key와 out-of-band host fingerprint를 검증한 뒤에만 root authorized_keys에
+다음과 같은 forced-command 제한을 설치합니다. 기존 root 관리 키를 importer에 복사하거나
+비밀값을 공개 예시에 넣지 않습니다. 새 사용자·키 발급과 authorized_keys 변경은 이 도구가
+수행하지 않습니다.
+
+```text
+restrict,command="/usr/bin/python3 -I -B /usr/local/libexec/pickle/health-result-reader.py --config /etc/pickle-llm-health/reader.json" ssh-ed25519 <separate-reader-public-key>
+```
+
+`health-result-importer.py`는 명시적 내부 IP/user/port와 root 0600 key/known_hosts 파일을
+선택합니다. `ssh -F /dev/null`로 ambient 설정을 배제하고 strict host checking,
+IdentitiesOnly/BatchMode, agent/forward/ControlPath/ProxyCommand 비활성화를 강제합니다.
+고정 protocol 외 원격 명령이 없고 전체 SSH는 15초·stdout 64KiB로 제한합니다.
+NetBird의 RFC6598 `100.64.0.0/10`은 Python의 private 판정과 별도로 명시 허용합니다.
+공개·link-local·multicast·unspecified·reserved 주소는 허용하지 않습니다. gateway-host의
+PVE 명령은 제한된 PATH와 무관하게 `/usr/sbin/pct`를 명시합니다. timeout/크기 초과/오류에서는
+leader가 먼저 종료돼도 stdout을 상속한 자식까지 해당 실행의 새 process group으로 종료합니다.
+leader를 reap하기 전까지 PID를 보존해 process-group ID 재사용을 피합니다.
+
+import JSON을 `/etc/pickle-llm-health/import-<instance>.json`에 설치하고 대응하는
+`pickle-health-import@<instance>.timer`를 선택합니다. source 결과는
+`/var/lib/pickle-health-import-<instance>/reports/<source>.json`에 원본 epoch로 저장합니다.
+전체 bundle을 검사한 뒤 저장하며 전송/형식 오류 시 기존 결과를 보존하고 importer 자신의
+`result.json`에 OBSERVER_ERROR를 남깁니다. collector에는 **importer 결과와 각 원격 결과를
+모두** 연결해, 전송 실패 중 과거 원격 결과가 잠시 신선하게 남아도 수집 장애가 드러나게 합니다.
+collector가 오래된 원격 결과를 재사용해 서비스 정상이나 복구를 확정하지 않도록 각 주기의
+기존 신선도 상한을 유지합니다.
+
+양방향 heartbeat는 collector 호스트의 `collector-host` 역할과 외부 호스트의
+`public-observer` 역할에 `include_collector_heartbeat=true`를 사용해 준비할 수 있습니다.
+고정 summary의 version/timestamp/source 구조를 검증하고 원본 관측 epoch만 heartbeat로
+내보냅니다. 각 서비스 장애가 있어도 collector가 관측 중이면 heartbeat는 정상이며,
+summary가 오래됐으면 importer가 시간을 갱신하지 않아 상대 collector에서 UNKNOWN이 됩니다.
+조회 불가/형식 오류는 즉시 별도 OBSERVER_ERROR입니다.
+
+NetBird 전송 권한은 policy 하나에 rule 하나씩 등록합니다. 여러 rule을 성공 응답에
+포함해도 모두 저장되지 않는 제약은 [upstream issue #3583](https://github.com/netbirdio/netbird/issues/3583)에
+기록돼 있습니다. 출발지와 목적지의 전용 peer group, protocol, 목적지 port와
+`bidirectional` 값을 명시하고 비활성 상태로 먼저 생성합니다. POST 응답과 별개로
+`GET /api/policies/<id>`를 다시 조회해 rule 수와 모든 권한 필드를 대조합니다.
+활성화 전후 기존 group/policy 전체를 비교하고, 허용한 각 방향에서 고정 reader의 실제
+연결과 허용하지 않은 명령/port의 거부를 확인한 뒤 전송 경로를 완료로 기록합니다.
+서버가 반환한 본문이나 활성 상태만으로 실제 연결을 대신하지 않습니다.
+
+실제 양쪽의 scoped key·host pin·접속 경로와 collector source를 설치하고 양방향 신선도를
+검증하기 전 상호 dead-man 완료로 기록하지 않습니다. 공유 VPN이나 SMTP가 함께 고장나는
+경우에는 여전히 통지 공백이 남으며, 이 패키지는 별도 외부 dead-man 서비스를 만들지 않습니다.
+
+## 검증과 배포·원복
+
+새 테스트는 운영 네트워크나 SMTP를 호출하지 않습니다.
+
+```bash
+python3 -B scripts/tests/test_public_health.py
+python3 -B scripts/tests/test_health_result_transport.py
+```
+
+배포는 기존 감시 package에 새 public probe/reader/importer와
+`lib/health_result_transport.py`를 root 소유 0644로 더한 뒤 설정·key·host pin을 검토합니다.
+서버 reader를 먼저 설치하고 forced-command 제한과 허용 protocol 외 거부를 확인한 다음,
+observer의 GET과 importer timer를 통지 off로 켭니다. 24~48시간 동안 TLS/JSON 형태와
+source epoch, 수집 실패와 서비스 실패 구분을 비교합니다. 공개 canary는 전용 서버 정책
+검증이 끝난 뒤 별도 단계로 켭니다. 운영 단절이나 인증서 오류를 실제로 만들지 않습니다.
+
+원복은 새 public/import timer를 먼저 disable/stop하고 oneshot 종료를 확인합니다. 새
+forced-command key 한 줄과 파생 diagnostic key만 회수하며 기존 관리 키와 upstream/학생
+키는 보존합니다. 이전 검증 파일을 복원하되 budget·incident·delivery를 과거로 되감지
+않습니다. collector source를 조정할 때 사라진 observer를 서비스 정상으로 표시하지 않습니다.

@@ -1,0 +1,6 @@
+{
+  "role": "collector-host",
+  "expected_hostname": "health-collector",
+  "include_public_generation": false,
+  "include_collector_heartbeat": false
+}

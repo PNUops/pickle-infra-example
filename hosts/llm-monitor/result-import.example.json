@@ -1,0 +1,10 @@
+{
+  "source": "import-model-host",
+  "expected_hostname": "health-collector",
+  "address": "198.18.0.10",
+  "port": 22,
+  "user": "root",
+  "identity_file": "/etc/pickle-llm-health/reader-key",
+  "known_hosts_file": "/etc/pickle-llm-health/reader-known-hosts",
+  "expected_sources": ["host-query", "local-generation"]
+}

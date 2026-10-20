@@ -1,0 +1,10 @@
+{
+  "source": "public-api",
+  "kind": "public-http",
+  "expected_hostname": "public-observer",
+  "allowed_hosts": ["service.example.com"],
+  "url": "https://service.example.com/api/actuator/health/readiness",
+  "expected_status": 200,
+  "minimum_certificate_seconds": 604800,
+  "response": {"kind": "json", "required": {"status": "UP"}}
+}

@@ -1,0 +1,23 @@
+[Unit]
+Description=Check local self-hosted known-answer generation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+LoadCredential=upstream-token:/etc/pickle-llm-health/upstream-token
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+StateDirectory=pickle-llm-local-generation
+StateDirectoryMode=0700
+TimeoutStartSec=40
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/pickle/llm-health-probe.py --config /etc/pickle-llm-health/local-generation.json --state-dir /var/lib/pickle-llm-local-generation

@@ -1,0 +1,8 @@
+{
+  "source": "public-tls-production",
+  "kind": "tls",
+  "expected_hostname": "public-observer",
+  "allowed_hosts": ["service.example.com"],
+  "url": "https://service.example.com/",
+  "minimum_certificate_seconds": 604800
+}
