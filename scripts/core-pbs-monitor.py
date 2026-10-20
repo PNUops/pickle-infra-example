@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from datetime import date, datetime, time, timezone
 from email.message import EmailMessage
 import fcntl
@@ -17,14 +18,14 @@ import sys
 import tempfile
 from zoneinfo import ZoneInfo
 
-CTIDS = (1200, 1201, 1202, 1204)
+CTIDS = (1200, 1201, 1202, 1203, 1204)
 FINGERPRINT = 'aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa'
 STATE_DIR = Path('/var/lib/pickle-core-pbs-monitor')
 MAIL_CONFIG = Path('/etc/pickle-example/mail.json')
 KST = ZoneInfo('Asia/Seoul')
 DEADLINE = time(4, 30)
 FIRST_DUE_DATE = date(2025, 1, 2)
-VOLID = re.compile(r'^pbs-example-core-read:backup/ct/(1200|1201|1202|1204)/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)$')
+VOLID = re.compile(r'^pbs-example-core-read:backup/ct/(1200|1201|1202|1203|1204)/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)$')
 MANUAL = {
     1200: 'pbs-example-core-read:backup/ct/1200/2025-01-01T12:43:02Z',
     1201: 'pbs-example-core-read:backup/ct/1201/2025-01-01T11:55:44Z',
@@ -87,6 +88,7 @@ def inspect(content: list, now: datetime, *, deadline: time = DEADLINE,
     failures = []
     baseline_failures = []
     latest = {}
+    last_valid_points = {}
     def valid(row: dict, ctid: int) -> bool:
         volid = row.get('volid')
         match = VOLID.fullmatch(volid) if isinstance(volid, str) else None
@@ -104,13 +106,21 @@ def inspect(content: list, now: datetime, *, deadline: time = DEADLINE,
                 and type(row.get('ctime')) is int and row['ctime'] <= now.timestamp())
     for ctid in CTIDS:
         rows = [row for row in content if isinstance(row, dict) and row.get('vmid') == ctid]
-        manual = [row for row in rows if row.get('volid') == MANUAL[ctid]
-                  and row.get('protected') == 1 and valid(row, ctid)]
-        if not manual:
-            baseline_failures.append(f'CT{ctid}:PROTECTED_BASELINE_MISSING')
+        valid_rows = [row for row in rows if valid(row, ctid)]
+        point = max(valid_rows, key=lambda item: item['ctime']) if valid_rows else None
+        last_valid_points[str(ctid)] = ({'ctime': point['ctime'], 'volid': point['volid'],
+            'age_seconds': now.timestamp() - point['ctime']} if point is not None else
+            {'ctime': None, 'volid': None, 'age_seconds': None})
+        manual_volid = MANUAL.get(ctid)
+        if manual_volid is not None:
+            manual = [row for row in rows if row.get('volid') == manual_volid
+                      and row.get('protected') == 1 and valid(row, ctid)]
+            if not manual:
+                baseline_failures.append(f'CT{ctid}:PROTECTED_BASELINE_MISSING')
         if now.date() < first_due_date:
             continue
-        rows = [row for row in rows if row.get('volid') != MANUAL[ctid]
+        rows = [row for row in rows
+                if (manual_volid is None or row.get('volid') != manual_volid)
                 and type(row.get('ctime')) is int]
         if not rows:
             failures.append(f'CT{ctid}:MISSING')
@@ -128,7 +138,45 @@ def inspect(content: list, now: datetime, *, deadline: time = DEADLINE,
     reasons = baseline_failures + failures
     return {'status': status, 'date': now.date().isoformat(),
             'reason': ','.join(reasons) if reasons else 'ALL_CORE_ARCHIVES_PRESENT',
-            'latest': latest}
+            'latest': latest, 'last_valid_points': last_valid_points,
+            'observed_at_epoch': now.timestamp()}
+
+
+def record_observation(state: dict, report: dict, now: datetime, *, query_ok: bool) -> None:
+    if (type(state.get('observation_schema_version', 1)) is not int
+            or state.get('observation_schema_version', 1) != 1):
+        raise MonitorError('Unsupported observation state schema')
+    if 'observation_schema_version' not in state and 'report' in state:
+        state.setdefault('legacy_available_report', {
+            'provenance': 'LEGACY_AVAILABLE_REPORT', 'report': deepcopy(state['report'])})
+        if state.get('status') == 'FAILED' and 'incident' not in state:
+            state['incident'] = {'sequence': state.get('sequence'), 'provenance': 'LEGACY_ACTIVE_INCIDENT'}
+    previous = state.get('last_observation', {})
+    timestamp = now.timestamp()
+    report['observed_at_epoch'] = timestamp
+    report['query_status'] = 'OK' if query_ok else 'UNAVAILABLE'
+    if query_ok:
+        report['inventory_observed_at_epoch'] = timestamp
+        report['point_evidence'] = 'OBSERVED'
+    else:
+        inventory = previous.get('inventory_observed_at_epoch')
+        if type(inventory) not in (int, float) or not 0 <= inventory <= timestamp:
+            inventory = None
+        report['inventory_observed_at_epoch'] = inventory
+        report['point_evidence'] = 'CACHED' if inventory is not None else 'UNAVAILABLE'
+        cached = previous.get('last_valid_points', {}) if inventory is not None else {}
+        points = {}
+        for ctid in CTIDS:
+            value = cached.get(str(ctid), {})
+            point_time = value.get('ctime')
+            if type(point_time) is int and 0 <= point_time <= timestamp:
+                points[str(ctid)] = {'ctime': point_time, 'volid': value.get('volid'),
+                                     'age_seconds': timestamp - point_time}
+            else:
+                points[str(ctid)] = {'ctime': None, 'volid': None, 'age_seconds': None}
+        report['last_valid_points'] = points
+    state['observation_schema_version'] = 1
+    state['last_observation'] = deepcopy(report)
 
 
 def host_clock_ready() -> bool:
@@ -218,9 +266,18 @@ def transition(state: dict, report: dict) -> tuple[dict, str]:
     sequence = state.get('sequence', 0) + 1
     event = ('BASELINE' if previous is None and current == 'HEALTHY' else
              'FAILED' if current == 'FAILED' else 'RECOVERED')
-    updated = {'status': current, 'sequence': sequence, 'event': event,
+    updated = deepcopy(state)
+    if previous is not None:
+        updated['previous_notification'] = {name: deepcopy(state[name]) for name in
+            ('status', 'sequence', 'event', 'delivery', 'attempts', 'retry_after', 'report') if name in state}
+    updated.update({'status': current, 'sequence': sequence, 'event': event,
                'delivery': 'BASELINE' if event == 'BASELINE' else 'ATTEMPTED',
-               'attempts': 0, 'report': report}
+               'attempts': 0, 'report': report})
+    if event == 'FAILED':
+        updated['incident'] = {'sequence': sequence, 'provenance': 'OBSERVED_EPISODE',
+                               'first_report': deepcopy(report)}
+    elif event == 'RECOVERED' and 'incident' in updated:
+        updated['incident']['recovery_report'] = deepcopy(report)
     if event == 'BASELINE':
         return updated, event
     # The caller persists ATTEMPTED before invoking the SMTP sender.
@@ -247,9 +304,12 @@ def run(now: datetime | None = None, *, fetcher=fetch_content, sender=send_mail,
             raise MonitorError('System clock moved backwards')
         try:
             report = inspect(fetcher(), now, deadline=deadline, first_due_date=first_due_date)
+            query_ok = True
         except MonitorError:
             report = {'status': 'FAILED', 'date': now.astimezone(KST).date().isoformat(),
                       'reason': 'PBS_QUERY_UNAVAILABLE', 'latest': {}}
+            query_ok = False
+        record_observation(state, report, now, query_ok=query_ok)
         if report['status'] == 'PENDING':
             state['last_check_epoch'] = now.timestamp()
             atomic_json(path, state)
