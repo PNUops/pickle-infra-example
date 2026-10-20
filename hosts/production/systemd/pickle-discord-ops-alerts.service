@@ -1,0 +1,23 @@
+[Unit]
+Description=Dispatch local operations alerts to Discord
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/pickle/discord-ops-alerts.py --config /etc/pickle-discord-alerts/config.json --run
+StateDirectory=pickle-discord-alerts
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/pickle-discord-alerts
+TimeoutStartSec=90
+

@@ -11,6 +11,7 @@ python3 -B scripts/tests/test_candidate_core_vzdump_hook.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_core_pbs_monitor.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_pbs_capacity_probe.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_pbs_capacity_monitor.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_discord_ops_alerts.py
 python3 scripts/tests/test_isolated_core.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_candidate_synthetic_login.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_isolated_services.py

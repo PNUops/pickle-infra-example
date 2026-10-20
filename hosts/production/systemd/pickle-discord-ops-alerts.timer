@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect local operations alerts every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+RandomizedDelaySec=10
+Persistent=true
+Unit=pickle-discord-ops-alerts.service
+
+[Install]
+WantedBy=timers.target
+

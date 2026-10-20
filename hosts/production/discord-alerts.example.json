@@ -1,0 +1,15 @@
+{
+  "expected_hostname": "example-node",
+  "host_label": "운영 서버",
+  "webhook_file": "/etc/pickle-discord-alerts/webhook",
+  "state_dir": "/var/lib/pickle-discord-alerts",
+  "sources": [
+    {
+      "name": "platform-health",
+      "label": "플랫폼 상태 점검",
+      "type": "cron_markers",
+      "path": "/var/lib/pickle-ops/production-health",
+      "max_age": 1500
+    }
+  ]
+}

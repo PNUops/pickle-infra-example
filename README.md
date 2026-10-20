@@ -102,7 +102,7 @@ runbooks/         운영 절차                                    // 이 예시
 | CPU 경계 | `cpu-isolation.py` (whole-SMT 후보·native 조회, 설치·적용은 기본 차단과 별도 승인 창) |
 | 배포 | `deploy-environment.py`(환경·artifact 검사 예시), `pickle-api-start.py`(열린 JAR descriptor를 유지하는 시작 wrapper), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `pickle-api-start.py`(열린 JAR descriptor를 유지하는 시작 wrapper), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `verify-production-backup.py`(독립 PBS 복원 검사), `deploy-api.sh`, `deploy-console.sh`(명시 환경·artifact 진입점), `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `register-image.py`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
-| 운영 | `db-backup.sh`, `db-pbs-backup.sh`(host runner의 DB LXC dump와 독립 복구점 감시), `candidate-core-vzdump-hook.sh`, `core-pbs-monitor.py`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py`, `pbs-capacity-probe.py`, `pbs-capacity-monitor.py` |
+| 운영 | `db-backup.sh`, `db-pbs-backup.sh`(host runner의 DB LXC dump와 독립 복구점 감시), `candidate-core-vzdump-hook.sh`, `core-pbs-monitor.py`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py`, `pbs-capacity-probe.py`, `pbs-capacity-monitor.py`, `discord-ops-alerts.py` |
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh`, `smoke-signup.sh` |
 
@@ -224,6 +224,10 @@ DB/PBS 도구는 Python 3와 `proxmox-backup-client`, source의 PostgreSQL 18 cl
 `production-health.py`는 분리 운영 container의 서비스, DB, 정기 작업과 인증서를
 선택 config로 점검합니다. 정기 점검과 와일드카드 갱신 소유, expiry row 인계 절차는
 [운영 점검 런북](runbooks/production-ops.md)에 있습니다.
+
+`discord-ops-alerts.py`는 호스트 감시 상태와 갱신 시각을 읽어 장애와 복구를
+Discord 전용 대기열로 전달합니다. 보호 설정, 전송 상태와 설치 절차는
+[운영 알림 런북](runbooks/discord-ops-alerts.md)에 있습니다.
 
 `candidate-core-vzdump-hook.sh`는 예시 후보 노드 pve-node-2의 CT 1200/1201/1202/1204를
 PBS로 백업하기 전 노드·스토리지·정족수·설정·실행 상태를 확인합니다. 등록 절차는
