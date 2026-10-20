@@ -1,0 +1,28 @@
+[Unit]
+Description=Summarize local backup evidence without notifications
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=-/var/lib/pickle-core-pbs-monitor -/var/lib/pickle-db-monitor-production
+StateDirectory=pickle-backup-health-summary
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/pickle-backup-health-summary
+MemoryMax=48M
+CPUQuota=10%
+TasksMax=8
+TimeoutStartSec=10
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/pickle/backup-health-summary.py --config /etc/pickle-backup-health-summary/config.json

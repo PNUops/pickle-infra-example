@@ -1,0 +1,6 @@
+{
+  "expected_hostname": "example",
+  "core_state_file": "/var/lib/pickle-core-pbs-monitor/state.json",
+  "database_cache_file": "/var/lib/pickle-db-monitor-production/last-remote-check.json",
+  "database_unit": "pickle-db-pbs-production-monitor.service"
+}

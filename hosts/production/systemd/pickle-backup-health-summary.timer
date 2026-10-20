@@ -1,0 +1,12 @@
+[Unit]
+Description=Summarize local backup evidence every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=1s
+Persistent=false
+Unit=pickle-backup-health-summary.service
+
+[Install]
+WantedBy=timers.target

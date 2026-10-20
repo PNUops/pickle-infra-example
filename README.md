@@ -238,6 +238,10 @@ PBS로 백업하기 전 노드·스토리지·정족수·설정·실행 상태�
 [독립 감시 런북](runbooks/core-pbs-monitor.md)에 있습니다. CTID, 설정 해시, 암호화
 fingerprint와 날짜는 예시 값이며 실제 환경에 맞게 검증해 채워야 합니다.
 
+`backup-health-summary.py`는 기존 core 관측과 DB 정상 캐시·native 실행을 읽어 현재 판정과
+마지막 정상 증거를 분리합니다. 추가 백업·알림 없이 [로컬 요약](runbooks/backup-health-summary.md)을
+게시하며 기존 감시와 SMTP state를 변경하지 않습니다.
+
 `pbs-capacity-probe.py`는 인증서 pin을 확인하고 읽기 전용 token으로 datastore 용량만
 조회합니다. `pbs-capacity-monitor.py`는 pve-node-3에서 5분마다 상태 변화를 확인하고
 알림 receipt를 기록합니다. token ACL, 보호 설정, 설치와 장애 대응은
