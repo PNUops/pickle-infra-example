@@ -183,6 +183,15 @@ import JSON을 `/etc/pickle-llm-health/import-<instance>.json`에 설치하고 �
 collector가 오래된 원격 결과를 재사용해 서비스 정상이나 복구를 확정하지 않도록 각 주기의
 기존 신선도 상한을 유지합니다.
 
+같은 import bundle의 child에는 `collector-import.example.json`처럼 `observer_parent`를 지정합니다.
+부모 importer source의 `expected_kind=observer-report`를 함께 지정해야 합니다. 부모 결과의
+현재 수집 오류·누락·만료·형식 오류는 공통 observer에 귀속하며, 그때 누락·만료된 child의
+별도 observer incident와 미전송 observer 통지는 보류합니다. 각 child의 UNKNOWN과 원본 epoch,
+reason은 summary에 남습니다. 신선한 child의 서비스 실패·TLS 보안 실패·개별 probe 오류는 계속
+독립 판정합니다. 부모가 현재 HEALTHY이면 기존 incident가 복구 관찰 중이어도 child의 개별
+신선도와 3회 observer 실패 기준을 적용합니다. 관계는 한 단계만 허용하며 상세 상태·전송 보존은
+[최초 경보와 안정 복구](llm-health-monitor.md#최초-경보와-안정-복구)를 따릅니다.
+
 양방향 heartbeat는 collector 호스트의 `collector-host` 역할과 외부 호스트의
 `public-observer` 역할에 `include_collector_heartbeat=true`를 사용해 준비할 수 있습니다.
 고정 summary의 version/timestamp/source 구조를 검증하고 원본 관측 epoch만 heartbeat로

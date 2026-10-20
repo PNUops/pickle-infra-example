@@ -483,6 +483,8 @@ custody와 GitHub secret 등록은 별도 절차이며 이 TLS 백업을 설정�
 
 `llm-health-probe.py`는 host/query와 정답 생성 결과를 분리하고,
 `service-health-monitor.py`는 로컬 결과의 신선도와 최초 장애·60분 안정 복구를 기록합니다.
+원격 결과의 `observer_parent`를 지정하면 공통 수집 중단으로 누락·만료된 결과의 observer
+경보를 묶으며, 신선한 서비스 실패·TLS 보안 실패·개별 probe 오류는 독립 판정합니다.
 초기 통지는 꺼져 있으며 공개 인증 경로와 원격 수집은 별도 배치입니다. Python3 표준
 라이브러리와 systemd를 쓰며 실행·검증·credential 설치와 원복은
 [LLM 감시 런북](runbooks/llm-health-monitor.md)을 따릅니다.

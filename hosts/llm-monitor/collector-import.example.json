@@ -1,0 +1,28 @@
+{
+  "notifications_enabled": false,
+  "sources": [
+    {
+      "name": "import-aws",
+      "expected_kind": "observer-report",
+      "path": "/var/lib/pickle-health-import-aws/result.json",
+      "freshness_seconds": 180,
+      "failure_count": 3
+    },
+    {
+      "name": "public-generation",
+      "observer_parent": "import-aws",
+      "path": "/var/lib/pickle-health-import-aws/reports/public-generation.json",
+      "freshness_seconds": 720,
+      "failure_count": 2
+    },
+    {
+      "name": "public-tls-production",
+      "observer_parent": "import-aws",
+      "component": "critical-tls",
+      "expected_kind": "tls",
+      "path": "/var/lib/pickle-health-import-aws/reports/public-tls-production.json",
+      "freshness_seconds": 180,
+      "failure_count": 1
+    }
+  ]
+}

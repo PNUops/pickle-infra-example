@@ -378,6 +378,289 @@ class DeliveryTests(unittest.TestCase):
 
 
 class CollectorTests(TempCase):
+    def correlated_config(self, *, enabled=False, children=1):
+        parent = {'name': 'import-aws', 'path': '/var/lib/fixture/import.json',
+            'expected_kind': 'observer-report', 'freshness_seconds': 180, 'failure_count': 3}
+        selected = [parent]
+        for number in range(children):
+            child = source()
+            child.update(name='child-' + str(number), path='/var/lib/fixture/child-' + str(number) + '.json',
+                         observer_parent='import-aws')
+            selected.append(child)
+        return {'notifications_enabled': enabled, 'sources': selected}
+
+    def correlated_reader(self, now, *, parent='OBSERVER_ERROR', child=None, parent_at=None):
+        def read(path):
+            if path.name == 'import.json':
+                if parent is None:
+                    raise FileNotFoundError(path)
+                return {'version': 1, 'source': 'import-aws', 'kind': 'observer-report',
+                    'observed_at': now if parent_at is None else parent_at, 'status': parent,
+                    'reason': 'RESULT_IMPORT_VERIFIED' if parent == 'HEALTHY' else 'RESULT_IMPORT_UNAVAILABLE'}
+            if child is None:
+                raise FileNotFoundError(path)
+            return dict(child, source=path.stem)
+        return read
+
+    def test_observer_parent_configuration_rejects_missing_self_chains_cycles_and_wrong_kind(self):
+        selected = self.correlated_config()
+        collector.validate(selected)
+        cases = []
+        for parent in ('missing', 'child-0', None, 4):
+            candidate = deepcopy(selected)
+            candidate['sources'][1]['observer_parent'] = parent
+            cases.append(candidate)
+        for expected in (None, 'tls', 'generation'):
+            candidate = deepcopy(selected)
+            candidate['sources'][0]['expected_kind'] = expected
+            cases.append(candidate)
+        chain = deepcopy(selected)
+        chain['sources'].append(dict(chain['sources'][0], name='import-other', path='/var/lib/fixture/other.json'))
+        chain['sources'][0]['observer_parent'] = 'import-other'
+        cases.append(chain)
+        cycle = deepcopy(selected)
+        cycle['sources'][0]['observer_parent'] = 'child-0'
+        cases.append(cycle)
+        for candidate in cases:
+            with self.subTest(config=candidate), self.assertRaises(common.HealthError):
+                collector.validate(candidate)
+
+    def test_whole_bundle_loss_opens_only_common_observer_and_keeps_unknown_evidence(self):
+        selected = self.correlated_config(children=4)
+        state = {}
+        for now in (1000, 1060, 1120):
+            report = collector.collect(selected, state, now, reader=self.correlated_reader(now))
+        self.assertEqual(state['sources']['import-aws']['observer']['incident'], 1)
+        for number in range(4):
+            name = 'child-' + str(number)
+            entry = state['sources'][name]
+            self.assertNotIn('incident', entry)
+            self.assertNotIn('incident', entry['observer'])
+            self.assertEqual(entry['observer']['latest_status'], 'OBSERVER_ERROR')
+            evidence = report['sources'][name]
+            self.assertEqual((evidence['status'], evidence['raw_status'], evidence['suppressed_by'],
+                              evidence['parent_status']), ('OBSERVER_ERROR', 'UNKNOWN', 'import-aws', 'OBSERVER_ERROR'))
+
+    def test_missing_or_stale_parent_suppresses_only_missing_or_stale_children(self):
+        for parent, parent_at in ((None, None), ('HEALTHY', 1)):
+            with self.subTest(parent=parent):
+                state = {}
+                for now in (1000, 1060, 1120):
+                    stale = {'version': 1, 'observed_at': 10, 'status': 'HEALTHY', 'reason': 'GENERATION_VERIFIED'}
+                    report = collector.collect(self.correlated_config(), state, now,
+                        reader=self.correlated_reader(now, parent=parent, parent_at=parent_at, child=stale))
+                child = report['sources']['child-0']
+                self.assertEqual(child['suppressed_by'], 'import-aws')
+                self.assertEqual((child['source_sample_at'], child['source_reason']), (10, 'GENERATION_VERIFIED'))
+                self.assertEqual(child['raw_status'], 'UNKNOWN')
+                self.assertNotIn('incident', state['sources']['child-0']['observer'])
+
+    def test_healthy_parent_does_not_hide_individual_child_outage_during_parent_recovery(self):
+        state = {}
+        for now in (1000, 1060, 1120):
+            collector.collect(self.correlated_config(), state, now, reader=self.correlated_reader(now))
+        for now in (1180, 1240, 1300):
+            report = collector.collect(self.correlated_config(), state, now,
+                reader=self.correlated_reader(now, parent='HEALTHY'))
+        self.assertEqual(state['sources']['import-aws']['observer']['incident'], 1)
+        self.assertEqual(state['sources']['child-0']['observer']['incident'], 1)
+        self.assertIsNone(report['sources']['child-0']['suppressed_by'])
+
+    def test_fresh_service_tls_and_probe_observer_failures_are_not_suppressed(self):
+        for kind in ('service', 'tls', 'probe'):
+            with self.subTest(kind=kind):
+                selected = self.correlated_config()
+                child = selected['sources'][1]
+                if kind == 'tls':
+                    child.update(component='critical-tls', expected_kind='tls', failure_count=1)
+                state = {}
+                for now in (1000, 1060, 1120):
+                    value = {'version': 1, 'observed_at': now, 'status': 'OBSERVER_ERROR' if kind == 'probe' else 'FAILED',
+                        'kind': 'tls' if kind == 'tls' else 'generation',
+                        'reason': 'CREDENTIAL_REJECTED' if kind == 'probe' else 'TLS_CERTIFICATE_VALIDATION_FAILED' if kind == 'tls' else 'GENERATION_INVALID'}
+                    report = collector.collect(selected, state, now,
+                        reader=self.correlated_reader(now, child=value))
+                entry = state['sources']['child-0']
+                target = entry['observer'] if kind == 'probe' else entry
+                self.assertEqual(target['incident'], 1)
+                self.assertIsNone(report['sources']['child-0']['suppressed_by'])
+
+    def test_suppression_resets_existing_service_and_observer_recovery_without_renumbering(self):
+        state = {'sources': {'child-0': {'incident': 4, 'sequence': 4, 'sample_at': 900,
+            'healthy_since': 100, 'healthy_samples': 20, 'failures': 1,
+            'observer': {'incident': 7, 'sequence': 7, 'sample_at': 900,
+                'healthy_since': 100, 'healthy_samples': 20, 'failures': 2}}}}
+        collector.collect(self.correlated_config(), state, 1000, reader=self.correlated_reader(1000))
+        entry = state['sources']['child-0']
+        for target, incident in ((entry, 4), (entry['observer'], 7)):
+            self.assertEqual((target['incident'], target['sequence']), (incident, incident))
+            self.assertEqual((target['healthy_since'], target['healthy_samples'], target['failures']), (None, 0, 0))
+
+    def test_suppression_with_already_consumed_epoch_interrupts_both_recovery_windows(self):
+        entry = {'incident': 1, 'sequence': 1, 'sample_at': 1000, 'healthy_since': 100,
+            'healthy_samples': 20, 'failures': 2, 'latest_status': 'HEALTHY'}
+        observer = deepcopy(entry)
+        entry['observer'] = observer
+        state = {'last_collection': 1000, 'sources': {'child-0': entry}}
+        report = collector.collect(self.correlated_config(), state, 1000, reader=self.correlated_reader(1000))
+        self.assertEqual(report['sources']['child-0']['observer_event'], 'DUPLICATE')
+        for target in (entry, observer):
+            self.assertEqual((target['healthy_since'], target['healthy_samples'], target['failures']), (None, 0, 0))
+            self.assertEqual((target['incident'], target['sequence']), (1, 1))
+
+    def test_suppression_does_not_hide_fresh_malformed_or_future_child_evidence(self):
+        for child in ({}, {'version': 1, 'observed_at': 3000, 'status': 'HEALTHY'},
+                      {'version': 1, 'observed_at': 1000, 'status': 'BOGUS'}):
+            with self.subTest(child=child):
+                state = {}
+                for now in (1000, 1060, 1120):
+                    report = collector.collect(self.correlated_config(), state, now,
+                        reader=self.correlated_reader(now, child=child))
+                self.assertIsNone(report['sources']['child-0']['suppressed_by'])
+                self.assertEqual(state['sources']['child-0']['observer']['incident'], 1)
+
+    def test_stale_malformed_child_is_not_correlated_as_transport_loss(self):
+        cases = [
+            ({}, {'status': 'BOGUS'}),
+            ({}, {}),
+            ({'component': 'host'}, {'status': 'HEALTHY'}),
+            ({'component': 'host'}, {'host': {'status': 'BOGUS'}}),
+            ({'component': 'critical-tls', 'expected_kind': 'tls', 'failure_count': 1},
+             {'kind': 'generation', 'status': 'FAILED', 'reason': 'TLS_CERTIFICATE_VALIDATION_FAILED'}),
+            ({'component': 'critical-tls', 'expected_kind': 'tls', 'failure_count': 1},
+             {'kind': 'tls', 'status': 'FAILED', 'reason': 'TCP_TIMEOUT'}),
+            ({'component': 'critical-tls', 'expected_kind': 'tls', 'failure_count': 1},
+             {'kind': 'tls', 'status': 'LOADING', 'reason': 'TLS_CERTIFICATE_VERIFIED'}),
+            ({'expected_kind': 'observer-report'},
+             {'kind': 'observer-report', 'status': 'HEALTHY', 'reason': 'GENERATION_VERIFIED'}),
+        ]
+        for selection, document in cases:
+            with self.subTest(selection=selection, document=document):
+                selected = self.correlated_config()
+                selected['sources'][1].update(selection)
+                value = dict(document, version=1, observed_at=10)
+                state = {}
+                for now in (1000, 1060, 1120):
+                    report = collector.collect(selected, state, now,
+                        reader=self.correlated_reader(now, child=value))
+                child = report['sources']['child-0']
+                self.assertEqual(child['unknown_reason'], 'RESULT_INVALID')
+                self.assertIsNone(child['suppressed_by'])
+                self.assertEqual(child['source_sample_at'], 10)
+                self.assertEqual(state['sources']['child-0']['observer']['incident'], 1)
+
+    def test_suppressed_pending_observer_failure_resumes_after_parent_returns(self):
+        directory = self.root / 'resume-pending'
+        common.private_directory(directory)
+        pending = {'status': 'NOT_SENT', 'incident': 5, 'event': 'FAILED',
+            'target': 'observer-child-0', 'attempts': 1, 'retry_after': 900}
+        common.atomic_json(directory / 'state.json', {'sources': {'child-0': {'observer': {
+            'incident': 5, 'sequence': 5, 'sample_at': 900, 'deliveries': {'FAILED': pending}}}}})
+        messages = []
+        sender = lambda value: messages.append(deepcopy(value))
+        collector.run(self.correlated_config(enabled=True), directory, now=1000,
+            reader=self.correlated_reader(1000), sender=sender)
+        self.assertEqual(messages, [])
+        collector.run(self.correlated_config(enabled=True), directory, now=1060,
+            reader=self.correlated_reader(1060, parent='HEALTHY'), sender=sender)
+        self.assertEqual([(message['target'], message['event'], message['incident']) for message in messages],
+                         [('observer-child-0', 'FAILED', 5)])
+
+    def test_suppression_preserves_accepted_delivery_matrix_and_cancels_unsent_recovery(self):
+        for layer in ('service', 'observer'):
+            for event in ('FAILED', 'RECOVERED'):
+                for delivery_status in ('NEW', 'NOT_SENT', 'ATTEMPTED', 'SENT', 'UNCERTAIN', 'EXHAUSTED'):
+                    with self.subTest(layer=layer, event=event, delivery_status=delivery_status):
+                        delivery = {'status': delivery_status, 'incident': 3, 'event': event,
+                            'target': 'child-0' if layer == 'service' else 'observer-child-0', 'attempts': 1}
+                        target = {'incident': 3, 'sequence': 3, 'sample_at': 900,
+                                  'deliveries': {event: delivery}}
+                        entry = target if layer == 'service' else {'observer': target}
+                        state = {'sources': {'child-0': entry}}
+                        collector.collect(self.correlated_config(enabled=True), state, 1000,
+                            reader=self.correlated_reader(1000), notifications=True)
+                        expected = ('SUPERSEDED' if event == 'RECOVERED'
+                                    and delivery_status in ('NEW', 'NOT_SENT') else delivery_status)
+                        self.assertEqual(delivery['status'], expected)
+                        self.assertEqual((target['incident'], target['sequence']), (3, 3))
+
+    def test_fresh_child_and_invalid_parent_kind_do_not_turn_child_health_unknown(self):
+        selected = self.correlated_config()
+        for parent in ({}, {'version': 1, 'source': 'import-aws', 'observed_at': 1000,
+                'status': 'HEALTHY', 'kind': 'generation', 'reason': 'RESULT_IMPORT_VERIFIED'}):
+            with self.subTest(parent=parent):
+                def read(path):
+                    return parent if path.name == 'import.json' else {
+                        'version': 1, 'source': 'child-0', 'observed_at': 1000, 'status': 'HEALTHY'}
+                report = collector.collect(selected, {}, 1000, reader=read)
+                self.assertEqual(report['sources']['import-aws']['status'], 'OBSERVER_ERROR')
+                self.assertEqual(report['sources']['child-0']['status'], 'HEALTHY')
+                self.assertIsNone(report['sources']['child-0']['suppressed_by'])
+
+    def test_suppressed_child_pending_observer_mail_is_held_and_accepted_records_are_preserved(self):
+        for delivery_status in ('NEW', 'NOT_SENT', 'SENT', 'UNCERTAIN'):
+            with self.subTest(delivery_status=delivery_status):
+                pending = {'status': delivery_status, 'incident': 5, 'event': 'FAILED',
+                    'target': 'observer-child-0', 'attempts': 0}
+                original = deepcopy(pending)
+                state = {'sources': {'child-0': {'observer': {'incident': 5, 'sequence': 5,
+                    'sample_at': 900, 'deliveries': {'FAILED': pending}}}}}
+                directory = self.root / ('suppression-' + delivery_status)
+                common.private_directory(directory)
+                common.atomic_json(directory / 'state.json', state)
+                messages = []
+                collector.run(self.correlated_config(enabled=True), directory, now=1000,
+                    reader=self.correlated_reader(1000), sender=lambda value: messages.append(deepcopy(value)))
+                self.assertEqual(messages, [])
+                saved = common.read_json(directory / 'state.json')['sources']['child-0']['observer']
+                self.assertEqual(saved['deliveries']['FAILED'], original)
+                self.assertEqual((saved['incident'], saved['sequence']), (5, 5))
+
+    def test_suppressed_child_without_incident_cannot_send_orphan_recovery(self):
+        directory = self.root / 'no-orphan-recovery'
+        messages = []
+        for now in (1000, 1060, 1120):
+            collector.run(self.correlated_config(enabled=True), directory, now=now,
+                reader=self.correlated_reader(now), sender=lambda value: messages.append(deepcopy(value)))
+        for now in range(1180, 4900, 60):
+            child = {'version': 1, 'observed_at': now, 'status': 'HEALTHY'}
+            collector.run(self.correlated_config(enabled=True), directory, now=now,
+                reader=self.correlated_reader(now, parent='HEALTHY', child=child),
+                sender=lambda value: messages.append(deepcopy(value)))
+        self.assertEqual([(message['target'], message['event']) for message in messages],
+                         [('observer-import-aws', 'FAILED'), ('observer-import-aws', 'RECOVERED')])
+
+    def test_suppression_is_order_independent_and_restart_preserves_same_epoch(self):
+        selected = self.correlated_config()
+        backwards = deepcopy(selected)
+        backwards['sources'].reverse()
+        first, second = {}, {}
+        for now in (1000, 1060, 1120):
+            one = collector.collect(selected, first, now, reader=self.correlated_reader(now))
+            two = collector.collect(backwards, second, now, reader=self.correlated_reader(now))
+            self.assertEqual((first, one), (second, two))
+        restored = json.loads(json.dumps(first))
+        collector.collect(selected, restored, 1120, reader=self.correlated_reader(1120))
+        self.assertEqual(restored, first)
+
+    def test_collection_reads_shared_result_path_once_and_freezes_before_classification(self):
+        parent = self.correlated_config()['sources'][0]
+        host, query = source(), source()
+        host.update(name='local-host', report_source='host-query', component='host')
+        query.update(name='local-query', report_source='host-query')
+        selected = {'sources': [parent, host, query]}
+        calls = []
+        def read(path):
+            calls.append(path)
+            return {'version': 1, 'source': 'import-aws' if path.name == 'import.json' else 'host-query',
+                'kind': 'observer-report' if path.name == 'import.json' else 'host-query',
+                'observed_at': 1000, 'status': 'HEALTHY', 'reason': 'RESULT_IMPORT_VERIFIED',
+                'host': {'status': 'HEALTHY'}}
+        report = collector.collect(selected, {}, 1000, reader=read)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(report['sources']['local-host']['status'], 'HEALTHY')
+        self.assertEqual(report['sources']['local-query']['status'], 'HEALTHY')
+
     def test_retired_source_and_observer_delivery_states_are_preserved_without_sending(self):
         for layer in ('service', 'observer'):
             for event in ('FAILED', 'RECOVERED'):

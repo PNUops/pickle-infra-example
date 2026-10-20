@@ -102,8 +102,25 @@ NEW/NOT_SENT 장애 통지를 취소해 뒤늦은 과거 장애와 복구를 함
 
 현재 `config.sources`에 등록된 대상만 발송 범위입니다. 제거된 대상의 과거 incident와 delivery는
 보존하되 발송하지 않습니다. 여러 collector를 쓰면 서비스/TLS/생성 통지와 감시자 통지의
-담당을 분리합니다. 공통 import 단절이 여러 stale-source 경보로 번지는 상관처리는 아직
-구현되지 않았으므로, bundle 단절 fixture와 중복 억제를 검증하기 전에는 통지를 켜지 않습니다.
+담당을 분리합니다. 원격 source에는 `observer_parent`로 같은 설정의 importer source 한 개를
+명시할 수 있습니다. [외부 수집 예시](../hosts/llm-monitor/collector-import.example.json)의 부모는
+`expected_kind=observer-report`이며 `kind`, 상태와 importer의 고정 reason을 확인합니다.
+부모 누락·self 참조·순환·다단계 관계는 설정 오류입니다. 관계가 없는 기존 설정은 그대로 동작합니다.
+
+collector는 모든 결과 경로를 한 번 읽은 뒤 고정한 snapshot으로 판단합니다. 공통 importer가
+현재 OBSERVER_ERROR이거나 결과가 누락·만료·유효하지 않을 때, 그 부모에 연결된 **누락되거나
+만료된 child**의 observer 실패를 UNKNOWN으로 묶습니다. 공통 parent의 observer incident만
+원래 3회 기준으로 열고, child의 실패 횟수와 안정 복구 창은 초기화합니다. 신선한 서비스 FAILED,
+TLS 보안 FAILED, 개별 probe의 명시적 OBSERVER_ERROR와 잘못된 child 문서는 억제하지 않습니다.
+parent가 현재 HEALTHY이면 과거 incident의 안정 복구 중이어도 child를 억제하지 않습니다.
+
+summary는 UNKNOWN의 원본 epoch와 reason, `suppressed_by`, `parent_status`를 보존합니다.
+억제 중 기존 child incident·sequence를 지우거나 새 번호를 만들지 않으며, child observer의
+NEW/NOT_SENT 장애 통지 예약·재전송은 보류합니다. 부모가 돌아온 뒤 child 자체가 계속 없으면
+기존 observer 판정을 재개합니다. 불확실한 구간에는 NEW/NOT_SENT 복구 통지를 취소하고
+ATTEMPTED/SENT/UNCERTAIN 기록은 보존합니다. 억제로 새 child incident가 열리지 않았으면
+그 child의 복구 통지도 생기지 않습니다. 실제 배치 설정을 바꾼 뒤 bundle 전체 단절·개별 child
+단절·신선한 TLS 실패 fixture와 자연 실행을 확인하고 초기 관찰이 끝난 뒤 통지를 켭니다.
 
 수신자와 제목의 대상 이름을 검토하고 초기 관찰이 끝난 뒤 `notifications_enabled: true`와
 root 0600 `mail_config` 경로를 설정합니다. SMTP JSON은 기존 백업 메일의 TLS 설정 형식
