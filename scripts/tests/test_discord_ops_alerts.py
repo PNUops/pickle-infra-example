@@ -1,4 +1,5 @@
 """Offline evidence for signal isolation, durable claims and webhook outcomes."""
+from copy import deepcopy
 from datetime import datetime, timezone
 import importlib.util
 import io
@@ -14,6 +15,9 @@ import urllib.error
 SPEC = importlib.util.spec_from_file_location('discord_ops_alerts', Path(__file__).resolve().parents[1] / 'discord-ops-alerts.py')
 alerts = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(alerts)
+MONITOR_SPEC = importlib.util.spec_from_file_location('service_health_monitor', Path(__file__).resolve().parents[1] / 'service-health-monitor.py')
+monitor = importlib.util.module_from_spec(MONITOR_SPEC)
+MONITOR_SPEC.loader.exec_module(monitor)
 URL = 'https://discord.com/api/webhooks/' + '1' * 18 + '/' + 'a' * 64
 
 
@@ -203,6 +207,298 @@ class DiscordAlertsTest(unittest.TestCase):
                     alerts.run(cfg, test_message=True, now=now, collector=lambda *args: {}, sender=sender)
             self.assertEqual(len(sent), 1)
             self.assertIn('운영 알림 시험', sent[0][1])
+
+
+def service_source(name='dgx-query', *, max_age=180):
+    return {'name': name, 'label': '연산 서버 질의', 'type': 'service_health',
+            'path': '/protected/collector/state.json', 'summary_path': '/protected/collector/summary.json',
+            'source_name': name, 'max_age': max_age}
+
+
+class ServiceHealthAdapterTest(unittest.TestCase):
+    def setUp(self):
+        self.source = service_source()
+        self.producer = {}
+        self.producer_config = {'notifications_enabled': False, 'sources': [{
+            'name': 'dgx-query', 'path': '/fixture/query', 'freshness_seconds': 180, 'failure_count': 2}]}
+        self.consumer = alerts.new_state()
+        self.summary = None
+
+    def sample(self, status, now, *, source_stamp=None, reader=None):
+        report = {'version': 1, 'source': 'dgx-query', 'status': status,
+                  'observed_at': now if source_stamp is None else source_stamp,
+                  'report': {'secret': 'never-copy-token', 'address': '192.0.2.17'}}
+        self.summary = monitor.collect(self.producer_config, self.producer, now,
+                                       reader=reader or (lambda path: deepcopy(report)))
+        return alerts.collect_service_health(self.source, now,
+                                              snapshot=(deepcopy(self.producer), deepcopy(self.summary)))
+
+    def enqueue(self, report, now):
+        return {dimension: alerts.enqueue_service_health(self.consumer, config(), self.source,
+                dimension, value, now) for dimension, value in report.items()}
+
+    def open_incident(self):
+        self.enqueue(self.sample('FAILED', 1000), 1000)
+        self.enqueue(self.sample('FAILED', 1060), 1060)
+        return self.consumer['outbox'][-1]
+
+    def deliver(self, now=1060, outcome='SENT'):
+        with tempfile.TemporaryDirectory() as temporary:
+            alerts.dispatch(self.consumer, Path(temporary) / 'state.json', URL, now,
+                sender=lambda *args: {'delivery': outcome, 'message_id': '3' * 18})
+
+    def close_incident(self):
+        for now in range(1120, 4721, 60):
+            report = self.sample('HEALTHY', now)
+        return report
+
+    def test_confirmed_durable_incident_survives_missed_event_restart_and_duplicate_samples(self):
+        self.enqueue(self.sample('FAILED', 1000), 1000)
+        self.assertEqual(self.consumer['outbox'], [])
+        report = self.sample('FAILED', 1060)
+        self.summary['sources']['dgx-query']['event'] = 'DUPLICATE'
+        report = alerts.collect_service_health(self.source, 1060, snapshot=(self.producer, self.summary))
+        self.enqueue(report, 1060)
+        self.consumer = json.loads(json.dumps(self.consumer))
+        self.enqueue(report, 1061)
+        self.enqueue(self.sample('FAILED', 1120), 1120)
+        self.assertEqual(len(self.consumer['outbox']), 1)
+        self.assertEqual(self.consumer['outbox'][0]['source_incident'], 1)
+        self.assertNotIn('never-copy-token', json.dumps(self.consumer))
+        self.assertNotIn('192.0.2.17', json.dumps(self.consumer))
+
+    def test_recovery_requires_full_fresh_hour_and_does_not_depend_on_summary_event(self):
+        self.open_incident()
+        self.deliver()
+        for now in range(1120, 4720, 60):
+            self.enqueue(self.sample('HEALTHY', now), now)
+        self.assertEqual(len(self.consumer['outbox']), 1)
+        report = self.sample('HEALTHY', 4720)
+        self.summary['sources']['dgx-query']['event'] = 'UNCHANGED'
+        report = alerts.collect_service_health(self.source, 4720, snapshot=(self.producer, self.summary))
+        self.enqueue(report, 4720)
+        self.assertEqual([row['source_event'] for row in self.consumer['outbox']], ['ALARM', 'NORMAL'])
+        self.enqueue(self.sample('HEALTHY', 4780), 4780)
+        self.assertEqual(len(self.consumer['outbox']), 2)
+
+    def test_unknown_stale_and_loading_never_recover_or_advance_a_recovery_window(self):
+        self.open_incident()
+        self.deliver()
+        for now in range(1120, 4661, 60):
+            self.sample('HEALTHY', now)
+        stale = self.sample('HEALTHY', 4900, source_stamp=4660)
+        self.enqueue(stale, 4900)
+        self.assertEqual(stale['condition']['status'], 'UNKNOWN')
+        self.assertIsNone(self.producer['sources']['dgx-query']['healthy_since'])
+        for now in range(4960, 8501, 60):
+            self.enqueue(self.sample('HEALTHY', now), now)
+        self.assertEqual(len(self.consumer['outbox']), 1)
+        loading = self.sample('LOADING', 8560)
+        self.enqueue(loading, 8560)
+        self.assertEqual(loading['condition']['status'], 'UNKNOWN')
+        self.assertEqual(len(self.consumer['outbox']), 1)
+
+    def test_new_incident_is_not_hidden_by_alarm_to_alarm_polling_gap(self):
+        self.open_incident()
+        self.deliver()
+        self.close_incident()
+        self.sample('FAILED', 4780)
+        self.enqueue(self.sample('FAILED', 4840), 4840)
+        self.assertEqual([row['source_incident'] for row in self.consumer['outbox']], [1, 2])
+        self.assertEqual([row['source_event'] for row in self.consumer['outbox']], ['ALARM', 'ALARM'])
+
+    def test_pending_fault_closed_before_send_is_superseded_without_orphan_recovery(self):
+        self.open_incident()
+        report = self.close_incident()
+        self.enqueue(report, 4720)
+        self.assertEqual(len(self.consumer['outbox']), 1)
+        self.assertEqual(self.consumer['outbox'][0]['delivery'], 'SUPERSEDED')
+        alerts.validate_state(self.consumer)
+        with tempfile.TemporaryDirectory() as temporary:
+            count = alerts.dispatch(self.consumer, Path(temporary) / 'state.json', URL, 4720,
+                                    sender=lambda *args: self.fail('sent a closed fault'))
+        self.assertEqual(count, 0)
+
+    def test_alarm_receipt_survives_outbox_pruning_and_still_allows_recovery(self):
+        self.open_incident()
+        self.deliver()
+        self.assertEqual(self.consumer['observations']['dgx-query:condition']['alarm_delivery'], 'SENT')
+        self.consumer['outbox'] = []
+        self.consumer = json.loads(json.dumps(self.consumer))
+        self.enqueue(self.close_incident(), 4720)
+        self.assertEqual([row['source_event'] for row in self.consumer['outbox']], ['NORMAL'])
+
+    def test_pair_epoch_source_status_identity_and_sequence_rollback_are_deferred(self):
+        self.open_incident()
+        original = deepcopy(self.consumer)
+        for mutation in ('epoch', 'incident', 'status', 'source'):
+            producer, summary = deepcopy(self.producer), deepcopy(self.summary)
+            if mutation == 'epoch': summary['observed_at'] += 1
+            if mutation == 'incident': summary['sources']['dgx-query']['incident'] += 1
+            if mutation == 'status': producer['sources']['dgx-query']['latest_status'] = 'HEALTHY'
+            if mutation == 'source': summary['sources']['wrong-query'] = summary['sources'].pop('dgx-query')
+            report = alerts.collect_service_health(self.source, 1060, snapshot=(producer, summary))
+            self.assertEqual(report['condition']['status'], 'UNKNOWN', mutation)
+            self.enqueue(report, 1060)
+        self.assertEqual(self.consumer, original)
+        reset = {}
+        summary = monitor.collect(self.producer_config, reset, 1120,
+                   reader=lambda path: {'version': 1, 'source': 'dgx-query', 'status': 'HEALTHY', 'observed_at': 1120})
+        report = alerts.collect_service_health(self.source, 1120, snapshot=(reset, summary))
+        self.assertFalse(self.enqueue(report, 1120)['condition'])
+        self.assertEqual(self.consumer['observations']['dgx-query:condition'],
+                         original['observations']['dgx-query:condition'])
+        self.assertEqual(self.consumer['outbox'], original['outbox'])
+
+    def test_stale_collector_and_original_probe_epoch_cannot_establish_recovery(self):
+        self.sample('HEALTHY', 1000)
+        for now in (1181, 900):
+            report = alerts.collect_service_health(self.source, now, snapshot=(self.producer, self.summary))
+            self.assertEqual(report['condition']['status'], 'UNKNOWN')
+        self.sample('HEALTHY', 1180, source_stamp=1000)
+        report = alerts.collect_service_health(self.source, 1181, snapshot=(self.producer, self.summary))
+        self.assertEqual(report['condition']['status'], 'UNKNOWN')
+        self.assertEqual(report['observer']['status'], 'UNKNOWN')
+
+    def test_pair_replacement_is_deferred_and_shared_pair_is_read_only_once(self):
+        self.sample('HEALTHY', 1000)
+        state_raw, summary_raw = json.dumps(self.producer).encode(), json.dumps(self.summary).encode()
+        replaced = json.dumps(dict(self.producer, last_collection=1060)).encode()
+        with patch.object(alerts, 'read_file', side_effect=[(state_raw, None), (summary_raw, None),
+                                                           (replaced, None), (summary_raw, None)]):
+            self.assertIsNone(alerts.service_snapshot(self.source))
+        cfg = dict(config(), sources=[self.source, dict(self.source, name='same-query')])
+        with patch.object(alerts.os, 'geteuid', return_value=0),              patch.object(alerts.socket, 'gethostname', return_value='example'),              patch.object(alerts, 'read_file', side_effect=[(state_raw, None), (summary_raw, None)] * 2) as read:
+            report = alerts.run(cfg, inspect=True, now=1000)
+        self.assertEqual(read.call_count, 4)
+        self.assertEqual(report['sources']['same-query']['condition'], 'NORMAL')
+
+    def test_common_import_loss_suppresses_only_child_observer_and_preserves_fresh_service_fault(self):
+        self.producer_config['sources'].append({'name': 'import-dgx', 'path': '/fixture/import',
+            'expected_kind': 'observer-report', 'freshness_seconds': 180, 'failure_count': 2})
+        self.producer_config['sources'][0]['observer_parent'] = 'import-dgx'
+        def read(path):
+            if str(path).endswith('/import'):
+                return {'version': 1, 'source': 'import-dgx', 'kind': 'observer-report',
+                        'status': 'OBSERVER_ERROR', 'reason': 'RESULT_IMPORT_UNAVAILABLE', 'observed_at': self.now}
+            raise FileNotFoundError()
+        for self.now in (1000, 1060, 1120):
+            self.sample('HEALTHY', self.now, reader=read)
+        report = alerts.collect_service_health(self.source, 1120, snapshot=(self.producer, self.summary))
+        self.assertEqual(report['observer']['status'], 'UNKNOWN')
+        self.assertEqual(self.summary['sources']['dgx-query']['suppressed_by'], 'import-dgx')
+        def fresh_failure(path):
+            if str(path).endswith('/query'):
+                return {'version': 1, 'source': 'dgx-query', 'status': 'FAILED', 'observed_at': self.now}
+            return read(path)
+        for self.now in (1180, 1240):
+            report = self.sample('FAILED', self.now, reader=fresh_failure)
+        self.assertEqual(report['condition']['status'], 'ALARM')
+        self.assertIsNone(self.summary['sources']['dgx-query']['suppressed_by'])
+        self.enqueue(report, 1240)
+        self.assertEqual(self.consumer['outbox'][0]['source_event'], 'ALARM')
+
+    def test_observer_fault_requires_original_three_samples_and_raw_unknown_is_not_recovery(self):
+        def missing(path): raise FileNotFoundError()
+        for now in (1000, 1060):
+            self.enqueue(self.sample('HEALTHY', now, reader=missing), now)
+        self.assertEqual(self.consumer['outbox'], [])
+        report = self.sample('HEALTHY', 1120, reader=missing)
+        self.enqueue(report, 1120)
+        self.assertEqual(len(self.consumer['outbox']), 1)
+        self.assertEqual(self.consumer['outbox'][0]['dimension'], 'observer')
+        self.assertIn('감시 관측 장애', self.consumer['outbox'][0]['content'])
+
+    def test_recovery_pending_during_rate_limit_is_held_on_unknown_or_renewed_failure(self):
+        self.open_incident()
+        self.deliver()
+        report = self.close_incident()
+        self.enqueue(report, 4720)
+        recovery = self.consumer['outbox'][-1]
+        self.assertTrue(alerts.service_matches(recovery, report['condition']))
+        for status in ('LOADING', 'OBSERVER_ERROR', 'FAILED'):
+            report = self.sample(status, {'LOADING': 4780, 'OBSERVER_ERROR': 4840, 'FAILED': 4900}[status])
+            self.assertFalse(alerts.service_matches(recovery, report['condition']))
+            self.enqueue(report, {'LOADING': 4780, 'OBSERVER_ERROR': 4840, 'FAILED': 4900}[status])
+        with tempfile.TemporaryDirectory() as temporary:
+            alerts.dispatch(self.consumer, Path(temporary) / 'state.json', URL, 5000,
+                eligible_service=set(), active_sources={'dgx-query'},
+                sender=lambda *args: self.fail('sent a stale recovery'))
+        self.assertEqual(recovery['delivery'], 'SUPERSEDED')
+
+    def test_retired_sources_are_not_sent_and_ambiguous_claims_remain_preserved(self):
+        self.open_incident()
+        item = self.consumer['outbox'][-1]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'state.json'
+            alerts.dispatch(self.consumer, path, URL, 1120, active_sources=set(),
+                            sender=lambda *args: self.fail('sent a retired source'))
+            self.assertEqual(item['delivery'], 'PENDING')
+            item['delivery'] = 'ATTEMPTED'
+            alerts.dispatch(self.consumer, path, URL, 1180, active_sources=set(),
+                            sender=lambda *args: self.fail('replayed an ambiguous send'))
+            self.assertEqual(item['delivery'], 'UNCERTAIN')
+
+    def test_connection_test_leaves_unrelated_attempted_claim_unchanged(self):
+        self.open_incident()['delivery'] = 'ATTEMPTED'
+        with tempfile.TemporaryDirectory() as temporary:
+            alerts.dispatch(self.consumer, Path(temporary) / 'state.json', URL, 1120, only_test=True,
+                            sender=lambda *args: self.fail('sent an unrelated incident'))
+        self.assertEqual(self.consumer['outbox'][0]['delivery'], 'ATTEMPTED')
+
+
+    def test_generation_duplicate_samples_do_not_shorten_hour_recovery(self):
+        self.source['max_age'] = 2100
+        self.producer_config['sources'][0]['freshness_seconds'] = 2100
+        self.enqueue(self.sample('FAILED', 1000), 1000)
+        self.enqueue(self.sample('FAILED', 1900), 1900)
+        self.deliver(1900)
+        for now in range(1960, 6401, 60):
+            original = 1900 + ((now - 1900) // 900) * 900
+            report = self.sample('FAILED' if original == 1900 else 'HEALTHY', now, source_stamp=original)
+            self.enqueue(report, now)
+            self.assertEqual(len(self.consumer['outbox']), 2 if now == 6400 else 1)
+        self.assertEqual(self.consumer['outbox'][-1]['source_closed_at'], 6400)
+
+    def test_individual_invalid_probe_is_not_suppressed_by_failed_import(self):
+        self.producer_config['sources'].append({'name': 'import-dgx', 'path': '/fixture/import',
+            'expected_kind': 'observer-report', 'freshness_seconds': 180, 'failure_count': 2})
+        self.producer_config['sources'][0]['observer_parent'] = 'import-dgx'
+        for now in (1000, 1060, 1120):
+            def read(path):
+                if str(path).endswith('/import'):
+                    return {'version': 1, 'source': 'import-dgx', 'kind': 'observer-report',
+                            'status': 'OBSERVER_ERROR', 'reason': 'RESULT_IMPORT_UNAVAILABLE', 'observed_at': now}
+                return {'version': 1, 'source': 'wrong-source', 'status': 'HEALTHY', 'observed_at': now}
+            report = self.sample('HEALTHY', now, reader=read)
+        self.assertIsNone(self.summary['sources']['dgx-query']['suppressed_by'])
+        self.assertEqual(report['observer']['status'], 'ALARM')
+        self.enqueue(report, 1120)
+        self.assertEqual(self.consumer['outbox'][0]['dimension'], 'observer')
+
+    def test_pair_adapter_does_not_mutate_producer_smtp_or_reports(self):
+        self.open_incident()
+        self.producer['sources']['dgx-query']['deliveries'] = {'FAILED': {'status': 'UNCERTAIN', 'attempts': 1}}
+        producer, summary = deepcopy(self.producer), deepcopy(self.summary)
+        before = deepcopy((producer, summary))
+        report = alerts.collect_service_health(self.source, 1060, snapshot=(producer, summary))
+        self.enqueue(report, 1060)
+        self.assertEqual((producer, summary), before)
+
+    def test_service_config_keeps_top_level_exact_keys_and_validates_selection(self):
+        cfg = dict(config(), sources=[self.source])
+        with patch.object(alerts, 'read_file', return_value=(json.dumps(cfg).encode(), None)):
+            self.assertEqual(alerts.load_config(Path('/protected/config')), cfg)
+        for mutation in ('missing', 'extra', 'relative', 'same', 'bad-name'):
+            candidate = deepcopy(cfg)
+            if mutation == 'missing': candidate['sources'][0].pop('source_name')
+            if mutation == 'extra': candidate['notifications_enabled'] = True
+            if mutation == 'relative': candidate['sources'][0]['summary_path'] = 'summary.json'
+            if mutation == 'same': candidate['sources'][0]['summary_path'] = self.source['path']
+            if mutation == 'bad-name': candidate['sources'][0]['source_name'] = 'bad name'
+            with patch.object(alerts, 'read_file', return_value=(json.dumps(candidate).encode(), None)):
+                with self.assertRaises(alerts.AlertError, msg=mutation):
+                    alerts.load_config(Path('/protected/config'))
 
 
 if __name__ == '__main__':

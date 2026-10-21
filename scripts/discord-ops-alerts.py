@@ -73,7 +73,10 @@ def load_config(path):
     names = set()
     systemd_count = 0
     for source in value['sources']:
-        if not isinstance(source, dict) or set(source) != {'name', 'label', 'type', 'path', 'max_age'}:
+        fields = {'name', 'label', 'type', 'path', 'max_age'}
+        if isinstance(source, dict) and source.get('type') == 'service_health':
+            fields |= {'source_name', 'summary_path'}
+        if not isinstance(source, dict) or set(source) != fields:
             raise AlertError('감시 대상 항목을 확인하세요.')
         if not isinstance(source['name'], str) or not NAME.fullmatch(source['name']) or source['name'] in names:
             raise AlertError('감시 이름은 고유해야 합니다.')
@@ -86,6 +89,13 @@ def load_config(path):
             systemd_count += 1
             if not isinstance(source['path'], str) or not UNIT.fullmatch(source['path']):
                 raise AlertError('감시 서비스 이름을 확인하세요.')
+        elif source['type'] == 'service_health':
+            absolute_path(source['path'])
+            absolute_path(source['summary_path'])
+            if (source['path'] == source['summary_path']
+                    or not isinstance(source['source_name'], str)
+                    or not NAME.fullmatch(source['source_name'])):
+                raise AlertError('서비스 감시 원본 선택을 확인하세요.')
         elif source['type'] in ('cron_markers', 'monitor_state', 'db_cache'):
             absolute_path(source['path'])
         else:
@@ -101,8 +111,10 @@ def number(value):
     return value
 
 
-def collect(source, now, *, command=subprocess.run, monotonic=time.monotonic):
+def collect(source, now, *, command=subprocess.run, monotonic=time.monotonic, snapshot=None):
     """Return only classifications; raw reports never enter the outbox."""
+    if source['type'] == 'service_health':
+        return collect_service_health(source, now, snapshot=snapshot)
     try:
         kind = source['type']
         if kind == 'systemd':
@@ -163,6 +175,176 @@ def collect(source, now, *, command=subprocess.run, monotonic=time.monotonic):
         return {'condition': 'UNKNOWN', 'freshness': 'ALARM'}
 
 
+def service_snapshot(source):
+    """Freeze both producer files and refuse a concurrent replacement."""
+    try:
+        paths = (Path(source['path']), Path(source['summary_path']))
+        first = [read_file(path, private=True, limit=MAX_BYTES)[0] for path in paths]
+        second = [read_file(path, private=True, limit=MAX_BYTES)[0] for path in paths]
+        if first != second:
+            raise ValueError('producer changed')
+        return tuple(json.loads(raw) for raw in first)
+    except (OSError, ValueError, TypeError, AlertError):
+        return None
+
+
+def service_entry(entry, expected_status, sample_at, observed_at):
+    if not isinstance(entry, dict) or entry.get('latest_status') != expected_status:
+        raise ValueError('source status differs')
+    if number(entry['sample_at']) != sample_at:
+        raise ValueError('source sample differs')
+    sequence = entry.get('sequence', 0)
+    incident = entry.get('incident')
+    closed = entry.get('closed_incident')
+    if type(sequence) is not int or sequence < 0:
+        raise ValueError('invalid sequence')
+    if incident is not None and (type(incident) is not int or incident != sequence or incident < 1):
+        raise ValueError('invalid incident')
+    if closed is not None and (type(closed) is not int or not 1 <= closed <= sequence
+                               or incident is not None and closed >= incident):
+        raise ValueError('invalid closed incident')
+    opened_at = number(entry['opened_at']) if sequence else None
+    closed_at = number(entry['closed_at']) if closed is not None else None
+    if (sequence and (not 0 <= opened_at <= sample_at)
+            or closed is not None and not 0 <= closed_at <= sample_at
+            or sequence and incident is None and closed != sequence):
+        raise ValueError('invalid incident history')
+    return {'status': 'UNKNOWN', 'incident': incident, 'source_sequence': sequence,
+            'closed_incident': closed, 'opened_at': opened_at, 'closed_at': closed_at,
+            'sample_at': sample_at, 'observed_at': observed_at}
+
+
+def collect_service_health(source, now, *, snapshot=None):
+    """Use durable incident identities, never the transient summary event."""
+    unknown = {'condition': {'status': 'UNKNOWN'}, 'observer': {'status': 'UNKNOWN'}}
+    snapshot = service_snapshot(source) if snapshot is None else snapshot
+    if snapshot is None:
+        return unknown
+    try:
+        state, summary = snapshot
+        observed_at = number(summary['observed_at'])
+        if (summary.get('version') != 1 or number(state['last_collection']) != observed_at
+                or not -5 <= now - observed_at <= 180):
+            raise ValueError('collector epoch differs or expired')
+        name = source['source_name']
+        entry, report = state['sources'][name], summary['sources'][name]
+        status = report['status']
+        if status not in {'HEALTHY', 'FAILED', 'LOADING', 'OBSERVER_ERROR'}:
+            raise ValueError('unknown producer classification')
+        sample_at = number(report['sample_at'])
+        if not 0 <= sample_at <= observed_at + 30:
+            raise ValueError('invalid sample epoch')
+        condition = service_entry(entry, status, sample_at, observed_at)
+        observer_status = report['observer_status']
+        if observer_status not in {'HEALTHY', 'FAILED', 'OBSERVER_ERROR'}:
+            raise ValueError('unknown observer classification')
+        observer = service_entry(entry['observer'], observer_status, observed_at, observed_at)
+        if (report.get('incident') != condition['incident']
+                or report.get('observer_incident') != observer['incident']):
+            raise ValueError('incident identities differ')
+        suppressed_by = report.get('suppressed_by')
+        if suppressed_by is not None:
+            parent = summary['sources'][suppressed_by]
+            if (not isinstance(suppressed_by, str) or not NAME.fullmatch(suppressed_by)
+                    or parent['status'] != 'OBSERVER_ERROR'
+                    or report.get('parent_status') != 'OBSERVER_ERROR'
+                    or report.get('unknown_reason') not in {'RESULT_MISSING', 'RESULT_STALE'}
+                    or status != 'OBSERVER_ERROR' or observer_status != 'OBSERVER_ERROR'):
+                raise ValueError('invalid correlation')
+        raw = report['raw_status']
+        if report.get('unknown_reason') is None:
+            original = number(report['source_sample_at'])
+            if original != sample_at or raw not in {'HEALTHY', 'FAILED', 'LOADING', 'OBSERVER_ERROR', 'BUDGET_LIMIT'}:
+                raise ValueError('source identity differs')
+            expected = 'OBSERVER_ERROR' if raw in {'OBSERVER_ERROR', 'BUDGET_LIMIT'} else raw
+            if status != expected:
+                raise ValueError('raw classification differs')
+            # A fresh collector cannot refresh an original probe timestamp.
+            if not -5 <= now - original <= source['max_age']:
+                return unknown
+            if raw in {'HEALTHY', 'FAILED'}:
+                condition['status'] = ('ALARM' if condition['incident'] is not None else
+                                       'NORMAL' if raw == 'HEALTHY' else 'UNKNOWN')
+        elif raw != 'UNKNOWN' or status != 'OBSERVER_ERROR':
+            raise ValueError('unknown evidence differs')
+        if not suppressed_by:
+            observer['status'] = ('ALARM' if observer['incident'] is not None else
+                                  'NORMAL' if observer_status == 'HEALTHY' else 'UNKNOWN')
+        return {'condition': condition, 'observer': observer}
+    except (OSError, ValueError, KeyError, TypeError, AlertError):
+        return unknown
+
+
+def service_matches(item, report):
+    if report.get('status') == 'UNKNOWN':
+        return False
+    if item.get('source_event') == 'ALARM':
+        return (report['status'] == 'ALARM'
+                and item.get('source_incident') == report.get('incident')
+                and item.get('source_opened_at') == report.get('opened_at'))
+    return (report['status'] == 'NORMAL' and report.get('incident') is None
+            and item.get('source_incident') == report.get('closed_incident')
+            and item.get('source_closed_at') == report.get('closed_at'))
+
+
+def enqueue_service_health(state, config, source, dimension, report, now):
+    """Retain source cursors so polling gaps and restarts cannot repeat an incident."""
+    key = source['name'] + ':' + dimension
+    old = state['observations'].get(key, {})
+    if 'source_sequence' not in report:
+        return False
+    if old:
+        if (report['source_sequence'] < old.get('source_sequence', 0)
+                or report['sample_at'] < old.get('sample_at', 0)
+                or report['observed_at'] < old.get('observed_at', 0)
+                or report['source_sequence'] == old.get('source_sequence')
+                and report.get('opened_at') != old.get('opened_at')
+                or report.get('closed_incident') == old.get('closed_incident')
+                and report.get('closed_at') != old.get('closed_at')):
+            return False
+    matching = [item for item in state['outbox']
+                if item.get('source_type') == 'service_health'
+                and item.get('source') == source['name'] and item.get('dimension') == dimension]
+    # Apply the producer's rule: renewed non-healthy evidence supersedes unsent recovery.
+    for item in matching:
+        if item['delivery'] != 'PENDING':
+            continue
+        if item.get('source_event') == 'NORMAL' and not service_matches(item, report):
+            item.update(delivery='SUPERSEDED', code='RECOVERY_INTERRUPTED')
+        elif (item.get('source_event') == 'ALARM'
+                and item.get('source_incident', 0) <= (report.get('closed_incident') or 0)
+                and item.get('source_incident') != report.get('incident')):
+            item.update(delivery='SUPERSEDED', code='INCIDENT_CLOSED')
+    if report['status'] == 'UNKNOWN':
+        return False
+    receipt = {field: old[field] for field in ('alarm_incident', 'alarm_opened_at', 'alarm_delivery')
+               if field in old}
+    if receipt.get('alarm_incident') not in {report.get('incident'), report.get('closed_incident')}:
+        receipt = {}
+    current = report['status']
+    event = (current == 'ALARM' and (old.get('status') != 'ALARM'
+             or old.get('incident') != report['incident']))
+    if current == 'NORMAL' and old.get('status') == 'ALARM':
+        event = (old.get('incident') == report.get('closed_incident')
+                 and ((receipt.get('alarm_incident') == report.get('closed_incident')
+                       and receipt.get('alarm_opened_at') == report.get('opened_at')
+                       and receipt.get('alarm_delivery') in {'SENT', 'UNCERTAIN'})
+                     or any(item.get('source_event') == 'ALARM'
+                         and item.get('source_incident') == report.get('closed_incident')
+                         and item['delivery'] in {'SENT', 'UNCERTAIN', 'ATTEMPTED'} for item in matching)))
+    sequence = old.get('sequence', 0) + int(bool(event))
+    state['observations'][key] = dict(report, sequence=sequence, **receipt)
+    if event:
+        state['outbox'].append({'id': key + ':' + str(sequence),
+            'content': message_content(config, source, dimension, current, now),
+            'delivery': 'PENDING', 'attempts': 0, 'next_attempt': now,
+            'source': source['name'], 'source_type': 'service_health', 'dimension': dimension,
+            'source_event': current, 'source_incident': (report['incident'] if current == 'ALARM'
+            else report['closed_incident']), 'source_opened_at': report['opened_at'],
+            'source_closed_at': report['closed_at']})
+    return True
+
+
 def atomic_json(path, value):
     fd, temporary = tempfile.mkstemp(prefix='.discord-', dir=path.parent)
     try:
@@ -192,7 +374,7 @@ def validate_state(state):
     for item in state['outbox']:
         if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
                 or not isinstance(item.get('content'), str)
-                or item.get('delivery') not in {'PENDING', 'ATTEMPTED', 'SENT', 'UNCERTAIN', 'FAILED'}
+                or item.get('delivery') not in {'PENDING', 'ATTEMPTED', 'SENT', 'UNCERTAIN', 'FAILED', 'SUPERSEDED'}
                 or type(item.get('attempts')) is not int or not 0 <= item['attempts'] <= MAX_ATTEMPTS):
             raise AlertError('알림 전송 기록을 확인하세요.')
     return state
@@ -211,9 +393,17 @@ def enqueue(state, config, source, dimension, current, now):
     state['observations'][key] = {'status': current, 'sequence': sequence}
     if not old and current == 'NORMAL':
         return
+    state['outbox'].append({'id': key + ':' + str(sequence),
+                            'content': message_content(config, source, dimension, current, now),
+                            'delivery': 'PENDING', 'attempts': 0, 'next_attempt': now})
+
+
+def message_content(config, source, dimension, current, now):
     recovered = current == 'NORMAL'
     if dimension == 'freshness':
         label = '감시 결과 갱신 복구' if recovered else '감시 결과 갱신 지연'
+    elif source['type'] == 'service_health' and dimension == 'observer':
+        label = '감시 관측 복구' if recovered else '감시 관측 장애'
     elif source['type'] == 'db_cache':
         label = '정상 확인 복구' if recovered else '정상 확인 지연'
     else:
@@ -222,8 +412,7 @@ def enqueue(state, config, source, dimension, current, now):
     content = f"[Pickle 운영 알림] {label}\n대상: {config['host_label']} / {source['label']}\n확인 시각: {stamp} 한국 표준시"
     if source['type'] == 'db_cache':
         content += '\n정상 판정 때만 갱신되는 기록을 확인했습니다. 현재 백업 결과는 별도로 확인하세요.'
-    state['outbox'].append({'id': key + ':' + str(sequence), 'content': content,
-                            'delivery': 'PENDING', 'attempts': 0, 'next_attempt': now})
+    return content
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -270,17 +459,39 @@ def send_discord(webhook, content, *, opener=None):
         return {'delivery': 'UNCERTAIN', 'code': 'RESPONSE_UNKNOWN'}
 
 
-def dispatch(state, path, webhook, now, *, sender=send_discord, only_test=False):
+def remember_service_delivery(state, item):
+    if (item.get('source_type') == 'service_health' and item.get('source_event') == 'ALARM'
+            and item['delivery'] in {'SENT', 'UNCERTAIN'}):
+        key = item['source'] + ':' + item['dimension']
+        cursor = state['observations'].get(key, {})
+        if (cursor.get('incident') == item['source_incident']
+                and cursor.get('opened_at') == item['source_opened_at']):
+            cursor.update(alarm_incident=item['source_incident'],
+                          alarm_opened_at=item['source_opened_at'], alarm_delivery=item['delivery'])
+
+
+def dispatch(state, path, webhook, now, *, sender=send_discord, only_test=False,
+             active_sources=None, eligible_service=None):
     sent = 0
     attempted = 0
-    if state.get('webhook_retry_after', 0) > now:
-        return sent
     for item in state['outbox']:
         if only_test and item['id'] != 'connection-test':
             continue
         if item['delivery'] == 'ATTEMPTED':
             item.update(delivery='UNCERTAIN', code='INTERRUPTED')
+            remember_service_delivery(state, item)
             atomic_json(path, state)
+    if state.get('webhook_retry_after', 0) > now:
+        return sent
+    for item in state['outbox']:
+        if active_sources is not None and item['id'] != 'connection-test':
+            name = item.get('source', item['id'].rsplit(':', 2)[0])
+            if name not in active_sources:
+                continue
+        if item.get('source_type') == 'service_health' and eligible_service is not None and item['id'] not in eligible_service:
+            continue
+        if only_test and item['id'] != 'connection-test':
+            continue
         if item['delivery'] != 'PENDING' or item['next_attempt'] > now:
             continue
         if attempted >= 3:
@@ -311,6 +522,7 @@ def dispatch(state, path, webhook, now, *, sender=send_discord, only_test=False)
             if item['attempts'] >= MAX_ATTEMPTS:
                 item.update(delivery='FAILED', code='RETRIES_EXHAUSTED')
         sent += item['delivery'] == 'SENT'
+        remember_service_delivery(state, item)
         atomic_json(path, state)
         # A rate limit applies to the shared webhook, including other queued events.
         if item.get('code') == 'RATE_LIMITED':
@@ -322,9 +534,22 @@ def run(config, *, inspect=False, test_message=False, now=None, collector=collec
     if os.geteuid() != 0 or socket.gethostname().split('.')[0] != config['expected_hostname']:
         raise AlertError('선택한 호스트에서 관리자 권한으로 실행하세요.')
     now = time.time() if now is None else now
-    observations = {s['name']: collector(s, now) for s in config['sources']}
+    snapshots = {}
+    observations = {}
+    for source in config['sources']:
+        if collector is collect and source['type'] == 'service_health':
+            pair = (source['path'], source['summary_path'])
+            if pair not in snapshots:
+                snapshots[pair] = service_snapshot(source)
+            # None is a cached failed read, not permission to read the pair again.
+            observations[source['name']] = (collect_service_health(source, now, snapshot=snapshots[pair])
+                if snapshots[pair] is not None else {'condition': {'status': 'UNKNOWN'}, 'observer': {'status': 'UNKNOWN'}})
+        else:
+            observations[source['name']] = collector(source, now)
     if inspect:
-        return {'mode': 'INSPECT', 'sources': observations}
+        classifications = {name: {dimension: value.get('status', 'UNKNOWN') if isinstance(value, dict) else value
+                           for dimension, value in report.items()} for name, report in observations.items()}
+        return {'mode': 'INSPECT', 'sources': classifications}
     webhook = read_file(absolute_path(config['webhook_file']), private=True)[0].decode('ascii').rstrip('\n')
     if not WEBHOOK.fullmatch(webhook):
         raise AlertError('웹훅 주소 형식을 확인하세요.')
@@ -346,8 +571,9 @@ def run(config, *, inspect=False, test_message=False, now=None, collector=collec
         if now + 1 < state.get('last_run', 0):
             raise AlertError('시스템 시각이 이전 실행보다 과거입니다.')
         # Keep unresolved evidence and a bounded tail of confirmed deliveries.
-        completed = [item for item in state['outbox'] if item['delivery'] == 'SENT'][-100:]
-        state['outbox'] = [item for item in state['outbox'] if item['delivery'] != 'SENT'] + completed
+        completed = [item for item in state['outbox'] if item['delivery'] in {'SENT', 'SUPERSEDED'}][-100:]
+        state['outbox'] = [item for item in state['outbox'] if item['delivery'] not in {'SENT', 'SUPERSEDED'}] + completed
+        eligible_service = set()
         if test_message:
             if not state.get('test_enqueued'):
                 state['outbox'].append({'id': 'connection-test', 'content': '[Pickle 운영 알림 시험] 연결 확인\n대상: ' + config['host_label'],
@@ -356,12 +582,22 @@ def run(config, *, inspect=False, test_message=False, now=None, collector=collec
         else:
             for source in config['sources']:
                 for dimension, current in observations[source['name']].items():
-                    enqueue(state, config, source, dimension, current, now)
+                    if source['type'] == 'service_health':
+                        valid = enqueue_service_health(state, config, source, dimension, current, now)
+                        if valid:
+                            eligible_service.update(item['id'] for item in state['outbox']
+                                if item.get('source_type') == 'service_health'
+                                and item.get('source') == source['name'] and item.get('dimension') == dimension
+                                and service_matches(item, current))
+                    else:
+                        enqueue(state, config, source, dimension, current, now)
         if len(state['outbox']) > MAX_OUTBOX:
             raise AlertError('알림 대기열 제한을 초과했습니다.')
         state['last_run'] = now
         atomic_json(path, state)
-        sent = dispatch(state, path, webhook, now, sender=sender, only_test=test_message)
+        sent = dispatch(state, path, webhook, now, sender=sender, only_test=test_message,
+                        active_sources={source['name'] for source in config['sources']},
+                        eligible_service=eligible_service)
         counts = {label: sum(item['delivery'] == label for item in state['outbox'])
                   for label in ('PENDING', 'SENT', 'UNCERTAIN', 'FAILED')}
         return {'mode': 'TEST' if test_message else 'RUN', 'sent_now': sent, 'deliveries': counts}

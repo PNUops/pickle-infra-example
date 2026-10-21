@@ -225,9 +225,9 @@ DB/PBS 도구는 Python 3와 `proxmox-backup-client`, source의 PostgreSQL 18 cl
 선택 config로 점검합니다. 정기 점검과 와일드카드 갱신 소유, expiry row 인계 절차는
 [운영 점검 런북](runbooks/production-ops.md)에 있습니다.
 
-`discord-ops-alerts.py`는 호스트 감시 상태와 갱신 시각을 읽어 장애와 복구를
-Discord 전용 대기열로 전달합니다. 보호 설정, 전송 상태와 설치 절차는
-[운영 알림 런북](runbooks/discord-ops-alerts.md)에 있습니다.
+`discord-ops-alerts.py`는 호스트 감시와 generation collector의 확정 사건·관측 장애를
+Discord 전용 대기열로 전달합니다. 원본 상태와 요약의 시각을 대조하며 보호 설정,
+전송 상태와 설치 절차는 [운영 알림 런북](runbooks/discord-ops-alerts.md)에 있습니다.
 
 `candidate-core-vzdump-hook.sh`는 예시 후보 노드 pve-node-2의 CT 1200/1201/1202/1204를
 PBS로 백업하기 전 노드·스토리지·정족수·설정·실행 상태를 확인합니다. 등록 절차는
