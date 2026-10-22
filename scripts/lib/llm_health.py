@@ -196,6 +196,8 @@ def smtp_sender(config: dict):
         message['From'] = config['sender']
         message['To'] = config['recipient']
         stage = '장애' if delivery['event'] == 'FAILED' else '안정 복구'
+        if delivery.get('severity') == 'warning':
+            stage = '주의' if delivery['event'] == 'FAILED' else '주의 해소'
         message['Subject'] = f"[PNU Cloud 감시] {delivery['target']} {stage}"
         message.set_content(f"대상: {delivery['target']}\n상태: {stage}\n"
                             f"incident: {delivery['incident']}\n"

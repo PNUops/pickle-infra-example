@@ -1,0 +1,10 @@
+[Unit]
+Description=Collect staging observations every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:50
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

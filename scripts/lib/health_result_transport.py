@@ -16,8 +16,10 @@ from llm_health import HealthError, MAX_JSON, STATES, epoch
 
 SOURCES = {'host-query', 'local-generation', 'upstream-generation', 'public-console',
            'public-api', 'public-development', 'public-generation', 'collector-heartbeat',
-           'public-tls-production', 'public-tls-development', 'public-tls-gateway'}
-KINDS = {'host-query', 'generation', 'public-http', 'public-generation', 'observer-report', 'tls'}
+           'public-tls-production', 'public-tls-development', 'public-tls-gateway',
+           'public-staging', 'public-tls-staging', 'public-staging-expiry-warning', 'staging-access-policy'}
+KINDS = {'host-query', 'generation', 'public-http', 'public-generation', 'observer-report', 'tls',
+         'tls-expiry-warning', 'access-policy'}
 SAFE_REASON = re.compile(r'[A-Z][A-Z0-9_]{0,63}')
 NUMBERS = {'latency_seconds': 3600, 'certificate_remaining_seconds': 366 * 86400,
            'completion_tokens': 8, 'prompt_tokens': 4096, 'generation_counter_delta': 10**15}
@@ -110,6 +112,14 @@ def sanitize_report(value: dict, source: str, now: float) -> dict:
             or timestamp > now + 30):
         raise HealthError('REPORT_SCHEMA_INVALID')
     result = {key: value[key] for key in ('version', 'source', 'kind', 'observed_at', 'status')}
+    if value['kind'] == 'access-policy' and source != 'staging-access-policy':
+        raise HealthError('REPORT_POLICY_SOURCE_INVALID')
+    if value['kind'] == 'tls-expiry-warning':
+        if source != 'public-staging-expiry-warning' or value.get('severity') != 'warning':
+            raise HealthError('REPORT_WARNING_INVALID')
+        result['severity'] = 'warning'
+    elif 'severity' in value:
+        raise HealthError('REPORT_WARNING_INVALID')
     if 'phase' in value:
         if value['phase'] not in ('DNS', 'TLS', 'HTTP', 'UNKNOWN'):
             raise HealthError('REPORT_PHASE_INVALID')

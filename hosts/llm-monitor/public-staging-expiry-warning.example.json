@@ -1,0 +1,10 @@
+{
+  "source": "public-staging-expiry-warning",
+  "kind": "tls-expiry-warning",
+  "severity": "warning",
+  "expected_hostname": "public-observer",
+  "allowed_hosts": ["staging.example.com"],
+  "url": "https://staging.example.com/",
+  "required_dns_san": "staging.example.com",
+  "minimum_certificate_seconds": 2592000
+}

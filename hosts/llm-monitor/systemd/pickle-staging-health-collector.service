@@ -1,0 +1,15 @@
+[Unit]
+Description=Collect staging observations into independent incident history
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+StateDirectory=pickle-staging-health-collector
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/pickle/service-health-monitor.py --config /etc/pickle-llm-health/staging-collector.json --state-dir /var/lib/pickle-staging-health-collector
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+TimeoutStartSec=90

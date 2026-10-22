@@ -15,6 +15,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_pbs_capacity_monitor.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_discord_ops_alerts.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_llm_health.py
 bash scripts/verify-llm-health-external.sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_staging_health.py
 python3 scripts/tests/test_isolated_core.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_candidate_synthetic_login.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_isolated_services.py

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import http.client
 import importlib.util
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -27,13 +28,18 @@ known_answer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(known_answer)
 
 HOST = re.compile(r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}')
-TLS_SOURCES = {'public-tls-production', 'public-tls-development', 'public-tls-gateway'}
+TLS_SOURCES = {'public-tls-production', 'public-tls-development', 'public-tls-gateway', 'public-tls-staging'}
+TLS_ONLY = {'tls', 'tls-expiry-warning'}
+OBSERVATION_ONLY = TLS_ONLY | {'access-policy'}
+# These are the three standard RFC 1918 network definitions, not host inventory.
+RFC1918_NETWORKS = tuple(ipaddress.IPv4Network(value) for value in (
+    (0x0A000000, 8), (0xAC100000, 12), (0xC0A80000, 16)))
 PROBE_LIMITS = {'maximum_output_tokens': 8, 'maximum_daily_requests': 312,
                 'minimum_interval_seconds': 300, 'total_timeout_seconds': 20}
 
 
 def validate(config: dict) -> None:
-    if config.get('kind') not in ('public-http', 'public-generation', 'tls') or not NAME.fullmatch(config.get('source', '')):
+    if config.get('kind') not in ('public-http', 'public-generation', 'tls', 'tls-expiry-warning', 'access-policy') or not NAME.fullmatch(config.get('source', '')):
         raise HealthError('PUBLIC_CONFIG_INVALID')
     url = urlsplit(config.get('url', ''))
     allowed = config.get('allowed_hosts')
@@ -44,9 +50,22 @@ def validate(config: dict) -> None:
             or url.username or url.password or url.query or url.fragment
             or not url.path.startswith('/') or len(url.path) > 256):
         raise HealthError('EXPLICIT_HTTPS_TARGET_REQUIRED')
+    if 'required_dns_san' in config and config['required_dns_san'] != url.hostname:
+        raise HealthError('EXACT_DNS_SAN_REQUIRED')
+    if (config['source'] in {'public-staging', 'public-tls-staging', 'public-staging-expiry-warning', 'staging-access-policy'}
+            and config.get('required_dns_san') != url.hostname):
+        raise HealthError('EXACT_DNS_SAN_REQUIRED')
+    staging_kinds = {'public-staging': 'public-http', 'public-tls-staging': 'tls',
+                     'public-staging-expiry-warning': 'tls-expiry-warning', 'staging-access-policy': 'access-policy'}
+    if config['source'] in staging_kinds and config['kind'] != staging_kinds[config['source']]:
+        raise HealthError('STAGING_SOURCE_KIND_INVALID')
+    if ('severity' in config and (config['kind'] != 'tls-expiry-warning' or config['severity'] != 'warning')):
+        raise HealthError('WARNING_SCOPE_INVALID')
+    if 'connect_address' in config and config['kind'] != 'access-policy':
+        raise HealthError('CONNECT_OVERRIDE_NOT_ALLOWED')
     if config['kind'] == 'public-http':
         response = config.get('response', {})
-        if (response.get('kind') not in ('json', 'html') or config.get('expected_status') != 200
+        if (response.get('kind') not in ('json', 'html', 'text') or config.get('expected_status') != 200
                 or type(config.get('minimum_certificate_seconds', 604800)) is not int
                 or not 86400 <= config.get('minimum_certificate_seconds', 604800) <= 2592000):
             raise HealthError('PUBLIC_EXPECTATION_INVALID')
@@ -56,12 +75,36 @@ def validate(config: dict) -> None:
                     or any(not isinstance(key, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}', key)
                            or type(value) not in (str, int, bool) for key, value in required.items())):
                 raise HealthError('JSON_FIELDS_REQUIRED')
+        elif response['kind'] == 'text':
+            if (not isinstance(response.get('exact'), str) or not 4 <= len(response['exact'].encode('utf-8')) <= 128
+                    or set(response) != {'kind', 'exact'}):
+                raise HealthError('EXACT_TEXT_REQUIRED')
         elif not isinstance(response.get('marker'), str) or not 4 <= len(response['marker']) <= 128:
             raise HealthError('HTML_MARKER_REQUIRED')
+        if config['source'] == 'public-staging' and (url.path != '/__ingress_probe'
+                or response != {'kind': 'text', 'exact': 'candidate-ready'}):
+            raise HealthError('STAGING_RESPONSE_INVALID')
     elif config['kind'] == 'tls':
         if (url.path != '/' or config['source'] not in TLS_SOURCES
                 or config.get('minimum_certificate_seconds', 604800) != 604800):
             raise HealthError('CRITICAL_TLS_CONFIG_INVALID')
+    elif config['kind'] == 'tls-expiry-warning':
+        if (url.path != '/' or config['source'] != 'public-staging-expiry-warning'
+                or config.get('minimum_certificate_seconds') != 2592000
+                or config.get('severity') != 'warning'):
+            raise HealthError('TLS_WARNING_CONFIG_INVALID')
+    elif config['kind'] == 'access-policy':
+        try:
+            if not isinstance(config.get('connect_address'), str):
+                raise ipaddress.AddressValueError('not a literal address')
+            address = ipaddress.IPv4Address(config.get('connect_address', ''))
+        except ipaddress.AddressValueError as error:
+            raise HealthError('PRIVATE_POLICY_ADDRESS_REQUIRED') from error
+        if (not any(address in network for network in RFC1918_NETWORKS)
+                or config['source'] != 'staging-access-policy' or url.path != '/__ingress_probe'
+                or config.get('expected_status') != 403 or config.get('response') != {'kind': 'status'}
+                or config.get('minimum_certificate_seconds', 604800) != 604800):
+            raise HealthError('PRIVATE_POLICY_CONFIG_INVALID')
     elif (url.path != '/v1/chat/completions' or type(config.get('canary_enabled', False)) is not bool
           or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', config.get('model', ''))):
         raise HealthError('PUBLIC_CANARY_INVALID')
@@ -97,6 +140,10 @@ def attest(config: dict, token: str, now: float, *, reader=read_json) -> None:
 
 
 def inspect_response(config: dict, status: int, content_type: str, body: bytes) -> dict:
+    if config['kind'] == 'access-policy':
+        return {'status': 'HEALTHY' if status == 403 else 'FAILED',
+                'reason': 'ACCESS_POLICY_VERIFIED' if status == 403 else 'ACCESS_POLICY_VIOLATION',
+                'http_status': status}
     if config['kind'] == 'public-generation' and status in (401, 403):
         return {'status': 'OBSERVER_ERROR', 'reason': 'CREDENTIAL_REJECTED', 'http_status': status}
     if status != 200:
@@ -114,6 +161,9 @@ def inspect_response(config: dict, status: int, content_type: str, body: bytes) 
             if (not isinstance(document, dict) or any(type(document.get(key)) is not type(value)
                     or document.get(key) != value for key, value in expected['required'].items())):
                 raise HealthError('JSON_SHAPE_MISMATCH')
+        elif expected['kind'] == 'text':
+            if content_type != 'text/plain' or body != expected['exact'].encode('utf-8'):
+                raise HealthError('TEXT_SHAPE_MISMATCH')
         elif content_type != 'text/html' or expected['marker'] not in body.decode('utf-8'):
             raise HealthError('HTML_SHAPE_MISMATCH')
         result = {'status': 'HEALTHY', 'reason': 'PUBLIC_SHAPE_VERIFIED'}
@@ -133,7 +183,7 @@ def http_worker(request: dict) -> dict:
 
     phase('DNS')
     try:
-        addresses = socket.getaddrinfo(url.hostname, 443, type=socket.SOCK_STREAM)
+        addresses = socket.getaddrinfo(config.get('connect_address', url.hostname), 443, type=socket.SOCK_STREAM)
         if not addresses:
             raise socket.gaierror()
     except OSError:
@@ -164,7 +214,18 @@ def http_worker(request: dict) -> dict:
     try:
         connection.connect()
         certificate = connection.sock.getpeercert()
+        if ('required_dns_san' in config and config['required_dns_san'] not in
+                [name for kind, name in certificate.get('subjectAltName', ()) if kind == 'DNS']):
+            return {'status': 'OBSERVER_ERROR' if config['kind'] == 'tls-expiry-warning' else 'FAILED',
+                    'reason': 'TLS_OBSERVATION_UNAVAILABLE' if config['kind'] == 'tls-expiry-warning' else 'TLS_CERTIFICATE_VALIDATION_FAILED',
+                    'phase': 'TLS'}
         remaining = ssl.cert_time_to_seconds(certificate['notAfter']) - time.time()
+        if config['kind'] == 'tls-expiry-warning':
+            return {'status': 'FAILED' if remaining < 2592000 else 'HEALTHY',
+                    'severity': 'warning', 'phase': 'TLS',
+                    'reason': 'TLS_CERTIFICATE_EXPIRY_WARNING' if remaining < 2592000 else 'TLS_EXPIRY_WARNING_CLEAR',
+                    'certificate_remaining_seconds': max(0, int(remaining)),
+                    'latency_seconds': round(time.monotonic() - started, 3)}
         if remaining < config.get('minimum_certificate_seconds', 604800):
             return {'status': 'FAILED', 'reason': 'TLS_CERTIFICATE_EXPIRING', 'phase': 'TLS'}
         if config['kind'] == 'tls':
@@ -174,7 +235,8 @@ def http_worker(request: dict) -> dict:
         connection.sock.settimeout(20 if config['kind'] == 'public-generation' else 10)
         phase('HTTP')
         headers = {'Accept': 'application/json' if config['kind'] == 'public-generation'
-                   or config['response']['kind'] == 'json' else 'text/html'}
+                   or config['response']['kind'] == 'json' else 'text/plain'
+                   if config['response']['kind'] in ('text', 'status') else 'text/html'}
         body = None
         if config['kind'] == 'public-generation':
             token = request['token']
@@ -195,10 +257,12 @@ def http_worker(request: dict) -> dict:
         result['certificate_remaining_seconds'] = int(remaining)
         return result
     except ssl.SSLCertVerificationError:
-        return {'status': 'FAILED', 'reason': 'TLS_CERTIFICATE_VALIDATION_FAILED', 'phase': 'TLS'}
+        return {'status': 'OBSERVER_ERROR' if config['kind'] == 'tls-expiry-warning' else 'FAILED',
+                'reason': 'TLS_OBSERVATION_UNAVAILABLE' if config['kind'] == 'tls-expiry-warning' else 'TLS_CERTIFICATE_VALIDATION_FAILED', 'phase': 'TLS'}
     except (ssl.SSLError, TimeoutError, ConnectionError, OSError):
-        if config['kind'] == 'tls':
-            return {'status': 'OBSERVER_ERROR', 'reason': 'TLS_OBSERVATION_UNAVAILABLE', 'phase': 'TLS'}
+        if config['kind'] in OBSERVATION_ONLY:
+            return {'status': 'OBSERVER_ERROR', 'reason': 'ACCESS_POLICY_OBSERVATION_UNAVAILABLE'
+                    if config['kind'] == 'access-policy' else 'TLS_OBSERVATION_UNAVAILABLE', 'phase': 'TLS'}
         raise
     finally:
         connection.close()
@@ -240,9 +304,10 @@ def transport(config: dict, token: str | None = None, *, timeout: float | None =
         if phase not in ('TLS', 'HTTP'):
             return {'status': 'OBSERVER_ERROR', 'reason': 'PUBLIC_WORKER_STARTUP_TIMEOUT',
                     'phase': 'UNKNOWN', 'target': config['source']}
-        if config['kind'] == 'tls':
-            return {'status': 'OBSERVER_ERROR', 'reason': 'TLS_OBSERVATION_UNAVAILABLE',
-                    'phase': 'TLS', 'target': config['source']}
+        if config['kind'] in OBSERVATION_ONLY:
+            return {'status': 'OBSERVER_ERROR', 'reason': 'ACCESS_POLICY_OBSERVATION_UNAVAILABLE'
+                    if config['kind'] == 'access-policy' else 'TLS_OBSERVATION_UNAVAILABLE',
+                    'phase': phase, 'target': config['source']}
         return {'status': 'FAILED', 'reason': 'DNS_TLS_HTTP_TOTAL_TIMEOUT',
                 'phase': phase if phase in ('TLS', 'HTTP') else 'UNKNOWN',
                 'latency_seconds': round(time.monotonic() - started, 3)}
@@ -264,6 +329,8 @@ def probe(config: dict, directory: Path, *, now: float | None = None,
             raise HealthError('CLOCK_MOVED_BACKWARDS')
         state['last_check'] = now
         result = {'version': 1, 'source': config['source'], 'kind': config['kind'], 'observed_at': now}
+        if config['kind'] == 'tls-expiry-warning':
+            result['severity'] = 'warning'
         token = None
         if config['kind'] == 'public-generation':
             if config.get('canary_enabled') is not True:
@@ -300,20 +367,22 @@ def worker_main() -> int:
         request = json.loads(sys.stdin.read(MAX_JSON))
         result = http_worker(request)
     except ssl.SSLCertVerificationError:
-        result = {'status': 'FAILED', 'reason': 'TLS_CERTIFICATE_VALIDATION_FAILED'}
+        result = ({'status': 'OBSERVER_ERROR', 'reason': 'TLS_OBSERVATION_UNAVAILABLE'}
+                  if request.get('config', {}).get('kind') == 'tls-expiry-warning' else
+                  {'status': 'FAILED', 'reason': 'TLS_CERTIFICATE_VALIDATION_FAILED'})
     except ssl.SSLError:
         result = ({'status': 'OBSERVER_ERROR', 'reason': 'TLS_OBSERVATION_UNAVAILABLE', 'phase': 'TLS'}
-                  if request.get('config', {}).get('kind') == 'tls' else
+                  if request.get('config', {}).get('kind') in OBSERVATION_ONLY else
                   {'status': 'FAILED', 'reason': 'TLS_HANDSHAKE_FAILED'})
     except socket.gaierror:
         result = {'status': 'OBSERVER_ERROR', 'reason': 'DNS_OBSERVATION_UNAVAILABLE', 'phase': 'DNS'}
     except (TimeoutError, ConnectionError):
         result = ({'status': 'OBSERVER_ERROR', 'reason': 'TLS_OBSERVATION_UNAVAILABLE', 'phase': 'TLS'}
-                  if request.get('config', {}).get('kind') == 'tls' else
+                  if request.get('config', {}).get('kind') in OBSERVATION_ONLY else
                   {'status': 'FAILED', 'reason': 'PUBLIC_TRANSPORT_FAILED'})
     except (HealthError, OSError, ValueError, TypeError, KeyError, http.client.HTTPException):
         result = ({'status': 'OBSERVER_ERROR', 'reason': 'TLS_OBSERVATION_UNAVAILABLE', 'phase': 'TLS'}
-                  if request.get('config', {}).get('kind') == 'tls' else
+                  if request.get('config', {}).get('kind') in OBSERVATION_ONLY else
                   {'status': 'FAILED', 'reason': 'PUBLIC_RESPONSE_INVALID'})
     print(json.dumps(result, allow_nan=False, sort_keys=True))
     return 0

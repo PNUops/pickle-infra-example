@@ -1,0 +1,23 @@
+[Unit]
+Description=Observe external HTTP and certificate targets sequentially
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+Slice=pickle-monitoring.slice
+StateDirectory=pickle-public-console pickle-public-api pickle-public-development pickle-public-tls-production pickle-public-tls-development pickle-public-tls-gateway pickle-public-staging pickle-public-tls-staging pickle-public-staging-expiry-warning
+StateDirectoryMode=0700
+ExecStart=/usr/bin/timeout --signal=TERM --kill-after=5s 100s /usr/bin/bash /usr/local/libexec/pickle/public-observation-batch.sh
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+TimeoutStartSec=110

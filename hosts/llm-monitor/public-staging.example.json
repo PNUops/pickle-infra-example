@@ -1,0 +1,11 @@
+{
+  "source": "public-staging",
+  "kind": "public-http",
+  "expected_hostname": "public-observer",
+  "allowed_hosts": ["staging.example.com"],
+  "url": "https://staging.example.com/__ingress_probe",
+  "required_dns_san": "staging.example.com",
+  "expected_status": 200,
+  "minimum_certificate_seconds": 604800,
+  "response": {"kind": "text", "exact": "candidate-ready"}
+}

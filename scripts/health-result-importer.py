@@ -31,7 +31,7 @@ def ssh_command(config: dict) -> list[str]:
             or not NAME.fullmatch(config.get('source', ''))):
         raise HealthError('IMPORT_SSH_SELECTION_INVALID')
     expected = config.get('expected_sources')
-    if (not isinstance(expected, list) or not expected or len(expected) > 9
+    if (not isinstance(expected, list) or not expected or len(expected) > 12
             or len(set(expected)) != len(expected) or not set(expected) <= SOURCES):
         raise HealthError('IMPORT_SOURCES_INVALID')
     for key in ('identity_file', 'known_hosts_file'):

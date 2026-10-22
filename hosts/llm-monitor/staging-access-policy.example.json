@@ -1,0 +1,12 @@
+{
+  "source": "staging-access-policy",
+  "kind": "access-policy",
+  "expected_hostname": "collector-host",
+  "allowed_hosts": ["staging.example.com"],
+  "url": "https://staging.example.com/__ingress_probe",
+  "connect_address": "REPLACE_WITH_RFC1918_INGRESS_ADDRESS",
+  "required_dns_san": "staging.example.com",
+  "expected_status": 403,
+  "minimum_certificate_seconds": 604800,
+  "response": {"kind": "status"}
+}

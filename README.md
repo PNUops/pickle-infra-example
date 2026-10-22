@@ -492,6 +492,11 @@ custody와 GitHub secret 등록은 별도 절차이며 이 TLS 백업을 설정�
 초기 통지는 꺼져 있으며 공개 인증 경로와 원격 수집은 별도 배치입니다. Python3 표준
 라이브러리와 systemd를 쓰며 실행·검증·credential 설치와 원복은
 [LLM 감시 런북](runbooks/llm-health-monitor.md)을 따릅니다.
+
+스테이징 health-only 경로는 외부의 HTTP 200·정확한 본문, 7일 TLS 장애,
+30일 만료 주의와 내부 ingress의 403 접근통제 검사를 별도 source로 구성합니다.
+주의는 기존 상태 enum과 별도의 `severity: warning`을 사용하며 장애와 다른 제목으로
+전달합니다. 설정과 전환 시 이력 보존은 [스테이징 감시 런북](runbooks/staging-health-monitor.md)을 따릅니다.
 공개 HTTPS/TLS 감시와 고정 SSH reader/importer의 배치 및 전용 진단 키 검증은
 [외부 감시와 결과 수집 런북](runbooks/llm-health-external.md)에 있습니다.
 

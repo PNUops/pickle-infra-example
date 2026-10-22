@@ -76,6 +76,10 @@ def load_config(path):
         fields = {'name', 'label', 'type', 'path', 'max_age'}
         if isinstance(source, dict) and source.get('type') == 'service_health':
             fields |= {'source_name', 'summary_path'}
+            if 'severity' in source:
+                fields.add('severity')
+                if source['severity'] != 'warning':
+                    raise AlertError('서비스 감시 경고 등급을 확인하세요.')
         if not isinstance(source, dict) or set(source) != fields:
             raise AlertError('감시 대상 항목을 확인하세요.')
         if not isinstance(source['name'], str) or not NAME.fullmatch(source['name']) or source['name'] in names:
@@ -229,6 +233,9 @@ def collect_service_health(source, now, *, snapshot=None):
         name = source['source_name']
         entry, report = state['sources'][name], summary['sources'][name]
         status = report['status']
+        if (report.get('severity') != source.get('severity')
+                or report.get('severity') not in (None, 'warning')):
+            raise ValueError('source severity differs')
         if status not in {'HEALTHY', 'FAILED', 'LOADING', 'OBSERVER_ERROR'}:
             raise ValueError('unknown producer classification')
         sample_at = number(report['sample_at'])
@@ -404,6 +411,8 @@ def message_content(config, source, dimension, current, now):
         label = '감시 결과 갱신 복구' if recovered else '감시 결과 갱신 지연'
     elif source['type'] == 'service_health' and dimension == 'observer':
         label = '감시 관측 복구' if recovered else '감시 관측 장애'
+    elif source['type'] == 'service_health' and source.get('severity') == 'warning':
+        label = '주의 해소' if recovered else '주의'
     elif source['type'] == 'db_cache':
         label = '정상 확인 복구' if recovered else '정상 확인 지연'
     else:

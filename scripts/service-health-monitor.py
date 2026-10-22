@@ -15,6 +15,8 @@ from llm_health import (HealthError, NAME, STATES, atomic_json, deliver, epoch, 
                         observe, read_json, reserve_event, smtp_sender)
 
 CRITICAL_TLS_FAILURES = {'TLS_CERTIFICATE_VALIDATION_FAILED', 'TLS_CERTIFICATE_EXPIRING'}
+WARNING_REASONS = {'FAILED': 'TLS_CERTIFICATE_EXPIRY_WARNING', 'HEALTHY': 'TLS_EXPIRY_WARNING_CLEAR'}
+POLICY_FAILURES = CRITICAL_TLS_FAILURES | {'ACCESS_POLICY_VIOLATION'}
 
 
 def validate(config: dict) -> None:
@@ -28,13 +30,19 @@ def validate(config: dict) -> None:
         name = source.get('name', '')
         path = Path(source.get('path', ''))
         critical_tls = source.get('component') == 'critical-tls' and source.get('expected_kind') == 'tls'
+        policy = source.get('component') == 'access-policy' and source.get('expected_kind') == 'access-policy'
+        warning = source.get('severity') == 'warning' and source.get('expected_kind') == 'tls-expiry-warning'
         if (not NAME.fullmatch(name) or name in seen or not path.is_absolute()
-                or '..' in path.parts or source.get('component', 'query') not in ('query', 'host', 'critical-tls')
+                or '..' in path.parts or source.get('component', 'query') not in ('query', 'host', 'critical-tls', 'access-policy')
                 or type(source.get('freshness_seconds')) is not int
                 or not 60 <= source['freshness_seconds'] <= 3600
                 or type(source.get('failure_count')) is not int
-                or (source['failure_count'] != 1 if critical_tls else not 2 <= source['failure_count'] <= 5)
-                or source.get('component') == 'critical-tls' and not critical_tls):
+                or (source['failure_count'] != 1 if critical_tls or policy or warning else not 2 <= source['failure_count'] <= 5)
+                or source.get('component') == 'critical-tls' and not critical_tls
+                or source.get('component') == 'access-policy' and not policy
+                or 'severity' in source and not warning
+                or warning and source.get('component', 'query') != 'query'
+                or source.get('expected_kind') == 'tls-expiry-warning' and not warning):
             raise HealthError('SOURCE_INVALID')
         seen.add(name)
     indexed = {source['name']: source for source in sources}
@@ -69,6 +77,8 @@ def sampled(source: dict, now: float, snapshot: dict) -> dict:
     result = {'status': 'OBSERVER_ERROR', 'sample_at': now, 'reason': 'RESULT_UNAVAILABLE',
         'raw_status': 'UNKNOWN', 'source_sample_at': None, 'source_reason': None,
         'unknown_reason': 'RESULT_INVALID'}
+    if source.get('severity') == 'warning':
+        result['severity'] = 'warning'
     value, error = snapshot[Path(source['path'])]
     if error is not None:
         result['unknown_reason'] = 'RESULT_MISSING' if isinstance(error, FileNotFoundError) else 'RESULT_READ_FAILED'
@@ -83,6 +93,20 @@ def sampled(source: dict, now: float, snapshot: dict) -> dict:
             raise HealthError('RESULT_IDENTITY_INVALID')
         value = value['host'] if source.get('component') == 'host' else value
         status = value['status']
+        if ((value.get('kind') == 'tls-expiry-warning' or 'severity' in value)
+                and source.get('severity') != 'warning'):
+            raise HealthError('WARNING_SOURCE_SELECTION_REQUIRED')
+        if source.get('severity') == 'warning':
+            if (value.get('kind') != 'tls-expiry-warning' or value.get('severity') != 'warning'
+                    or status not in ('HEALTHY', 'FAILED', 'OBSERVER_ERROR')
+                    or status in WARNING_REASONS and value.get('reason') != WARNING_REASONS[status]):
+                raise HealthError('TLS_WARNING_EVIDENCE_INVALID')
+            result['severity'] = 'warning'
+        if source.get('component') == 'access-policy':
+            if (value.get('kind') != 'access-policy' or status not in ('HEALTHY', 'FAILED', 'OBSERVER_ERROR')
+                    or status == 'HEALTHY' and (value.get('reason') != 'ACCESS_POLICY_VERIFIED' or value.get('http_status') != 403)
+                    or status == 'FAILED' and value.get('reason') not in POLICY_FAILURES):
+                raise HealthError('ACCESS_POLICY_EVIDENCE_INVALID')
         if source.get('component') == 'critical-tls':
             if (value.get('kind') != 'tls'
                     or status == 'FAILED' and value.get('reason') not in CRITICAL_TLS_FAILURES
@@ -169,11 +193,15 @@ def collect(config: dict, state: dict, now: float, *, reader=read_json,
                 if target_state is observer and suppressed_by:
                     continue
                 if transition in ('FAILED', 'RECOVERED'):
-                    reserve_event(target_state, target, transition, now)
+                    delivery = reserve_event(target_state, target, transition, now)
+                    if target_state is entry and source.get('severity') == 'warning':
+                        delivery['severity'] = 'warning'
                 elif (target_state.get('incident')
                         and target_state.get('deliveries', {}).get('FAILED', {}).get('incident')
                         != target_state['incident']):
-                    reserve_event(target_state, target, 'FAILED', now)
+                    delivery = reserve_event(target_state, target, 'FAILED', now)
+                    if target_state is entry and source.get('severity') == 'warning':
+                        delivery['severity'] = 'warning'
         summary['sources'][name] = {**observation, 'incident': entry.get('incident'),
             'observer_incident': observer.get('incident'), 'event': event,
             'observer_status': observer_status, 'observer_event': observer_event,

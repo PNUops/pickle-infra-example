@@ -52,11 +52,13 @@ def collect(config: dict, *, now: float | None = None, reader=read_json,
             or type(config.get('include_public_generation', False)) is not bool
             or type(config.get('include_collector_heartbeat', False)) is not bool
             or type(config.get('include_policy_attestation', False)) is not bool
+            or type(config.get('include_staging', False)) is not bool
+            or config.get('include_staging') and role != 'public-observer'
             or config.get('include_policy_attestation') and role not in POLICY_PATHS
             or not isinstance(config.get('tls_sources', []), list)
             or len(config.get('tls_sources', [])) != len(set(config.get('tls_sources', [])))
             or not set(config.get('tls_sources', [])) <= {
-                'public-tls-production', 'public-tls-development', 'public-tls-gateway'}
+                'public-tls-production', 'public-tls-development', 'public-tls-gateway', 'public-tls-staging'}
             or config.get('tls_sources') and role != 'public-observer'):
         raise HealthError('READER_DEPLOYMENT_INVALID')
     if role == 'gateway-host':
@@ -70,6 +72,9 @@ def collect(config: dict, *, now: float | None = None, reader=read_json,
             paths['public-generation'] = '/var/lib/pickle-public-generation/result.json'
         if role == 'public-observer' and config.get('include_collector_heartbeat'):
             paths['collector-heartbeat'] = '/var/lib/pickle-service-health-monitor/summary.json'
+        if role == 'public-observer' and config.get('include_staging'):
+            paths['public-staging'] = '/var/lib/pickle-public-staging/result.json'
+            paths['public-staging-expiry-warning'] = '/var/lib/pickle-public-staging-expiry-warning/result.json'
         if role == 'public-observer':
             for source in config.get('tls_sources', []):
                 paths[source] = '/var/lib/pickle-public-' + source.removeprefix('public-') + '/result.json'

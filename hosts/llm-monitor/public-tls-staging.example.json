@@ -1,0 +1,9 @@
+{
+  "source": "public-tls-staging",
+  "kind": "tls",
+  "expected_hostname": "public-observer",
+  "allowed_hosts": ["staging.example.com"],
+  "url": "https://staging.example.com/",
+  "required_dns_san": "staging.example.com",
+  "minimum_certificate_seconds": 604800
+}
