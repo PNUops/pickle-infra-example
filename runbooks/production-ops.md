@@ -22,8 +22,8 @@ health endpoint가 성공해도 큰 패킷이 버려지므로 이 점검이 유�
    새 `/etc/pickle-production-ops.env`의 `PICKLE_OPS_RELEASE`는 해당 versioned 경로입니다.
 3. baseline을 한 번 실행하고 결과/실패를 기록합니다. 실제 실패가 있으면 타이머를
    활성화하기 전에 원인을 확인합니다.
-   예시 config 기준 34 probes의 각12초 상한보다 unit600초가 길게 잡혀 있습니다.
-   MTU 점검은 컨테이너마다 `pct config`와 `pct exec`를 한 번씩 더 부릅니다. Config의 점검 항목을
+   예시 config 기준 34 probes의 명령당 12초 상한보다 unit600초가 길게 잡혀 있습니다.
+   MTU 점검은 명령을 두 번(`pct config`, `pct exec`) 부르므로 최악 합계는 약 468초입니다. Config의 점검 항목을
    늘리면 이 상한도 다시 대조합니다.
 4. 검토한 `pickle-production-health.service/timer`를 새로 설치하고 문법 검사 뒤
    타이머를 활성화합니다. 기존 `pickle-health` unit을 재사용하거나 source hold를 풀지 않습니다.

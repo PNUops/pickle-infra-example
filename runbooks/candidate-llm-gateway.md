@@ -43,7 +43,7 @@ gateway 데몬과 upstream 자격증명은 아직 없습니다. 게스트 OS를 
 그 직후 `eth0` MTU hook `/etc/network/if-pre-up.d/candidate-llm-mtu`를 설치하고 MTU를
 즉시 적용한 뒤 `ip -j link` readback이 입력 MTU와 같을 때만 APT로 진행합니다.
 APT 전후와 완료 시 각 unit의 inactive/masked 상태, hook 존재와 실제 MTU, 설정한
-nameserver와 TCP listener 부재를 확인합니다. `/etc/resolv.conf`의 nameserver는 입력값과 일치해야 합니다.
+nameserver를 확인하고, TCP listener가 없음을 확인합니다. `/etc/resolv.conf`의 nameserver는 입력값과 일치해야 합니다.
 첫 부팅과 이 명령 사이의 짧은
 구간까지 닫혔다고 간주하지 않습니다. APT 네트워크 확인과 설치가 끝나면 proxy 주소에서
 TCP 8081만 받는 게스트 방화벽을 활성화하고 부팅 시 networking보다 먼저 실행되도록
@@ -65,7 +65,7 @@ CTID에 재적용하지 않습니다. Upstream
 
 ## guest MTU 확인
 
-PVE는 `net0`의 `mtu=`를 CT를 만들 때 생기는 veth 양 끝에만 적용하고, guest의
+PVE는 `net0`의 `mtu=`를 CT를 기동할 때 만드는 veth 양 끝에만 적용하고, guest의
 `/etc/network/interfaces`에는 `mtu` 줄을 쓰지 않습니다. hook이 없으면 guest 안에서 networking이
 다시 올라올 때 `eth0`이 1500으로 돌아가고, 1370 경로에서 큰 패킷이 오류 없이 버려집니다.
 연결은 맺어지지만 TLS 핸드셰이크와 큰 응답이 재전송 끝에 늦거나 실패하므로 서비스
@@ -84,8 +84,10 @@ pct exec "$CT" -- cat /sys/class/net/eth0/mtu
 pct exec "$CT" -- ls -l /etc/network/if-pre-up.d/
 ```
 
-세 숫자가 같아야 합니다. `net0`에 `mtu=`가 있는데 guest 값만 다르거나 hook이 없으면 진행하지
-않습니다. hook은 생성 도구가 쓰는 것과 같은 내용의 root 소유 0755 파일이고, 아래의 1370 자리에는
+세 숫자가 같아야 합니다. hook이 필요한 것은 `net0`에 `mtu=`가 있고 그 값이 1500보다 작을 때뿐입니다.
+`mtu=`가 없는 LXC는 hook 없이 세 값이 같으면 정상이고, 같지 않으면
+그 bridge에 맞는 `mtu=`를 `net0`에 먼저 정합니다. `mtu=`가 있는데 guest 값만 다르거나 hook이 없으면
+진행하지 않습니다. hook은 생성 도구가 쓰는 것과 같은 내용의 root 소유 0755 파일이고, 아래의 1370 자리에는
 `net0`의 `mtu=` 값이 들어갑니다. 이름은 원래 생성 경로의 것(`isolated-core-mtu`,
 `isolated-services-mtu`, `candidate-llm-mtu`)을 따르고, 이미 다른 이름의 MTU hook이 있으면
 하나를 더 만들지 않습니다.
@@ -97,7 +99,8 @@ set -eu
 exec /usr/sbin/ip link set dev eth0 mtu 1370
 ```
 
-hook을 둔 뒤 `pct exec "$CT" -- /usr/sbin/ip link set dev eth0 mtu <net0의 mtu>`로 즉시 적용하고
+hook은 `pct push "$CT" <파일> /etc/network/if-pre-up.d/<이름> --perms 0755`로 두고 소유자가
+root인지 확인합니다. 그 뒤 `pct exec "$CT" -- /usr/sbin/ip link set dev eth0 mtu <net0의 mtu>`로 즉시 적용하고
 위 네 줄을 다시 읽습니다. 운영 게스트에 쓰는 일이므로 운영 변경 승인 아래에서 합니다. guest가
 ifupdown2라면 `/etc/network/ifupdown2/ifupdown2.conf`의 `addon_scripts_support=1`도 확인합니다.
 이 값이 0이면 hook이 실행되지 않습니다.

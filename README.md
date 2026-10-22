@@ -195,7 +195,7 @@ source 방화벽 파일을 새 디렉터리에 생성합니다. 입력과 적용
 격리 core 도구는 Debian 13 템플릿으로 PostgreSQL 18과 Java 25 실행 환경을 준비합니다.
 새 게스트의 `eth0` MTU는 소유권 확인 직후 `/etc/network/if-pre-up.d/isolated-core-mtu`
 hook으로 지속 적용하고, APT 전에 `ip -j link` readback으로 검증합니다.
-PVE는 `net0`의 `mtu=`를 생성한 veth에만 걸고 guest의 interfaces 파일에는 쓰지 않아,
+PVE는 `net0`의 `mtu=`를 기동 때 만드는 veth에만 걸고 guest의 interfaces 파일에는 쓰지 않아,
 hook이 없으면 guest의 networking이 다시 올라올 때 1500으로 돌아갑니다. 그래서 격리 core,
 후보 서비스 core, 후보 LLM 게이트웨이 세 생성 경로가 `isolated_core.install_guest_mtu`
 하나로 hook 설치·적용·readback을 수행하고, hook 파일 이름만 경로마다 다릅니다.
@@ -212,7 +212,7 @@ proxy CT 설정 파일, Debian 템플릿 및 바이너리·유닛 경로와 SHA-
 클러스터의 활성 PVE 작업·HA 리소스 부재, proxy가 실행 중인지와 단일 `net0`, 네트워크 및 저장소 여유를 확인합니다. 첫 부팅
 직후 SSH와 Postfix service/path를 중지·mask하고, APT 전에 `eth0` MTU를
 `/etc/network/if-pre-up.d/candidate-llm-mtu` hook으로 지속 적용합니다. APT 전후와 완료 시
-unit 상태, hook과 실제 MTU, 설정한 DNS와 TCP listener 부재를 확인합니다. 게스트 방화벽은 APT 설치 뒤에 켜지므로 그 사이에는 기존
+unit 상태, hook과 실제 MTU, 설정한 DNS를 확인하고, TCP listener가 없음을 확인합니다. 게스트 방화벽은 APT 설치 뒤에 켜지므로 그 사이에는 기존
 격리망 경계에 의존합니다. 실패하면 소유권을 다시 확인해 제한 시간 안에 CT 정지를 시도하고
 결과를 기록합니다. 게스트와 volume은 보존합니다. 완료해도
 `onboot=0`과 LLM 서비스 disabled/inactive 상태로 남습니다. 자격증명 복원, 활성화,

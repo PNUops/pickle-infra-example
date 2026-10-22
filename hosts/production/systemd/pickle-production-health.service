@@ -6,5 +6,6 @@ After=pve-guests.service
 Type=oneshot
 EnvironmentFile=/etc/pickle-production-ops.env
 ExecStart=/bin/bash ${PICKLE_OPS_RELEASE}/cron-wrap.sh production-health -- /usr/bin/python3 -I -B ${PICKLE_OPS_RELEASE}/production-health.py --config /etc/pickle-production-health.json
-# The selected 29 probes each have a 12-second bound.
+# The example config selects 34 probes; each has a 12-second bound per command and the
+# five MTU probes run two commands, so the worst case stays below 470 seconds.
 TimeoutStartSec=600
