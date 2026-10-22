@@ -447,7 +447,8 @@ pct config "$RESTORE_CTID"
 ```
 
 unmount 뒤 `pct config`에 lock이 없어야 한다. mount가 실패하거나 잠금이 남으면 중단한다.
-복원본은 계속 꺼 둔다. 복원 실패·내용 불일치·동일 IP 노출 가능성이 있으면 nginx
+복원본은 계속 꺼 둔다. 나중에 이 복원본에 bridge를 붙여 기동하게 되면 기동 직후
+[후보 LLM 게이트웨이 런북](candidate-llm-gateway.md)의 「guest MTU 확인」 절을 거친다. 복원 실패·내용 불일치·동일 IP 노출 가능성이 있으면 nginx
 변경을 중단한다. 이 검증은 백업의 교차 노드 복원 가능성을 확인하는 것이며,
 DB와 서비스의 전체 복구 검증을 대신하지 않는다. 명령 근거는
 [Proxmox VE 9 pct 참조](https://pve.proxmox.com/pve-docs-9-beta/pct.1.html)이며,

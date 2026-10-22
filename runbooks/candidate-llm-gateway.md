@@ -40,8 +40,10 @@ IP 중복을 확인합니다. 생성 직전에도 클러스터와 활성 작업 
 기존 격리 bridge의 경계에 의존하며, APT 단계마다 실행 제한 시간이 있습니다. 이때
 gateway 데몬과 upstream 자격증명은 아직 없습니다. 게스트 OS를 확인하자마자 `ssh.socket`과
 `ssh.service`, `postfix.service`, `postfix-resolvconf.path`를 중지·mask합니다.
-APT 전후와 완료 시 각 unit의 inactive/masked 상태, 설정한 nameserver와 TCP listener
-부재를 확인합니다. `/etc/resolv.conf`의 nameserver는 입력값과 일치해야 합니다.
+그 직후 `eth0` MTU hook `/etc/network/if-pre-up.d/candidate-llm-mtu`를 설치하고 MTU를
+즉시 적용한 뒤 `ip -j link` readback이 입력 MTU와 같을 때만 APT로 진행합니다.
+APT 전후와 완료 시 각 unit의 inactive/masked 상태, hook 존재와 실제 MTU, 설정한
+nameserver와 TCP listener 부재를 확인합니다. `/etc/resolv.conf`의 nameserver는 입력값과 일치해야 합니다.
 첫 부팅과 이 명령 사이의 짧은
 구간까지 닫혔다고 간주하지 않습니다. APT 네트워크 확인과 설치가 끝나면 proxy 주소에서
 TCP 8081만 받는 게스트 방화벽을 활성화하고 부팅 시 networking보다 먼저 실행되도록
@@ -60,3 +62,42 @@ TCP 8081만 받는 게스트 방화벽을 활성화하고 부팅 시 networking�
 CTID에 재적용하지 않습니다. Upstream
 자격증명 복원, API 동기화, 서비스 활성화, 트래픽 전환과 전환 실패 시 롤백은 각각 검증한
 절차에서 별도로 수행합니다.
+
+## guest MTU 확인
+
+PVE는 `net0`의 `mtu=`를 CT를 만들 때 생기는 veth 양 끝에만 적용하고, guest의
+`/etc/network/interfaces`에는 `mtu` 줄을 쓰지 않습니다. hook이 없으면 guest 안에서 networking이
+다시 올라올 때 `eth0`이 1500으로 돌아가고, 1370 경로에서 큰 패킷이 오류 없이 버려집니다.
+연결은 맺어지지만 TLS 핸드셰이크와 큰 응답이 재전송 끝에 늦거나 실패하므로 서비스
+health만으로는 드러나지 않습니다.
+
+이 단계가 들어가기 전에 이 도구로 만든 게스트, 손으로 만든 게스트, 그리고 그런 게스트의
+아카이브에서 복원한 게스트에는 hook이 없습니다. 적용 직후, 복원 직후, 그리고 의심될 때
+아래로 config·veth·guest 세 값과 hook을 확인합니다. 정기 확인은 `production-health.py`의
+컨테이너별 `<CTID>:mtu` 점검이 맡습니다.
+
+```
+CT=<대상 CTID>
+pct config "$CT" | sed -n 's/^net0: //p' | tr ',' '\n' | grep '^mtu='   # 없으면 bridge MTU를 물려받습니다
+cat "/sys/class/net/veth${CT}i0/mtu"
+pct exec "$CT" -- cat /sys/class/net/eth0/mtu
+pct exec "$CT" -- ls -l /etc/network/if-pre-up.d/
+```
+
+세 숫자가 같아야 합니다. `net0`에 `mtu=`가 있는데 guest 값만 다르거나 hook이 없으면 진행하지
+않습니다. hook은 생성 도구가 쓰는 것과 같은 내용의 root 소유 0755 파일이고, 아래의 1370 자리에는
+`net0`의 `mtu=` 값이 들어갑니다. 이름은 원래 생성 경로의 것(`isolated-core-mtu`,
+`isolated-services-mtu`, `candidate-llm-mtu`)을 따르고, 이미 다른 이름의 MTU hook이 있으면
+하나를 더 만들지 않습니다.
+
+```
+#!/bin/sh
+set -eu
+[ "${IFACE:-}" = "eth0" ] || exit 0
+exec /usr/sbin/ip link set dev eth0 mtu 1370
+```
+
+hook을 둔 뒤 `pct exec "$CT" -- /usr/sbin/ip link set dev eth0 mtu <net0의 mtu>`로 즉시 적용하고
+위 네 줄을 다시 읽습니다. 운영 게스트에 쓰는 일이므로 운영 변경 승인 아래에서 합니다. guest가
+ifupdown2라면 `/etc/network/ifupdown2/ifupdown2.conf`의 `addon_scripts_support=1`도 확인합니다.
+이 값이 0이면 hook이 실행되지 않습니다.

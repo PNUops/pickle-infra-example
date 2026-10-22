@@ -23,6 +23,7 @@ import isolated_services as services
 Error = core.BootstrapError
 Runner = core.Runner
 DESCRIPTION = 'candidate-llm:'
+MTU_HOOK = 'candidate-llm-mtu'
 
 
 @dataclass(frozen=True)
@@ -371,7 +372,14 @@ class Bootstrap:
             if 'ActiveState=inactive' not in state.splitlines() or 'UnitFileState=masked' not in state.splitlines():
                 raise Error('Guest template network service did not remain masked')
 
+    def ensure_mtu(self) -> None:
+        core.install_guest_mtu(self.guest, lambda path, content, mode: self.put(path, content, mode),
+                               MTU_HOOK, self.c.mtu)
+
     def verify_guest_network(self) -> None:
+        self.guest(['test', '-x', f'{core.GUEST_HOOK_PARENT}/{MTU_HOOK}'], 'guest MTU hook present')
+        core.require_guest_mtu(self.guest(['/usr/sbin/ip', '-j', 'link', 'show', 'dev', 'eth0'],
+                                          'guest MTU readback'), self.c.mtu)
         resolver = self.guest(['cat', '/etc/resolv.conf'], 'configured DNS readback')
         servers = [line.split()[1] for line in resolver.splitlines()
                    if line.split() and line.split()[0] == 'nameserver' and len(line.split()) > 1]
@@ -444,6 +452,9 @@ class Bootstrap:
                 raise Error('Guest is not Debian 13')
             # Close template SSH and mail units before package network access.
             self.disable_guest_ssh()
+            # PVE set mtu= only on the veth it created; without the hook the
+            # guest returns to 1500 on its next networking start.
+            self.ensure_mtu()
             self.verify_guest_network()
             self.package_network_preflight()
             self.guest(['test', '!', '-e', '/usr/sbin/policy-rc.d'], 'new package guard')

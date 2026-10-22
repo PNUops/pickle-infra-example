@@ -370,7 +370,27 @@ Enabled: yes
             'ifupdown2 addon support': 'addon_scripts_support=0\n',
         })
         bootstrap = service.Bootstrap(config(), runner)
-        with self.assertRaisesRegex(service.BootstrapError, 'addon script'):
+        with patch.object(bootstrap, 'owned'), \
+                self.assertRaisesRegex(service.BootstrapError, 'addon script'):
+            bootstrap.ensure_mtu('proxy')
+
+    def test_mtu_installs_service_hook_and_requires_readback(self):
+        runner = FakeRunner({
+            'guest network manager': 'ifupdown2',
+            'ifupdown2 addon support': 'addon_scripts_support=1\n',
+            'guest hook parent state': '0:0 755',
+            'guest MTU readback': json.dumps([{'ifname': 'eth0', 'mtu': 1370}]),
+        })
+        bootstrap = service.Bootstrap(config(), runner)
+        with patch.object(bootstrap, 'owned') as owned, patch.object(bootstrap, 'put') as put:
+            bootstrap.ensure_mtu('proxy')
+        self.assertEqual(put.call_args.args[:2], (
+            'proxy', '/etc/network/if-pre-up.d/isolated-services-mtu'))
+        self.assertEqual(put.call_args.args[3], '0755')
+        self.assertEqual(owned.call_count, sum(1 for _ in runner.calls))
+        runner.responses['guest MTU readback'] = json.dumps([{'ifname': 'eth0', 'mtu': 1500}])
+        with patch.object(bootstrap, 'owned'), patch.object(bootstrap, 'put'), \
+                self.assertRaisesRegex(service.BootstrapError, 'MTU readback'):
             bootstrap.ensure_mtu('proxy')
 
     def test_put_uses_pct_push_mode_and_requires_checksum_readback(self):

@@ -25,6 +25,7 @@ python3 scripts/tests/test_db_pbs_backup.py
 python3 -B scripts/tests/test_dev_tls_backup.py
 python3 -B scripts/tests/test_dev_tls_export.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_production_network.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_production_health.py
 python3 -B scripts/tests/test_qdevice_activation.py
 python3 -B scripts/tests/test_create_pbs_vm.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_node_registration.py

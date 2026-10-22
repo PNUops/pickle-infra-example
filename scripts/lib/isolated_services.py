@@ -660,36 +660,13 @@ class Bootstrap:
 
     def ensure_mtu(self, role: str) -> None:
         ctid, _ = self.identity(role)
-        # Reuse the tested parent checks and hook renderer without reusing app/DB ownership.
-        manager = self.r.guest(ctid, ['sh', '-c',
-            "if dpkg-query -W -f='${Status}' ifupdown2 2>/dev/null | grep -Fqx 'install ok installed'; then printf ifupdown2; elif dpkg-query -W -f='${Status}' ifupdown 2>/dev/null | grep -Fqx 'install ok installed'; then printf ifupdown; else printf unknown; fi"],
-            label='guest network manager')
-        if manager == 'ifupdown2':
-            support = self.r.guest(ctid, ['cat', '/etc/network/ifupdown2/ifupdown2.conf'],
-                                   label='ifupdown2 addon support')
-            if not core.ifupdown2_addon_scripts_enabled(support):
-                raise BootstrapError('ifupdown2 addon script support is not explicitly enabled')
-        elif manager != 'ifupdown':
-            raise BootstrapError('Guest network manager is unsupported or not installed')
-        state = self.r.guest(ctid, ['sh', '-c',
-            'parent=/etc/network/if-pre-up.d; if [ -L "$parent" ]; then printf symlink; elif [ -e "$parent" ] && [ ! -d "$parent" ]; then printf non-directory; elif [ ! -e "$parent" ]; then printf missing; else stat -c "%u:%g %a" -- "$parent"; fi'],
-            label='guest hook parent state').strip()
-        if state == 'missing':
+
+        def guest(argv: list[str], label: str) -> str:
             self.owned(role)
-            self.r.guest(ctid, ['install', '-d', '-o', 'root', '-g', 'root', '-m', '0755',
-                                '/etc/network/if-pre-up.d'], label='create guest hook parent')
-            state = '0:0 755'
-        match = re.fullmatch(r'(\d+):(\d+) ([0-7]{3,4})', state)
-        if not match or match.group(1) != '0' or match.group(2) != '0' or (int(match.group(3), 8) & 0o022):
-            raise BootstrapError('Guest hook parent ownership or permissions are unsafe')
-        self.put(role, '/etc/network/if-pre-up.d/isolated-services-mtu',
-                 core.render_guest_mtu_hook(self.c.mtu), '0755')
-        self.r.guest(ctid, ['/usr/sbin/ip', 'link', 'set', 'dev', 'eth0', 'mtu', str(self.c.mtu)],
-                     label='guest MTU apply')
-        link = json.loads(self.r.guest(ctid, ['ip', '-j', 'link', 'show', 'dev', 'eth0'],
-                                       label='guest MTU readback'))
-        if len(link) != 1 or link[0].get('ifname') != 'eth0' or link[0].get('mtu') != self.c.mtu:
-            raise BootstrapError('Guest eth0 MTU readback did not match the configured MTU')
+            return self.r.guest(ctid, argv, label=label)
+
+        core.install_guest_mtu(guest, lambda path, content, mode: self.put(role, path, content, mode),
+                               'isolated-services-mtu', self.c.mtu)
 
     def endpoint_preflight(self, role: str, host: str, port: int, label: str) -> None:
         ctid, _ = self.identity(role)

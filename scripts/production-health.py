@@ -19,6 +19,17 @@ def run(argv, timeout=12):
     return result.stdout.strip()
 
 
+def net0_mtu(config_text):
+    """Return net0's mtu= value, or None when the veth inherits the bridge MTU."""
+    lines = [line[len('net0: '):] for line in config_text.splitlines() if line.startswith('net0: ')]
+    if len(lines) != 1:
+        raise ValueError('exactly one net0 is required')
+    values = [part[len('mtu='):] for part in lines[0].split(',') if part.startswith('mtu=')]
+    if len(values) > 1 or (values and not values[0].isdigit()):
+        raise ValueError('net0 mtu is ambiguous')
+    return int(values[0]) if values else None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True)
@@ -64,12 +75,21 @@ def main():
     def pct(ct, argv):
         return run(['pct', 'exec', str(ct), '--', *argv])
 
+    def guest_mtu(ct):
+        # PVE sets net0 mtu= only on the veth it creates; a guest without its
+        # if-pre-up hook drops back to 1500 and large packets vanish silently.
+        configured = net0_mtu(run(['pct', 'config', ct]))
+        veth = int(Path(f'/sys/class/net/veth{ct}i0/mtu').read_text())
+        guest = int(pct(ct, ['cat', '/sys/class/net/eth0/mtu']))
+        return require(guest == veth and configured in (None, veth), f'eth0 MTU{guest} matches net0 and veth')
+
     for ct, units in containers.items():
         check('container:' + ct, lambda ct=ct: require(run(['pct', 'status', ct]) == 'status: running', 'running'))
         for unit in units:
             check(ct + ':' + unit, lambda ct=ct, unit=unit: require(pct(ct, ['systemctl', 'is-active', unit]) == 'active', 'active'))
         check(ct + ':disk', lambda ct=ct: require(int(pct(ct, ['python3', '-c',
             'import os;s=os.statvfs("/");print(round(100*(1-s.f_bavail/s.f_blocks)))'])) < 90, 'root filesystem below 90%'))
+        check(ct + ':mtu', lambda ct=ct: guest_mtu(ct))
 
     app = config['app_ctid']
     check('api:readiness', lambda: require(json.loads(pct(app, ['curl', '-fsS', '--max-time', '8',

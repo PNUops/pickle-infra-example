@@ -236,6 +236,11 @@ if-up hook이 요청하는 service 재시작에도 같은 guest 영향이 있을
 `pending=false`, config·owner 및 관리 네트워크 파일의 hash, 각 guest의 실행·
 `onboot` 상태와 관리 SSH·HTTPS 경로를 읽고 기록한다. 예상과 다르거나 다른
 네트워크 변경이 진행 중이면 중단한다. 일치할 때 설치된 wrapper를 직접 실행한다.
+아래 경로는 기본 설치 위치다. drop-in이 `ExecStart`를 다른 runtime과 config로 바꿔 둔
+node가 있으므로, 먼저 `systemctl cat example-production-network.service`의 마지막
+`ExecStart`를 읽고 같은 wrapper와 `--config`로 실행한다. 다른 사본을 쓰면 committed
+state의 config와 달라 `installed configuration changed outside this operation`으로 멈춘다.
+`--apply` 없이 같은 명령을 실행하면 쓰기 없이 config와 state의 일치만 확인한다.
 
 ```bash
 bash /usr/local/libexec/example-production-network/apply-production-network.sh \

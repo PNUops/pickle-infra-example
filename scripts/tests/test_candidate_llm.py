@@ -118,7 +118,13 @@ class CandidateLlmTest(unittest.TestCase):
                 super().__init__(config, None)
                 self.resolver, self.listeners = resolver, listeners
 
+            mtu = 1370
+
             def guest(self, command, label):
+                if label == 'guest MTU readback':
+                    return json.dumps([{'ifname': 'eth0', 'mtu': self.mtu}])
+                if label == 'guest MTU hook present':
+                    return ''
                 return self.resolver if command[0] == 'cat' else self.listeners
 
         resolver = f'nameserver {self.config.nameserver}\n'
@@ -127,6 +133,61 @@ class CandidateLlmTest(unittest.TestCase):
                                 (resolver, 'LISTEN 0 100 0.0.0.0:25 0.0.0.0:*')]:
             with self.subTest(resolver=text, listeners=listeners), self.assertRaises(llm.Error):
                 Guest(self.config, text, listeners).verify_guest_network()
+        reverted = Guest(self.config, resolver, '')
+        reverted.mtu = 1500
+        with self.assertRaisesRegex(llm.Error, 'MTU readback'):
+            reverted.verify_guest_network()
+
+    def test_installs_own_mtu_hook_with_owned_guest_commands(self) -> None:
+        class Guest(llm.Bootstrap):
+            def __init__(self, config):
+                super().__init__(config, None)
+                self.labels, self.puts = [], []
+
+            def guest(self, command, label):
+                self.labels.append(label)
+                return {'guest network manager': 'ifupdown2',
+                        'ifupdown2 addon support': 'addon_scripts_support=1\n',
+                        'guest hook parent state': '0:0 755',
+                        'guest MTU readback': json.dumps([{'ifname': 'eth0', 'mtu': 1370}])}.get(label, '')
+
+            def put(self, path, content, mode='0644', owner='root:root'):
+                self.puts.append((path, content, mode, owner))
+
+        guest = Guest(self.config)
+        guest.ensure_mtu()
+        self.assertEqual(guest.puts, [('/etc/network/if-pre-up.d/candidate-llm-mtu',
+                                       llm.core.render_guest_mtu_hook(1370), '0755', 'root:root')])
+        self.assertLess(guest.labels.index('guest MTU apply'), guest.labels.index('guest MTU readback'))
+
+    def test_mtu_hook_precedes_package_network(self) -> None:
+        class Runner:
+            def run(self, args, **kwargs):
+                if args[:2] == ['pvesh', 'get'] and args[2] == '/cluster/status':
+                    return json.dumps([{'type': 'cluster', 'name': 'example-cluster', 'quorate': 1},
+                                       {'type': 'node', 'name': 'compute-a', 'online': 1}])
+                return '[]' if args[0] == 'pvesh' else ''
+
+        bootstrap = llm.Bootstrap(self.config, Runner())
+        order = []
+
+        def package_network():
+            order.append('apt')
+            raise llm.Error('stop')
+
+        with patch.object(llm, 'preflight', return_value={}), \
+                patch.object(llm, 'require_proxy_identity'), \
+                patch.object(llm.Path, 'mkdir'), patch.object(bootstrap, 'save'), \
+                patch.object(bootstrap, 'owned'), \
+                patch.object(bootstrap, 'guest', return_value='VERSION_ID="13"\n'), \
+                patch.object(bootstrap, 'disable_guest_ssh'), \
+                patch.object(bootstrap, 'ensure_mtu', side_effect=lambda: order.append('mtu')), \
+                patch.object(bootstrap, 'verify_guest_network'), \
+                patch.object(bootstrap, 'package_network_preflight', side_effect=package_network), \
+                patch.object(bootstrap, 'stop_owned_on_failure', return_value='stopped'):
+            with self.assertRaisesRegex(llm.Error, 'stop'):
+                bootstrap.apply()
+        self.assertEqual(order, ['mtu', 'apt'])
 
     def test_failure_stops_only_the_exact_owned_container(self) -> None:
         class Runner:
@@ -182,6 +243,7 @@ class CandidateLlmTest(unittest.TestCase):
                 patch.object(bootstrap, 'owned'), \
                 patch.object(bootstrap, 'guest', return_value='VERSION_ID="13"\n'), \
                 patch.object(bootstrap, 'disable_guest_ssh'), \
+                patch.object(bootstrap, 'ensure_mtu'), \
                 patch.object(bootstrap, 'verify_guest_network', side_effect=llm.Error('unexpected listener')), \
                 patch.object(bootstrap, 'stop_owned_on_failure', return_value='stopped') as stop:
             with self.assertRaisesRegex(llm.Error, 'unexpected listener'):

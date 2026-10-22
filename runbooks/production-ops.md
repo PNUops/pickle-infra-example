@@ -6,11 +6,15 @@
 ## 정기 상태 점검
 
 `scripts/production-health.py --config <root-owned JSON>`은 선택 host와 container의
-서비스, root filesystem, API readiness, console 정적 응답, gateway snapshot health,
+서비스, root filesystem, `eth0` MTU, API readiness, console 정적 응답, gateway snapshot health,
 DB와 Flyway, JobRunr worker/정기 작업, nginx 설정과 인증서 유효기간을 읽습니다.
 `hosts/production/health.example.json`에 config 형식이 있습니다.
 Gateway health는 실제 bind 주소를 사용하며 proxy container에서 요청합니다.
 상태 endpoint 성공만으로 실제 모델 생성이나 공개 통신 성공을 판단하지 않습니다.
+`<CTID>:mtu`는 `pct config`의 `net0` `mtu=`, 호스트 `veth<CTID>i0`, guest `eth0` 세 값이 같은지
+봅니다. `mtu=`가 없으면 veth와 guest만 비교합니다. guest만 1500으로 돌아간 상태는 연결과
+health endpoint가 성공해도 큰 패킷이 버려지므로 이 점검이 유일한 신호입니다. 실패하면
+[후보 LLM 게이트웨이 런북](candidate-llm-gateway.md)의 「guest MTU 확인」 절로 hook을 확인합니다.
 
 1. 새 versioned root 디렉터리에 `production-health.py`, 기존 `cron-wrap.sh`,
    `refresh-wildcard-cert-row.sh`와 `lib/ct.sh`를 보관합니다. 기존 파일은 덮어쓰지 않습니다.
@@ -18,7 +22,8 @@ Gateway health는 실제 bind 주소를 사용하며 proxy container에서 요�
    새 `/etc/pickle-production-ops.env`의 `PICKLE_OPS_RELEASE`는 해당 versioned 경로입니다.
 3. baseline을 한 번 실행하고 결과/실패를 기록합니다. 실제 실패가 있으면 타이머를
    활성화하기 전에 원인을 확인합니다.
-   선택29 probes의 각12초 상한보다 unit600초가 길게 잡혀 있습니다. Config의 점검 항목을
+   예시 config 기준 34 probes의 각12초 상한보다 unit600초가 길게 잡혀 있습니다.
+   MTU 점검은 컨테이너마다 `pct config`와 `pct exec`를 한 번씩 더 부릅니다. Config의 점검 항목을
    늘리면 이 상한도 다시 대조합니다.
 4. 검토한 `pickle-production-health.service/timer`를 새로 설치하고 문법 검사 뒤
    타이머를 활성화합니다. 기존 `pickle-health` unit을 재사용하거나 source hold를 풀지 않습니다.

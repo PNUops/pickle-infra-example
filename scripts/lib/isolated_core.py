@@ -415,6 +415,68 @@ exec /usr/sbin/ip link set dev eth0 mtu {mtu}
 '''
 
 
+GUEST_HOOK_PARENT = '/etc/network/if-pre-up.d'
+
+
+def require_guest_mtu(readback: str, mtu: int) -> int:
+    """Accept one `ip -j link show dev eth0` record carrying exactly `mtu`."""
+    try:
+        data = json.loads(readback)
+    except ValueError as error:
+        raise BootstrapError('Guest eth0 MTU readback did not match the configured MTU') from error
+    if (not isinstance(data, list) or len(data) != 1
+            or not isinstance(data[0], dict)
+            or data[0].get('ifname') != 'eth0'
+            or type(data[0].get('mtu')) is not int
+            or data[0].get('mtu') != mtu):
+        raise BootstrapError('Guest eth0 MTU readback did not match the configured MTU')
+    return mtu
+
+
+def install_guest_mtu(guest, put, hook_name: str, mtu: int) -> None:
+    """Persist, apply and read back the guest eth0 MTU.
+
+    PVE applies net0 mtu= only to the veth pair it creates. The guest's
+    interfaces file carries no mtu line, so ifupdown resets eth0 to 1500 on the
+    next networking start unless an if-pre-up hook applies it again. Every
+    creation path that sets net0 mtu= must call this.
+
+    guest(argv, label) runs one command in the owned guest and re-checks
+    ownership; put(path, content, mode) writes a new root-owned file and
+    refuses an existing path.
+    """
+    if not re.fullmatch(r'[a-z][a-z0-9-]{0,62}', hook_name):
+        raise BootstrapError('Invalid guest MTU hook name')
+    hook = render_guest_mtu_hook(mtu)
+    manager = guest(
+        ['sh', '-c', "if dpkg-query -W -f='${Status}' ifupdown2 2>/dev/null | grep -Fqx 'install ok installed'; then printf ifupdown2; elif dpkg-query -W -f='${Status}' ifupdown 2>/dev/null | grep -Fqx 'install ok installed'; then printf ifupdown; else printf unknown; fi"],
+        'guest network manager')
+    if manager == 'ifupdown2':
+        addon_support = guest(['cat', '/etc/network/ifupdown2/ifupdown2.conf'], 'ifupdown2 addon support')
+        if not ifupdown2_addon_scripts_enabled(addon_support):
+            raise BootstrapError('ifupdown2 addon script support is not explicitly enabled')
+    elif manager == 'ifupdown':
+        guest(['sh', '-c', 'command -v ifup >/dev/null 2>&1'], 'ifupdown hook support')
+    else:
+        raise BootstrapError('Guest network manager is unsupported or not installed')
+    parent_state = guest(
+        ['sh', '-c', "parent=/etc/network/if-pre-up.d; if [ -L \"$parent\" ]; then printf symlink; elif [ -e \"$parent\" ] && [ ! -d \"$parent\" ]; then printf non-directory; elif [ ! -e \"$parent\" ]; then printf missing; else stat -c '%u:%g %a' -- \"$parent\"; fi"],
+        'guest hook parent state').strip()
+    if parent_state == 'missing':
+        guest(['install', '-d', '-o', 'root', '-g', 'root', '-m', '0755', '--', GUEST_HOOK_PARENT],
+              'create guest hook parent')
+        parent_state = guest(['stat', '-c', '%u:%g %a', '--', GUEST_HOOK_PARENT],
+                             'guest hook parent readback').strip()
+    if parent_state in ('symlink', 'non-directory'):
+        raise BootstrapError('Guest hook parent is not a directory')
+    match = re.fullmatch(r'(\d+):(\d+) ([0-7]{3,4})', parent_state)
+    if not match or match.group(1) != '0' or match.group(2) != '0' or (int(match.group(3), 8) & 0o022):
+        raise BootstrapError('Guest hook parent ownership or permissions are unsafe')
+    put(f'{GUEST_HOOK_PARENT}/{hook_name}', hook, '0755')
+    guest(['/usr/sbin/ip', 'link', 'set', 'dev', 'eth0', 'mtu', str(mtu)], 'guest MTU apply')
+    require_guest_mtu(guest(['/usr/sbin/ip', '-j', 'link', 'show', 'dev', 'eth0'], 'guest MTU readback'), mtu)
+
+
 API_UNIT = """[Unit]
 Description=Isolated Pickle API
 After=network-online.target
@@ -500,58 +562,13 @@ class Bootstrap:
         if actual_hostname != hostname or description != 'isolated-core:' + self.run_id:
             raise BootstrapError('Container ownership changed; refusing further writes')
 
-    def ensure_guest_hook_parent(self, ctid: int, hostname: str) -> None:
-        self.owned(ctid, hostname)
-        manager = self.r.guest(
-            ctid,
-            ['sh', '-c', "if dpkg-query -W -f='${Status}' ifupdown2 2>/dev/null | grep -Fqx 'install ok installed'; then printf ifupdown2; elif dpkg-query -W -f='${Status}' ifupdown 2>/dev/null | grep -Fqx 'install ok installed'; then printf ifupdown; else printf unknown; fi"],
-            label='guest network manager')
-        if manager == 'ifupdown2':
-            addon_support = self.r.guest(
-                ctid, ['cat', '/etc/network/ifupdown2/ifupdown2.conf'], label='ifupdown2 addon support')
-            if not ifupdown2_addon_scripts_enabled(addon_support):
-                raise BootstrapError('ifupdown2 addon script support is not explicitly enabled')
-        elif manager == 'ifupdown':
-            self.r.guest(ctid, ['sh', '-c', 'command -v ifup >/dev/null 2>&1'],
-                         label='ifupdown hook support')
-        else:
-            raise BootstrapError('Guest network manager is unsupported or not installed')
-        parent_state = self.r.guest(
-            ctid,
-            ['sh', '-c', "parent=/etc/network/if-pre-up.d; if [ -L \"$parent\" ]; then printf symlink; elif [ -e \"$parent\" ] && [ ! -d \"$parent\" ]; then printf non-directory; elif [ ! -e \"$parent\" ]; then printf missing; else stat -c '%u:%g %a' -- \"$parent\"; fi"],
-            label='guest hook parent state').strip()
-        if parent_state == 'missing':
-            self.owned(ctid, hostname)
-            self.r.guest(
-                ctid, ['install', '-d', '-o', 'root', '-g', 'root', '-m', '0755', '--',
-                       '/etc/network/if-pre-up.d'], label='create guest hook parent')
-            parent_state = self.r.guest(
-                ctid, ['stat', '-c', '%u:%g %a', '--', '/etc/network/if-pre-up.d'],
-                label='guest hook parent readback').strip()
-        if parent_state in ('symlink', 'non-directory'):
-            raise BootstrapError('Guest hook parent is not a directory')
-        match = re.fullmatch(r'(\d+):(\d+) ([0-7]{3,4})', parent_state)
-        if not match or match.group(1) != '0' or match.group(2) != '0' or (int(match.group(3), 8) & 0o022):
-            raise BootstrapError('Guest hook parent ownership or permissions are unsafe')
-
     def ensure_guest_mtu(self, ctid: int, hostname: str) -> None:
-        c = self.c
-        self.ensure_guest_hook_parent(ctid, hostname)
-        self.put(ctid, '/etc/network/if-pre-up.d/isolated-core-mtu',
-                 render_guest_mtu_hook(c.mtu), '0755')
-        self.owned(ctid, hostname)
-        self.r.guest(ctid, ['/usr/sbin/ip', 'link', 'set', 'dev', 'eth0', 'mtu', str(c.mtu)],
-                      label='guest MTU apply')
-        self.owned(ctid, hostname)
-        readback = json.loads(self.r.guest(
-            ctid, ['/usr/sbin/ip', '-j', 'link', 'show', 'dev', 'eth0'],
-            label='guest MTU readback'))
-        if (not isinstance(readback, list) or len(readback) != 1
-                or not isinstance(readback[0], dict)
-                or readback[0].get('ifname') != 'eth0'
-                or type(readback[0].get('mtu')) is not int
-                or readback[0].get('mtu') != c.mtu):
-            raise BootstrapError('Guest eth0 MTU readback did not match the configured MTU')
+        def guest(argv: list[str], label: str) -> str:
+            self.owned(ctid, hostname)
+            return self.r.guest(ctid, argv, label=label)
+
+        install_guest_mtu(guest, lambda path, content, mode: self.put(ctid, path, content, mode),
+                          'isolated-core-mtu', self.c.mtu)
 
     def put(self, ctid: int, path: str, content: bytes | str, mode: str = '0644', owner: str = 'root:root') -> None:
         if isinstance(content, str):
