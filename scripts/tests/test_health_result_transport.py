@@ -30,7 +30,6 @@ def load(name, filename):
 reader = load('health_reader', 'health-result-reader.py')
 importer = load('health_importer', 'health-result-importer.py')
 collector = load('health_collector_for_import', 'service-health-monitor.py')
-public_probe = load('public_probe_for_receipt', 'public-service-health-probe.py')
 SECRET = 'fixture-original-body-private-value'
 
 
@@ -65,9 +64,9 @@ class ResultTests(unittest.TestCase):
         raw['server_enforced']['opaque_runtime_dump'] = SECRET
         raw['probe_enforced']['raw_key'] = SECRET
         safe = transport.sanitize_policy(raw, 1400)
-        public_probe.attest({'url': 'https://llm.example.com/v1/chat/completions',
-            'model': 'self-hosted-general', 'policy_attestation': '/fixed/receipt.json'},
-            SECRET, 1401, reader=lambda path: safe)
+        # The public canary no longer consumes this receipt; the projection is
+        # still the transport's contract for whatever carries it.
+        self.assertEqual(safe, transport.sanitize_policy(safe, 1400))
         self.assertEqual((safe['issued_at'], safe['expires_at']), (1400, 1580))
         self.assertNotIn(SECRET, json.dumps(safe))
 

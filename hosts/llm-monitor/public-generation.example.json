@@ -4,8 +4,7 @@
   "expected_hostname": "public-observer",
   "allowed_hosts": ["llm.example.com"],
   "url": "https://llm.example.com/v1/chat/completions",
-  "model": "self-hosted-general",
+  "model": "public-general",
   "canary_enabled": false,
-  "credential_file": "/run/credentials/pickle-public-generation.service/diagnostic-token",
-  "policy_attestation": "/etc/pickle-llm-health/public-generation-policy.json"
+  "credential_file": "/run/credentials/pickle-public-generation.service/diagnostic-token"
 }

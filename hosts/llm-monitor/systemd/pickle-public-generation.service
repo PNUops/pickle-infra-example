@@ -1,5 +1,5 @@
 [Unit]
-Description=Check dedicated non-student public self-hosted generation
+Description=Check public generation with the dedicated non-student diagnostic key
 After=network-online.target
 Wants=network-online.target
 

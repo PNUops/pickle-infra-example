@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""Offline public-service expectations, dedicated canary custody and DNS deadlines."""
-from copy import deepcopy
-import hashlib
+"""Offline public-service expectations, canary custody and DNS deadlines."""
 import importlib.util
 import io
 import json
@@ -37,18 +35,6 @@ def config(kind='public-http'):
     return value
 
 
-def policy(selected, token=SECRET):
-    return {'kind': 'selfhost-only-diagnostic-identity-v1', 'valid': True, 'issued_at': 9900, 'expires_at': 10080,
-        'gateway_origin': 'https://api.example.com', 'model': selected['model'],
-        'key_sha256': hashlib.sha256(token.encode()).hexdigest(), 'server_policy_sha256': 'a' * 64,
-        'student_account': False,
-        'server_enforced': {'operations': ['chat'], 'maximum_paid_credits': 0,
-            'maximum_daily_tokens': 64000, 'requests_per_minute': 1, 'maximum_concurrency': 1,
-            'expires_at': 20000, 'effective_models': [selected['model']], 'fallback': None,
-            'route': 'SELF_HOSTED'},
-        'probe_enforced': dict(probe.PROBE_LIMITS)}
-
-
 class PublicTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -61,9 +47,7 @@ class PublicTests(unittest.TestCase):
         token = self.root / 'token'
         token.write_text(SECRET)
         token.chmod(0o600)
-        receipt = self.root / 'policy.json'
-        common.atomic_json(receipt, policy(selected))
-        selected.update(canary_enabled=True, credential_file=str(token), policy_attestation=str(receipt))
+        selected.update(canary_enabled=True, credential_file=str(token))
         return selected
 
     def test_spa_html_cannot_pass_as_api_and_json_shape_is_exact(self):
@@ -102,48 +86,35 @@ class PublicTests(unittest.TestCase):
         self.assertEqual(result['reason'], 'PUBLIC_CANARY_DISABLED')
         self.assertFalse((self.root / 'state' / 'result.json').exists())
 
-    def test_attestation_binds_key_model_origin_expiry_and_server_policy(self):
+    def test_canary_no_longer_reads_or_accepts_a_policy_receipt(self):
+        # The canary runs whatever upstream the model is routed to (paid
+        # included), so a receipt naming the self-hosted route must not gate it,
+        # and a config that still names one is refused rather than ignored.
         selected = self.prepared_canary()
-        original = policy(selected)
-        mutations = [('key_sha256', 'b' * 64), ('model', 'another-model'),
-            ('gateway_origin', 'https://other.example.com'), ('expires_at', 9000),
-            ('expires_at', 100081), ('valid', False), ('student_account', True),
-            ('server_enforced.operations', ['chat', 'images']), ('server_enforced.fallback', 'paid-provider'),
-            ('server_enforced.maximum_paid_credits', 1), ('server_enforced.maximum_daily_tokens', 999999),
-            ('server_enforced.requests_per_minute', 2), ('server_enforced.maximum_concurrency', 2),
-            ('server_enforced.effective_models', ['another-model']), ('server_enforced.route', 'EXTERNAL'),
-            ('server_enforced.expires_at', 9000), ('probe_enforced.maximum_output_tokens', 100),
-            ('probe_enforced.maximum_daily_requests', 999), ('server_policy_sha256', '')]
-        for key, value in mutations:
-            mutated = deepcopy(original)
-            if '.' in key:
-                parent, child = key.split('.')
-                mutated[parent][child] = value
-            else:
-                mutated[key] = value
-            with self.subTest(key=key), self.assertRaises(common.HealthError):
-                probe.attest(selected, SECRET, 10000, reader=lambda path: mutated)
-        probe.attest(selected, SECRET, 10000, reader=lambda path: original)
-
-    def test_output_and_request_caps_are_not_falsely_attested_as_server_enforced(self):
-        selected = self.prepared_canary()
-        value = policy(selected)
-        value['server_enforced']['maximum_output_tokens'] = 8
-        value['server_enforced']['maximum_daily_requests'] = 312
-        with self.assertRaises(common.HealthError):
-            probe.attest(selected, SECRET, 10000, reader=lambda path: value)
-        value = policy(selected)
-        self.assertNotIn('maximum_output_tokens', value['server_enforced'])
-        self.assertEqual(value['probe_enforced']['maximum_daily_requests'], 312)
-
-    def test_invalid_receipt_immediately_publishes_observer_error_without_submission(self):
-        selected = self.prepared_canary()
-        common.atomic_json(Path(selected['policy_attestation']), {'valid': False, 'reason': 'QUOTA_EXHAUSTED'})
         directory = self.root / 'state'
-        result = probe.probe(selected, directory, now=10000, requester=lambda *args: self.fail())
-        self.assertEqual((result['status'], result['reason']), ('OBSERVER_ERROR', 'POLICY_OBSERVATION_UNAVAILABLE'))
-        self.assertEqual(common.read_json(directory / 'result.json')['observed_at'], 10000)
-        self.assertNotIn('submissions', common.read_json(directory / 'budget.json'))
+        sent = []
+        result = probe.probe(selected, directory, now=10000,
+                             requester=lambda config, token: sent.append(token) or {'status': 'HEALTHY'})
+        self.assertEqual((result['status'], sent), ('HEALTHY', [SECRET]))
+        self.assertEqual(common.read_json(directory / 'budget.json')['submissions'], 1)
+        selected['policy_attestation'] = str(self.root / 'policy.json')
+        with self.assertRaises(common.HealthError):
+            probe.validate(selected)
+
+    def test_reasoning_budget_exhaustion_is_not_an_answer(self):
+        selected = config('public-generation')
+        def body(content, finish, completion):
+            return json.dumps({'choices': [{'message': {'content': content}, 'finish_reason': finish}],
+                               'usage': {'prompt_tokens': 19, 'completion_tokens': completion}}).encode()
+        cases = [(body(None, 'length', 16), 'FAILED'),          # measured at an 8-token cap
+                 (body('4', 'stop', 17), 'HEALTHY'),           # measured at a 64-token cap
+                 (body('4', 'stop', probe.MAXIMUM_OUTPUT_TOKENS), 'HEALTHY'),
+                 (body('4', 'stop', probe.MAXIMUM_OUTPUT_TOKENS + 1), 'FAILED'),
+                 (body('4', 'length', 128), 'FAILED')]
+        for document, status in cases:
+            with self.subTest(document=document):
+                self.assertEqual(probe.inspect_response(selected, 200, 'application/json', document)['status'],
+                                 status)
 
     def test_canary_submission_is_reserved_before_failure_and_restart(self):
         selected = self.prepared_canary()
@@ -244,10 +215,10 @@ class PublicTests(unittest.TestCase):
         self.assertEqual(expiring['reason'], 'TLS_CERTIFICATE_EXPIRING')
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0][:2], ('POST', '/v1/chat/completions'))
-        self.assertEqual(requests[0][2]['max_completion_tokens'], 8)
+        self.assertEqual(requests[0][2]['max_completion_tokens'], 128)
         self.assertEqual(requests[0][2], {'model': 'self-hosted-general',
             'messages': [{'role': 'user', 'content': 'What is 2+2? Reply with the digit only.'}],
-            'temperature': 0, 'top_p': 1, 'max_completion_tokens': 8, 'stream': False})
+            'temperature': 0, 'top_p': 1, 'max_completion_tokens': 128, 'stream': False})
         self.assertNotIn(SECRET, json.dumps(result))
 
     def test_dns_lookup_failure_is_observer_error_with_target_and_phase(self):
