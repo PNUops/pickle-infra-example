@@ -258,6 +258,13 @@ Cloud DNS 서비스 계정 키만 있으면 되고 DNAT 가 살아 있을 필요
 그 사실을 말해 주지 않는다.** 두 번째를 건너뛰면 journald와 로그 증가에 상한이 없다. 둘 다
 컨테이너가 생긴 뒤에 돌리고, 보존 스크립트는 컨테이너를 재구축할 때마다 다시 돌린다.
 
+두 스크립트 모두 대상 인자를 받는다. 인자 없이 돌리면 pve-node 의 개발 환경이다(TLS 는 LXC 100·101,
+로그 보존은 pve-node 과 LXC 100~103).
+운영 host 에서는 `apply-tls-ciphers.sh production` 과 `apply-log-retention.sh production` 을,
+그 밖의 플랫폼 host(대기 노드 등)에서는 `apply-log-retention.sh host` 를 돌린다. 2026-10-24
+전에는 대상이 pve-node 번호로 고정되어 있어서 이후에 만든 host 와 운영 컨테이너는 어느 쪽 정책도
+받지 못했다. 절차는 [production-ops.md](production-ops.md) 의 "TLS 암호군과 로그 보존" 절이다.
+
 ### 12. 데이터베이스 부트스트랩
 
 [db-restore.md](db-restore.md)의 백지 부트스트랩 절을 **거기 적힌 번호 순서대로** 따른다.

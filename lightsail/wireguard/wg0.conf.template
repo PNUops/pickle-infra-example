@@ -6,16 +6,28 @@
 Address = 100.64.0.1/30
 PrivateKey = <relay-wg-private-key>   # wg genkey
 ListenPort = 51820
+# Pinned, not derived. Without this line wg-quick takes the default-route
+# interface MTU minus 80, and Lightsail's ens5 is 9001, so the tunnel came up at
+# 8921 while the campus peer runs 1420. Nothing broke outright (oversized inner
+# packets rode fragmented outer UDP), but the nftables client-SYN clamp
+# (`maxseg size set rt mtu`) then clamped to 8881, which is no clamp at all.
+# To change it on a live relay use `ip link set dev wg0 mtu 1420`, which keeps
+# every flow; a wg-quick restart would drop them.
+MTU = 1420
 
 [Peer]
 # campus sshgw LXC — its public key is printed by infra create-sshgw-lxc.sh
 PublicKey = <sshgw-wg-public-key>
 # 100.64.0.2/32 = the tunnel peer itself. 198.19.0.0/16 + 198.18.1.20/32
-# (added 2026-07-28, port-forwarding): DNAT targets on the guest net + the api
-# sync endpoint. Cryptokey routing: any inner source outside this list is
-# dropped, which is why DNAT'd traffic is masqueraded to 100.64.0.1 first.
+# (added 2026-07-28, port-forwarding): DNAT targets on the development guest
+# net + the development api sync endpoint. 100.66.0.0/16 + 100.65.1.20/32: the
+# same pair for the production environment (production guest net and production
+# api), which the live relay carries and this template did not until 2026-10-24;
+# a relay rebuilt from the older list silently stopped forwarding to production
+# VMs. Cryptokey routing: any inner source outside this list is dropped, which
+# is why DNAT'd traffic is masqueraded to 100.64.0.1 first.
 # NOTE when editing live: `wg set`/`wg syncconf` REPLACES the peer list —
 # always give the FULL list in one atomic call (dropping 100.64.0.2/32 cuts
-# the tunnel data path instantly), then `ip route replace` the two routes
-# (syncconf installs no routes; only wg-quick up does).
-AllowedIPs = 100.64.0.2/32, 198.19.0.0/16, 198.18.1.20/32
+# the tunnel data path instantly), then `ip route replace` the four non-/30
+# routes (syncconf installs no routes; only wg-quick up does).
+AllowedIPs = 100.64.0.2/32, 198.19.0.0/16, 198.18.1.20/32, 100.66.0.0/16, 100.65.1.20/32
