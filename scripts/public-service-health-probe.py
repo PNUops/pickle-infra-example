@@ -37,7 +37,8 @@ RFC1918_NETWORKS = tuple(ipaddress.IPv4Network(value) for value in (
 # paid route, 8 tokens ended in finish_reason=length with no content, while 64
 # and 256 both answered in 17 to 20 completion tokens. Worst case at that
 # route's price is 312 * (19 input + 128 output) tokens, about two US cents a
-# day; the key's own daily token cap stays the server-side bound.
+# day; the key's own daily token cap stays the server-side bound while the
+# model row is on the TOKEN axis (the quota does not apply to CREDIT models).
 MAXIMUM_OUTPUT_TOKENS = 128
 MAXIMUM_DAILY_REQUESTS = 312
 MINIMUM_INTERVAL_SECONDS = 300

@@ -52,13 +52,19 @@ OBSERVER_ERROR입니다. 별도 HTTP source가 이미 장애여도 새 TLS 보�
 걸지 말자.」). 2026-10-24 이전에는 아래 policy receipt 가 「자체 서빙 route·유료 0」을
 증명해야만 호출했고, 학생 모델이 유료 route 로 바뀌자 canary 가 통째로 멈췄습니다.
 그 receipt 는 더 이상 canary 의 조건이 아니며, 설정에 `policy_attestation` 이 남아 있으면
-probe 가 설정 오류로 거부합니다. 클라이언트 header 나 설정으로 학생 무과금이나 서버 라우팅이
+probe 가 설정 오류로 거부합니다. 이때 보이는 증상은 journal 의
+`PUBLIC_CONFIGURATION_OR_STATE_INVALID` 와 exit 2 뿐이고(내부 사유 `PUBLIC_CANARY_INVALID` 는
+출력되지 않습니다) `result.json` 이 다시 쓰이지 않으므로, collector 는 신선도 720초가 지난
+뒤 그 source 를 stale(UNKNOWN)로 봅니다. 클라이언트 header 나 설정으로 학생 무과금이나 서버 라우팅이
 보장되지 않으며 이 도구는 서버 정책을 만들거나 바꾸지 않고 학생 키를 대용하지 않습니다.
 
 기본 `canary_enabled=false`에서는 credential도 읽지 않고 생성 요청도 보내지 않습니다.
 켜기 전에 전용 키의 실제 인증/Chat 인가, 학생 차감 0, 진단 통계/사용량 적재를 확인합니다.
 
-비용의 상한은 두 겹입니다. probe 쪽은 최소 간격 300초, UTC 하루 312시도(실패·중단 포함,
+비용의 상한은 두 겹입니다. 아래 서버 쪽 경계는 모델 행이 TOKEN 축에 있는 동안의
+이야기입니다. 일 토큰 quota 는 TOKEN 축 모델에만 걸리고, upstream 을 외부 API 로 바꿔도 축은
+움직이지 않습니다. 모델을 CREDIT 축으로 옮기면 진단 key 에 credential 이 필요해지고 64k 는 더
+이상 경계가 아니므로 이 절을 다시 검토합니다. probe 쪽은 최소 간격 300초, UTC 하루 312시도(실패·중단 포함,
 전송 전에 durable 저장), 요청당 `max_completion_tokens` 128, 전체 20초입니다. 서버 쪽은
 진단 key 자체의 한도(Chat 전용, rpm 1, 동시 1, 일 64k 토큰)입니다. 2026-10-24 실측(유료
 추론 모델 route): 입력 19토큰, 출력 17~20토큰(그중 추론 10~13), 요청당 약 $0.00001,
@@ -79,8 +85,10 @@ CREDENTIAL_REJECTED observer 오류이며 생성 다운으로 표현하지 않�
 조회의 401도 실제 생성 정상의 증거가 아닙니다.
 
 결과는 reader 를 거쳐 collector 로 갑니다. 전송 형식의 `completion_tokens` 상한은 128 입니다.
-이 상한이 8 이던 전송 코드는 128 토큰 결과를 받으면 **그 bundle 전체를** 형식 오류로
-버립니다. 그래서 배포 순서는 전송 라이브러리(`lib/health_result_transport.py`, observer 와
+이 상한이 8 이던 전송 코드는 128 토큰까지의 결과를 받으면 거부합니다. observer 쪽 reader 는
+source 마다 따로 처리하므로 `public-generation` 하나만 `REMOTE_RESULT_UNAVAILABLE` 로 떨어지지만,
+collector 쪽 importer 는 **그 bundle 전체를** 형식 오류로 버려 AWS observer 의 모든 source 가
+함께 사라집니다. 그래서 배포 순서는 전송 라이브러리(`lib/health_result_transport.py`, observer 와
 collector 양쪽) 먼저, probe 와 설정이 그다음입니다.
 
 ## 고정 policy receipt 전달
@@ -101,7 +109,7 @@ reader의 `gateway-host` 역할은 `/var/lib/pickle-public-policy/attestation.js
 `/var/lib/pickle-health-import-collector/policy-attestation.json`에 게시합니다. 이 마지막
 경로는 2026-10-24 전까지 공개 probe 설정의 `policy_attestation`으로 지정하던 자리입니다.
 **지금의 canary 설정에는 `policy_attestation`을 지정하지 않습니다.** 지정하면 probe 가
-`PUBLIC_CANARY_INVALID` 설정 오류로 거부합니다. 각 호스트명·IP·key·pin은 실제 검증값으로
+설정 오류(journal 의 `PUBLIC_CONFIGURATION_OR_STATE_INVALID`, exit 2)로 거부합니다. 각 호스트명·IP·key·pin은 실제 검증값으로
 대체하며 공개 예시를 그대로 활성화하지 않습니다.
 
 importer는 key와 SSH 검증 전에 기존 허가를 원자적으로 `valid=false`로 바꿉니다. bundle의
