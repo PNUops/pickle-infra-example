@@ -106,7 +106,7 @@ LLMGW_JOURNAL_CAP="${LLMGW_JOURNAL_CAP:-200M}"
 # of a PrivateTmp monitoring unit. 500M keeps about a month at that rate and
 # about a year once that noise is gone; the 7.8G root has 6.6G free.
 if [ "$TARGET" = production ]; then
-  LLMGW_JOURNAL_CAP="${PRODUCTION_LLMGW_JOURNAL_CAP:-500M}"
+  LLMGW_JOURNAL_CAP="${PICKLE_PRODUCTION_LLMGW_JOURNAL_CAP:-500M}"
 fi
 # Production adds the database container, which development keeps inside the
 # app container. Measured 2026-10-24: 70.6M in 35 days on a 63G root, so 500M
@@ -244,10 +244,23 @@ trap 'rm -rf "$TMP"' EXIT
 
 # check_cap <cap> [ctid] — read-only; exits before anything is written when a
 # cap would delete existing entries. Every target is checked before the first
-# write, so a refusal never leaves a run half applied.
+# write, so a refusal never leaves a run half applied. A target whose drop-in
+# already reads exactly as it would be written is skipped: nothing restarts
+# there, and once journald has filled a cap its usage sits right at it, so the
+# size comparison would refuse every later re-run for no reason.
 check_cap() {
-  local cap="$1" ctid="${2:-}" used limit label="[host]"
+  local cap="$1" ctid="${2:-}" used limit want have label="[host]"
   [ -z "$ctid" ] || label="[ct $ctid]"
+  want=$(journald_dropin "$cap" | sha256sum | cut -d' ' -f1)
+  if [ -n "$ctid" ]; then
+    have=$(pct exec "$ctid" -- sha256sum "$JOURNAL_DROPIN" 2>/dev/null | cut -d' ' -f1 || true)
+  else
+    have=$(sha256sum "$JOURNAL_DROPIN" 2>/dev/null | cut -d' ' -f1 || true)
+  fi
+  if [ "$want" = "$have" ]; then
+    echo "  $label cap $cap already in place"
+    return 0
+  fi
   if ! used=$(journal_usage_bytes "$ctid"); then
     echo "  $label cannot read journal usage; refusing to set a cap blind" >&2
     exit 1

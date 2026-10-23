@@ -141,7 +141,8 @@ bash <release>/scripts/apply-log-retention.sh host
 각 대상에 journald drop-in `/etc/systemd/journald.conf.d/pickle.conf` 를 쓰고, 바뀐 곳만
 `systemd-journald` 를 재시작합니다. 서비스의 stdout 스트림은 journald fdstore 로 유지됩니다.
 값은 스크립트 머리말이 정본입니다. 상한을 현재 사용량보다 낮게 잡으면 재시작 즉시 오래된
-journal 이 지워지므로, 스크립트는 그런 대상이 하나라도 있으면 쓰기 전에 멈춥니다(정말 줄이려면
+journal 이 지워지므로, 스크립트는 drop-in 이 바뀌는 대상 중 그런 것이 하나라도 있으면 쓰기 전에
+멈춥니다(이미 같은 값인 대상은 건너뜁니다. 정말 줄이려면
 `ALLOW_SHRINK=1`). 대상마다 상한과 현재 사용량을 출력하고, `--dry-run` 은 인자 순서와
 상관없이 받습니다. 적용 전 `journalctl --disk-usage` 와 가장 오래된 항목 시각을 대상마다
 기록합니다.
