@@ -106,3 +106,44 @@ proxy 백업에 포함됐는지 연결해서 기록합니다.
 문제가 생기면 target wildcard 갱신을 중단하고 보존한 static pair를 다시 선택합니다.
 소유를 source로 돌릴지는 대상 갱신/DB 효과를 확인한 뒤 결정합니다. source DB writer를
 자동 재개하는 절차는 아닙니다.
+
+## TLS 암호군과 로그 보존
+
+운영 host 에서 root 로 수행합니다. 두 스크립트는 정기 상태 점검과 같은 versioned root
+디렉터리에 `lib/ct.sh` 와 함께 두고 실행합니다. 백업은 `PICKLE_ROOT/backup/` 아래에 남으므로
+`PICKLE_ROOT=/srv/pickle` 을 지정합니다.
+
+**TLS 암호군.** 공개 플랫폼 이름(`pickle.pusan.ac.kr`, `llm.pcl.kr`, 발행된 사용자 도메인)의
+브라우저 TLS 는 운영 proxy 컨테이너가 종단합니다. pve-node LXC 100 은 SNI 로 불투명하게 넘길 뿐
+handshake 를 보지 않으므로 그쪽 `pickle-tls.conf` 는 이 이름들을 덮지 않습니다.
+
+```sh
+PICKLE_ROOT=/srv/pickle bash <release>/scripts/apply-tls-ciphers.sh production
+```
+
+스크립트가 `/etc/nginx` 를 백업하고 `conf.d/pickle-tls.conf`(http{} 전역)를 넣은 뒤
+`nginx -t` 와 reload 를 합니다. 전후로 두 공개 이름의 응답 코드를 확인하고, TLS 1.2 협상
+suite 가 허용 목록 안인지와 **CBC 만 제시한 TLS 1.2 handshake 가 실패하는지**를 확인합니다.
+reload 는 기존 연결을 끊지 않습니다. 실패하면 출력된 백업을 풀거나 그 파일을 지우고
+reload 합니다. 적용 전 기준선은 실제로 쓰이는 suite 입니다. 접속 로그에는 suite 가 없으므로
+proxy 컨테이너 network namespace 의 loopback `:8443` 에서 서버 쪽 ServerHello 만
+캡처해(`tcp src port 8443`, handshake record) 버전과 suite 를 셉니다.
+
+**로그 보존.**
+
+```sh
+bash <release>/scripts/apply-log-retention.sh --dry-run production   # 무엇을 쓸지 먼저 본다
+bash <release>/scripts/apply-log-retention.sh production
+# 대기 노드
+bash <release>/scripts/apply-log-retention.sh host
+```
+
+각 대상에 journald drop-in `/etc/systemd/journald.conf.d/pickle.conf` 를 쓰고, 바뀐 곳만
+`systemd-journald` 를 재시작합니다. 서비스의 stdout 스트림은 journald fdstore 로 유지됩니다.
+값은 스크립트 머리말이 정본입니다. 상한을 현재 사용량보다 낮게 잡으면 재시작 즉시 오래된
+journal 이 지워지므로, 스크립트는 drop-in 이 바뀌는 대상 중 그런 것이 하나라도 있으면 쓰기 전에
+멈춥니다(이미 같은 값인 대상은 건너뜁니다. 정말 줄이려면
+`ALLOW_SHRINK=1`). 대상마다 상한과 현재 사용량을 출력하고, `--dry-run` 은 인자 순서와
+상관없이 받습니다. 적용 전 `journalctl --disk-usage` 와 가장 오래된 항목 시각을 대상마다
+기록합니다.
+
