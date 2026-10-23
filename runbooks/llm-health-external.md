@@ -98,8 +98,10 @@ reader의 `gateway-host` 역할은 `/var/lib/pickle-public-policy/attestation.js
 `import-gateway-policy.example.json`을 collector 호스트의 `import-gateway.json`으로
 선택하면 receipt는 `/var/lib/pickle-health-import-gateway/policy-attestation.json`에 게시됩니다.
 다음 `collector-host` reader가 같은 파일을 전달하고, 외부 호스트의 `import-collector.json`은
-`/var/lib/pickle-health-import-collector/policy-attestation.json`에 게시합니다. 공개 probe의
-`policy_attestation`을 마지막 경로로 지정합니다. 각 호스트명·IP·key·pin은 실제 검증값으로
+`/var/lib/pickle-health-import-collector/policy-attestation.json`에 게시합니다. 이 마지막
+경로는 2026-10-24 전까지 공개 probe 설정의 `policy_attestation`으로 지정하던 자리입니다.
+**지금의 canary 설정에는 `policy_attestation`을 지정하지 않습니다.** 지정하면 probe 가
+`PUBLIC_CANARY_INVALID` 설정 오류로 거부합니다. 각 호스트명·IP·key·pin은 실제 검증값으로
 대체하며 공개 예시를 그대로 활성화하지 않습니다.
 
 importer는 key와 SSH 검증 전에 기존 허가를 원자적으로 `valid=false`로 바꿉니다. bundle의
