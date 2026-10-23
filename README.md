@@ -380,6 +380,20 @@ scripts/verify.sh        # shellcheck, 설정 초기화, core, DB 백업, SDN, q
 `PICKLE_TEST_POSTGRES_IMAGE`에 지정하고 `python3 -B scripts/tests/test_node_registration.py`로
 실행합니다. 이 시험은 네트워크가 차단된 임시 컨테이너를 만들고 종료 후 정리합니다.
 
+오프라인 추론 metric 파서 `scripts/lib/inference_metrics.py`는 Prometheus 텍스트와 관측 시각,
+source와 boot, process, configuration identity를 입력으로 받습니다. 모델과 엔진을 구분한 누적
+counter와 histogram을 보존하고 실제 관측 간격으로 차분합니다. 미관측·미지원·수집 실패는
+0과 구분하며 identity 변경이나 긴 공백은 새 baseline으로 처리합니다. snapshot 파싱의
+입력과 출력은 각각 512 KiB, 모델·엔진 그룹은 32개, 선택 sample은 2,048개,
+histogram 경계는 128개로 제한합니다.
+이는 파서의 기술 제한이며 장비 용량이나 수집·보관 정책을 뜻하지 않습니다. 합성 입력을
+검증하는 순수 모듈로 네트워크 수집, 저장 또는 호스트 설치를 실행하지 않습니다.
+`verify.sh`에 포함된 회귀는 아래 명령으로 따로 실행할 수 있습니다.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_inference_metrics.py
+```
+
 설정 초기화 테스트는 Python 3와 jq를 사용합니다. 호스트에 연결하지 않고 로컬 SQL
 픽스처로 스크립트를 두 번 실행해 기존 설정값과 수정 시각이 유지되는지 검사합니다.
 PostgreSQL의 타입 검사와 실제 컨테이너 연결은 이 테스트의 범위에 포함하지 않습니다.
