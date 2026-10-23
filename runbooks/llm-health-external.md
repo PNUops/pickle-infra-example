@@ -86,9 +86,11 @@ CREDENTIAL_REJECTED observer 오류이며 생성 다운으로 표현하지 않�
 
 결과는 reader 를 거쳐 collector 로 갑니다. 전송 형식의 `completion_tokens` 상한은 128 입니다.
 이 상한이 8 이던 전송 코드는 128 토큰까지의 결과를 받으면 거부합니다. observer 쪽 reader 는
-source 마다 따로 처리하므로 `public-generation` 하나만 `REMOTE_RESULT_UNAVAILABLE` 로 떨어지지만,
-collector 쪽 importer 는 **그 bundle 전체를** 형식 오류로 버려 AWS observer 의 모든 source 가
-함께 사라집니다. 그래서 배포 순서는 전송 라이브러리(`lib/health_result_transport.py`, observer 와
+source 마다 따로 처리하므로 `public-generation` 하나만 `REMOTE_RESULT_UNAVAILABLE` 로 떨어집니다.
+collector 쪽 importer 는 8 을 넘는 새 결과가 든 **bundle 의 갱신 전체를** 거부합니다. 기존 report
+파일은 보존되고 importer 자신의 결과에 `RESULT_IMPORT_UNAVAILABLE` 이 남으며, 그 뒤로는 원본
+시각 기준의 stale 판정과 parent 정책이 작동해 AWS observer 의 source 들이 함께 신선도를
+잃습니다. 그래서 배포 순서는 전송 라이브러리(`lib/health_result_transport.py`, observer 와
 collector 양쪽) 먼저, probe 와 설정이 그다음입니다.
 
 ## 고정 policy receipt 전달
