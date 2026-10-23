@@ -44,72 +44,60 @@ OBSERVER_ERROR입니다. 별도 HTTP source가 이미 장애여도 새 TLS 보�
 `systemd-analyze verify`를 확인하고 통지 off collector에 먼저 연결합니다. 각 결과는
 `/var/lib/pickle-public-<instance>/result.json`에 root 0600으로 남습니다.
 
-## 공개 실제 생성은 기본 차단
+## 공개 실제 생성 canary
 
-`public-generation`은 전용 비학생 진단 identity가 서버에서 준비되고 자체 서빙 모델만
-허용되며 외부 fallback·유료 모델을 서버 정책이 차단하는지 확인한 뒤에만 켭니다. 클라이언트
-header나 설정에 `synthetic`을 쓰는 것으로 학생 무과금이나 서버 라우팅이 보장되지 않습니다.
-이 도구는 서버 정책을 생성하거나 변경하지 않으며 학생 키를 대용하지 않습니다.
+`public-generation`은 전용 비학생 진단 key 로 공개 gateway 에 실제 Chat 요청을 보내 고정
+정답을 확인합니다. 모델이 어느 upstream 으로 route 되든 호출합니다. 자체 서빙이든 유료
+외부 API 든 같습니다(운영자 결정 2026-10-23: 「luna일 때도 호출해도 됨. 자체 서빙 제약 조건
+걸지 말자.」). 2026-10-24 이전에는 아래 policy receipt 가 「자체 서빙 route·유료 0」을
+증명해야만 호출했고, 학생 모델이 유료 route 로 바뀌자 canary 가 통째로 멈췄습니다.
+그 receipt 는 더 이상 canary 의 조건이 아니며, 설정에 `policy_attestation` 이 남아 있으면
+probe 가 설정 오류로 거부합니다. 이때 보이는 증상은 journal 의
+`PUBLIC_CONFIGURATION_OR_STATE_INVALID` 와 exit 2 뿐이고(내부 사유 `PUBLIC_CANARY_INVALID` 는
+출력되지 않습니다) `result.json` 이 다시 쓰이지 않으므로, collector 는 신선도 720초가 지난
+뒤 그 source 를 stale(UNKNOWN)로 봅니다. 클라이언트 header 나 설정으로 학생 무과금이나 서버 라우팅이
+보장되지 않으며 이 도구는 서버 정책을 만들거나 바꾸지 않고 학생 키를 대용하지 않습니다.
 
 기본 `canary_enabled=false`에서는 credential도 읽지 않고 생성 요청도 보내지 않습니다.
-전용 키를 발급한 뒤 별도 운영 검증에서 실제 인증/Chat 인가와 자체 서빙 라우팅, 외부 모델
-금지, 학생 차감 0, 진단 통계/사용량 적재를 확인해야 합니다. 이를 아직 검증하지 못했다면
-timer는 계속 disabled로 두고 collector에도 공개 생성 source를 넣지 않습니다.
+켜기 전에 전용 키의 실제 인증/Chat 인가, 학생 차감 0, 진단 통계/사용량 적재를 확인합니다.
 
-키와 검증된 정책의 SHA256, 공개 origin, 고정 모델 alias, 발행/만료 epoch를 root 0600의
-`public-generation-policy.json`에 다음 구조로 보관합니다. 이 attestation은 실제 서버 검증의
-증빙이며 서버 보안 경계의 대체물이 아닙니다. 60초 갱신과 최대 유효기간 180초를 사용하고
-조회 실패/불일치/진단 quota 소진은 `valid=false`로 즉시 차단합니다. 아래의 고정 receipt
-전송 경로도 실제 배치와 신선도 검증을 마쳐야 사용할 수 있습니다. 정책/모델
-라우팅 변경이나 키 회수 시 즉시 timer를 끄고 증빙을 폐기하거나 재검증합니다. 만료된
-증빙을 자동으로 연장하는 작업은 제공하지 않습니다.
+비용의 상한은 두 겹입니다. 아래 서버 쪽 경계는 모델 행이 TOKEN 축에 있는 동안의
+이야기입니다. 일 토큰 quota 는 TOKEN 축 모델에만 걸리고, upstream 을 외부 API 로 바꿔도 축은
+움직이지 않습니다. 모델을 CREDIT 축으로 옮기면 진단 key 에 credential 이 필요해지고 64k 는 더
+이상 경계가 아니므로 이 절을 다시 검토합니다. probe 쪽은 최소 간격 300초, UTC 하루 312시도(실패·중단 포함,
+전송 전에 durable 저장), 요청당 `max_completion_tokens` 128, 전체 20초입니다. 서버 쪽은
+진단 key 자체의 한도(Chat 전용, rpm 1, 동시 1, 일 64k 토큰)입니다. 2026-10-24 실측(유료
+추론 모델 route): 입력 19토큰, 출력 17~20토큰(그중 추론 10~13), 요청당 약 $0.00001,
+지연 약 2초. 5분 간격 288회면 하루 약 $0.003 이고 128토큰을 매번 다 써도 하루 약 $0.02
+입니다. 하루 토큰은 약 11k 로 key 한도 64k 안입니다.
 
-```json
-{
-  "kind": "selfhost-only-diagnostic-identity-v1",
-  "valid": true,
-  "gateway_origin": "https://llm.example.com",
-  "model": "self-hosted-general",
-  "key_sha256": "<64 lowercase hex characters>",
-  "server_policy_sha256": "<64 lowercase hex characters>",
-  "issued_at": 0,
-  "expires_at": 0,
-  "student_account": false,
-  "server_enforced": {
-    "operations": ["chat"],
-    "maximum_paid_credits": 0,
-    "maximum_daily_tokens": 64000,
-    "requests_per_minute": 1,
-    "maximum_concurrency": 1,
-    "expires_at": 0,
-    "effective_models": ["self-hosted-general"],
-    "fallback": null,
-    "route": "SELF_HOSTED"
-  },
-  "probe_enforced": {
-    "maximum_output_tokens": 8,
-    "maximum_daily_requests": 312,
-    "minimum_interval_seconds": 300,
-    "total_timeout_seconds": 20
-  }
-}
-```
+출력 상한 8 은 추론 모델에서 쓸 수 없습니다. 같은 실측에서 8토큰은 추론에 다 쓰여
+`finish_reason=length`, content 없음으로 끝났습니다. 판정은 정답 `4`, `finish_reason=stop`,
+`0 < completion_tokens <= 128` 입니다. completion 에는 추론 토큰이 포함되므로 직접 DGX
+probe 의 8 과 다른 상한을 씁니다. 공개 요청의 `reasoning_effort` 는 gateway 가
+`unsupported_parameter` 로 거부하므로 보내지 않습니다. 자체 서빙 upstream 의 thinking 기본값이
+켜지면 128 을 넘을 수 있으니, 그 기본값을 바꿀 때 이 상한을 함께 다시 잽니다.
 
 토큰은 `/etc/pickle-llm-health/diagnostic-token`의 root 0600 파일에서 systemd credential로
 넘깁니다. 공개 생성 wire에는 model/messages/temperature/top_p/max_completion_tokens/stream의
-허용된 6개 필드만 사용합니다. thinking off는 실행 중 vLLM의 검증된 기본값이며 공개 요청의
-`chat_template_kwargs`로 지정하지 않습니다. 직접 DGX probe의 해당 필드와 구분합니다.
-생성은 고정 정답 질문, 최대 출력 8토큰, 전체 20초입니다. 전송 전에
-UTC 일별 횟수를 durable 저장하며 최소 간격 300초, 하루 312시도입니다. 실패/중단도 횟수에
-포함합니다. 서버의 별도 64k 토큰 상한을 이 로컬 시도 수로 대체하지 않습니다.
-출력 8토큰과 312회는 probe의 요청·durable counter 제한입니다. 이 둘이 서버에서도
-집행된다고 attest하지 않습니다. 서버 검증은 Chat·유료 credit 0·64k/day·rpm1·동시1과
-실제 만료, 단일 유효 catalog 모델 및 자체 서빙 route/fallback null을 따로 확인합니다.
-서버 키의 만료는 attestation 유효기간 전체를 덮어야 합니다. 공개 생성 401/403은 전용
-credential/정책 문제인 CREDENTIAL_REJECTED observer 오류이며 DGX 생성 다운으로
-표현하지 않습니다. 인증 없는 models 조회의 401도 실제 생성 정상의 증거가 아닙니다.
+허용된 6개 필드만 사용합니다. 공개 생성 401/403은 전용 credential/정책 문제인
+CREDENTIAL_REJECTED observer 오류이며 생성 다운으로 표현하지 않습니다. 인증 없는 models
+조회의 401도 실제 생성 정상의 증거가 아닙니다.
+
+결과는 reader 를 거쳐 collector 로 갑니다. 전송 형식의 `completion_tokens` 상한은 128 입니다.
+이 상한이 8 이던 전송 코드는 128 토큰까지의 결과를 받으면 거부합니다. observer 쪽 reader 는
+source 마다 따로 처리하므로 `public-generation` 하나만 `REMOTE_RESULT_UNAVAILABLE` 로 떨어집니다.
+collector 쪽 importer 는 8 을 넘는 새 결과가 든 **bundle 의 갱신 전체를** 거부합니다. 기존 report
+파일은 보존되고 importer 자신의 결과에 `RESULT_IMPORT_UNAVAILABLE` 이 남으며, 그 뒤로는 원본
+시각 기준의 stale 판정과 parent 정책이 작동해 AWS observer 의 source 들이 함께 신선도를
+잃습니다. 그래서 배포 순서는 전송 라이브러리(`lib/health_result_transport.py`, observer 와
+collector 양쪽) 먼저, probe 와 설정이 그다음입니다.
 
 ## 고정 policy receipt 전달
+
+이 receipt 는 2026-10-24 부터 공개 canary 의 조건이 아닙니다(위 절). 전송 형식과 reader·
+importer 의 처리는 남아 있지만 소비자가 없습니다. 운영 host 의 producer 를 은퇴시킨 뒤에는
+receipt 가 `valid=false` 로 고정되며, 이는 장애가 아닙니다.
 
 `read-health-v1` bundle은 opt-in `include_policy_attestation=true`일 때만 top-level
 `policy_attestation`을 포함합니다. 새 SSH 명령이나 추가 임의 파일 경로는 받지 않습니다.
@@ -120,8 +108,10 @@ reader의 `gateway-host` 역할은 `/var/lib/pickle-public-policy/attestation.js
 `import-gateway-policy.example.json`을 collector 호스트의 `import-gateway.json`으로
 선택하면 receipt는 `/var/lib/pickle-health-import-gateway/policy-attestation.json`에 게시됩니다.
 다음 `collector-host` reader가 같은 파일을 전달하고, 외부 호스트의 `import-collector.json`은
-`/var/lib/pickle-health-import-collector/policy-attestation.json`에 게시합니다. 공개 probe의
-`policy_attestation`을 마지막 경로로 지정합니다. 각 호스트명·IP·key·pin은 실제 검증값으로
+`/var/lib/pickle-health-import-collector/policy-attestation.json`에 게시합니다. 이 마지막
+경로는 2026-10-24 전까지 공개 probe 설정의 `policy_attestation`으로 지정하던 자리입니다.
+**지금의 canary 설정에는 `policy_attestation`을 지정하지 않습니다.** 지정하면 probe 가
+설정 오류(journal 의 `PUBLIC_CONFIGURATION_OR_STATE_INVALID`, exit 2)로 거부합니다. 각 호스트명·IP·key·pin은 실제 검증값으로
 대체하며 공개 예시를 그대로 활성화하지 않습니다.
 
 importer는 key와 SSH 검증 전에 기존 허가를 원자적으로 `valid=false`로 바꿉니다. bundle의
@@ -225,8 +215,8 @@ python3 -B scripts/tests/test_health_result_transport.py
 `lib/health_result_transport.py`를 root 소유 0644로 더한 뒤 설정·key·host pin을 검토합니다.
 서버 reader를 먼저 설치하고 forced-command 제한과 허용 protocol 외 거부를 확인한 다음,
 observer의 GET과 importer timer를 통지 off로 켭니다. 24~48시간 동안 TLS/JSON 형태와
-source epoch, 수집 실패와 서비스 실패 구분을 비교합니다. 공개 canary는 전용 서버 정책
-검증이 끝난 뒤 별도 단계로 켭니다. 운영 단절이나 인증서 오류를 실제로 만들지 않습니다.
+source epoch, 수집 실패와 서비스 실패 구분을 비교합니다. 공개 canary는 전용 key 검증이
+끝난 뒤 별도 단계로 켭니다. 운영 단절이나 인증서 오류를 실제로 만들지 않습니다.
 
 원복은 새 public/import timer를 먼저 disable/stop하고 oneshot 종료를 확인합니다. 새
 forced-command key 한 줄과 파생 diagnostic key만 회수하며 기존 관리 키와 upstream/학생

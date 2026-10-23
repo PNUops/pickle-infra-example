@@ -37,9 +37,10 @@ optional metrics는 health/models와 별도 자식 프로세스에서 최대 3�
 unified memory 장비에서 GPU memory가 N/A면 UNSUPPORTED로 남깁니다. host memory는
 `/proc/meminfo`에서 별도로 읽습니다. 지원하지 않는 지표를 0으로 바꾸지 않습니다.
 
-공개 gateway의 인증·인가·통계 경로는 이 패키지가 검증하지 않습니다. 그 경로에는
-서버가 관리하는 전용 진단 identity, 자체 서빙 모델 allowlist, 학생 차감 0의 별도 검증이
-필요합니다. 전용 키가 준비되기 전 학생 키로 대신하지 않습니다. 외부 모델 fallback과
+공개 gateway의 인증·인가·통계 경로는 이 패키지가 검증하지 않습니다. 그 경로는
+[외부 HTTPS 감시](llm-health-external.md)의 공개 생성 canary 가 전용 비학생 진단 key 로
+봅니다. 그 canary 는 route 를 가리지 않으므로(유료 upstream 포함) 자체 서빙 생성 정상의
+증거로 읽지 않습니다. 학생 키로 대신하지 않습니다. 외부 모델 fallback과
 서비스 자동 재시작·호스트 재부팅도 이 패키지의 동작이 아닙니다.
 
 ## 설치 전 검증

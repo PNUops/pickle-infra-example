@@ -22,7 +22,10 @@ KINDS = {'host-query', 'generation', 'public-http', 'public-generation', 'observ
          'tls-expiry-warning', 'access-policy'}
 SAFE_REASON = re.compile(r'[A-Z][A-Z0-9_]{0,63}')
 NUMBERS = {'latency_seconds': 3600, 'certificate_remaining_seconds': 366 * 86400,
-           'completion_tokens': 8, 'prompt_tokens': 4096, 'generation_counter_delta': 10**15}
+           # 128 is the public canary's allowance (a reasoning model spends part
+           # of it before answering); the direct generation probes stay at 8 by
+           # their own check, so this bound is only the transport's ceiling.
+           'completion_tokens': 128, 'prompt_tokens': 4096, 'generation_counter_delta': 10**15}
 HOST_NUMBERS = {'host_available_bytes': 2**60, 'host_total_bytes': 2**60,
                 'gpu_temperature_c': 200, 'gpu_utilization_percent': 100,
                 'gpu_memory_total_mib': 2**40}

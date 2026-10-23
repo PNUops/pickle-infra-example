@@ -30,7 +30,6 @@ def load(name, filename):
 reader = load('health_reader', 'health-result-reader.py')
 importer = load('health_importer', 'health-result-importer.py')
 collector = load('health_collector_for_import', 'service-health-monitor.py')
-public_probe = load('public_probe_for_receipt', 'public-service-health-probe.py')
 SECRET = 'fixture-original-body-private-value'
 
 
@@ -65,9 +64,9 @@ class ResultTests(unittest.TestCase):
         raw['server_enforced']['opaque_runtime_dump'] = SECRET
         raw['probe_enforced']['raw_key'] = SECRET
         safe = transport.sanitize_policy(raw, 1400)
-        public_probe.attest({'url': 'https://llm.example.com/v1/chat/completions',
-            'model': 'self-hosted-general', 'policy_attestation': '/fixed/receipt.json'},
-            SECRET, 1401, reader=lambda path: safe)
+        # The public canary no longer consumes this receipt; the projection is
+        # still the transport's contract for whatever carries it.
+        self.assertEqual(safe, transport.sanitize_policy(safe, 1400))
         self.assertEqual((safe['issued_at'], safe['expires_at']), (1400, 1580))
         self.assertNotIn(SECRET, json.dumps(safe))
 
@@ -230,6 +229,20 @@ class ResultTests(unittest.TestCase):
         for value in values:
             with self.subTest(value_length=len(value)), self.assertRaises((common.HealthError, ValueError)):
                 transport.inspect_bundle(value, ['upstream-generation'], 1400)
+
+    def test_completion_token_bound_carries_the_public_canary_allowance(self):
+        # The public canary may report up to 128 completion tokens (reasoning
+        # included). A transport bound below that drops the whole bundle at the
+        # importer, so pin the edge on both sides.
+        for tokens, accepted in ((17, True), (128, True), (129, False)):
+            value = json.loads(bundle())
+            value['reports']['upstream-generation']['completion_tokens'] = tokens
+            with self.subTest(tokens=tokens):
+                if accepted:
+                    transport.inspect_bundle(json.dumps(value).encode(), ['upstream-generation'], 1400)
+                else:
+                    with self.assertRaises(common.HealthError):
+                        transport.inspect_bundle(json.dumps(value).encode(), ['upstream-generation'], 1400)
 
     def test_reader_only_uses_fixed_model_paths(self):
         paths = []

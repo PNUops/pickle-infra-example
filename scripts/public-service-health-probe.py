@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Bounded external HTTPS shape checks and opt-in dedicated public generation."""
+"""Bounded external HTTPS shape checks and an opt-in public generation canary."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 import argparse
-import hashlib
 import http.client
-import importlib.util
 import ipaddress
 import json
 import os
@@ -23,9 +21,6 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / 'lib'))
 from llm_health import HealthError, MAX_JSON, NAME, atomic_json, epoch, locked, private_read, read_json
 
-spec = importlib.util.spec_from_file_location('known_answer_probe', HERE / 'llm-health-probe.py')
-known_answer = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(known_answer)
 
 HOST = re.compile(r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}')
 TLS_SOURCES = {'public-tls-production', 'public-tls-development', 'public-tls-gateway', 'public-tls-staging'}
@@ -34,8 +29,19 @@ OBSERVATION_ONLY = TLS_ONLY | {'access-policy'}
 # These are the three standard RFC 1918 network definitions, not host inventory.
 RFC1918_NETWORKS = tuple(ipaddress.IPv4Network(value) for value in (
     (0x0A000000, 8), (0xAC100000, 12), (0xC0A80000, 16)))
-PROBE_LIMITS = {'maximum_output_tokens': 8, 'maximum_daily_requests': 312,
-                'minimum_interval_seconds': 300, 'total_timeout_seconds': 20}
+# The canary's own bounds. They hold whatever the gateway routes the model to:
+# a self-hosted upstream or a paid one (operator decision 2026-10-23, the model
+# was routed to a paid provider and the canary is meant to keep running). The
+# output allowance is sized for a reasoning model, which spends part of the
+# budget on reasoning tokens before it answers: measured 2026-10-24 against the
+# paid route, 8 tokens ended in finish_reason=length with no content, while 64
+# and 256 both answered in 17 to 20 completion tokens. Worst case at that
+# route's price is 312 * (19 input + 128 output) tokens, about two US cents a
+# day; the key's own daily token cap stays the server-side bound while the
+# model row is on the TOKEN axis (the quota does not apply to CREDIT models).
+MAXIMUM_OUTPUT_TOKENS = 128
+MAXIMUM_DAILY_REQUESTS = 312
+MINIMUM_INTERVAL_SECONDS = 300
 
 
 def validate(config: dict) -> None:
@@ -106,37 +112,39 @@ def validate(config: dict) -> None:
                 or config.get('minimum_certificate_seconds', 604800) != 604800):
             raise HealthError('PRIVATE_POLICY_CONFIG_INVALID')
     elif (url.path != '/v1/chat/completions' or type(config.get('canary_enabled', False)) is not bool
-          or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', config.get('model', ''))):
+          or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', config.get('model', ''))
+          or 'policy_attestation' in config):
+        # policy_attestation is refused rather than ignored: a config that still
+        # names a receipt reads as if the receipt gated the canary, and it no
+        # longer does.
         raise HealthError('PUBLIC_CANARY_INVALID')
 
 
-def attest(config: dict, token: str, now: float, *, reader=read_json) -> None:
-    """Require a bounded operator receipt; this does not create server policy."""
-    value = reader(Path(config['policy_attestation']))
-    url = urlsplit(config['url'])
-    issued, expires = epoch(value.get('issued_at')), epoch(value.get('expires_at'))
-    server = value.get('server_enforced')
-    probe_limits = value.get('probe_enforced')
-    required_server = {'operations', 'maximum_paid_credits', 'maximum_daily_tokens',
-        'requests_per_minute', 'maximum_concurrency', 'expires_at', 'effective_models', 'fallback', 'route'}
-    if (not isinstance(server, dict) or set(server) != required_server
-            or server['operations'] != ['chat'] or server['effective_models'] != [config['model']]
-            or server['fallback'] is not None or server['route'] != 'SELF_HOSTED'
-            or any(type(server.get(key)) is not int or server[key] != expected for key, expected in (
-                ('maximum_paid_credits', 0), ('maximum_daily_tokens', 64000),
-                ('requests_per_minute', 1), ('maximum_concurrency', 1)))
-            or epoch(server['expires_at']) < expires
-            or not isinstance(probe_limits, dict) or probe_limits != PROBE_LIMITS
-            or any(type(probe_limits.get(key)) is not int for key in PROBE_LIMITS)):
-        raise HealthError('POLICY_ENFORCEMENT_BOUNDARY_INVALID')
-    if (value.get('kind') != 'selfhost-only-diagnostic-identity-v1' or value.get('valid') is not True
-            or value.get('gateway_origin') != f'https://{url.hostname}'
-            or value.get('model') != config['model']
-            or value.get('key_sha256') != hashlib.sha256(token.encode()).hexdigest()
-            or not re.fullmatch(r'[a-f0-9]{64}', value.get('server_policy_sha256', ''))
-            or value.get('student_account') is not False
-            or not issued <= now <= expires or expires - issued > 180):
-        raise HealthError('SERVER_POLICY_ATTESTATION_INVALID')
+def checked_public_generation(document: dict) -> dict:
+    """The known answer, judged the way the direct generation probe judges it.
+
+    Only the output allowance differs from llm-health-probe.py: completion
+    tokens include reasoning tokens, so the bound is the canary's own request
+    cap rather than the direct probe's eight. finish_reason must still be stop,
+    which is what tells an exhausted reasoning budget (length, no content) from
+    an answer.
+    """
+    try:
+        choice = document['choices'][0]
+        content = choice['message']['content']
+        output = document['usage']['completion_tokens']
+        prompt = document['usage']['prompt_tokens']
+        valid_usage = (type(output) is int and 0 < output <= MAXIMUM_OUTPUT_TOKENS
+                       and type(prompt) is int and 0 < prompt <= 4096)
+        correct = isinstance(content, str) and content.strip() == '4'
+        good = correct and choice['finish_reason'] == 'stop' and valid_usage
+        return {'status': 'HEALTHY' if good else 'FAILED',
+                'reason': 'ANSWER_VERIFIED' if good else 'GENERATION_VALIDATION_FAILED',
+                'answer_correct': correct, 'completion_tokens': output if valid_usage else None,
+                'prompt_tokens': prompt if valid_usage else None}
+    except (KeyError, IndexError, TypeError):
+        return {'status': 'FAILED', 'reason': 'GENERATION_RESPONSE_INVALID',
+                'answer_correct': False, 'completion_tokens': None, 'prompt_tokens': None}
 
 
 def inspect_response(config: dict, status: int, content_type: str, body: bytes) -> dict:
@@ -151,7 +159,7 @@ def inspect_response(config: dict, status: int, content_type: str, body: bytes) 
     if config['kind'] == 'public-generation':
         if content_type != 'application/json':
             raise HealthError('GENERATION_NOT_JSON')
-        result = known_answer.checked_generation(json.loads(body))
+        result = checked_public_generation(json.loads(body))
     else:
         expected = config['response']
         if expected['kind'] == 'json':
@@ -245,7 +253,8 @@ def http_worker(request: dict) -> dict:
             headers.update(Authorization='Bearer ' + token, **{'Content-Type': 'application/json'})
             body = json.dumps({'model': config['model'], 'messages': [
                 {'role': 'user', 'content': 'What is 2+2? Reply with the digit only.'}],
-                'temperature': 0, 'top_p': 1, 'max_completion_tokens': 8, 'stream': False}).encode()
+                'temperature': 0, 'top_p': 1, 'max_completion_tokens': MAXIMUM_OUTPUT_TOKENS,
+                'stream': False}).encode()
         connection.request('POST' if body else 'GET', url.path, body, headers)
         response = connection.getresponse()
         document = response.read(MAX_JSON + 1)
@@ -316,7 +325,7 @@ def transport(config: dict, token: str | None = None, *, timeout: float | None =
 
 
 def probe(config: dict, directory: Path, *, now: float | None = None,
-          requester=transport, attester=attest) -> dict:
+          requester=transport) -> dict:
     validate(config)
     now = epoch(time.time() if now is None else now)
     expected_host = config.get('expected_hostname')
@@ -339,17 +348,11 @@ def probe(config: dict, directory: Path, *, now: float | None = None,
             token = private_read(Path(config['credential_file']), 4096).decode().strip()
             if not token or '\r' in token or '\n' in token:
                 raise HealthError('PUBLIC_CREDENTIAL_INVALID')
-            try:
-                attester(config, token, now)
-            except (HealthError, OSError, ValueError, TypeError, KeyError):
-                result.update(status='OBSERVER_ERROR', reason='POLICY_OBSERVATION_UNAVAILABLE')
-                atomic_json(path, state)
-                atomic_json(directory / 'result.json', result)
-                return result
             day = datetime.fromtimestamp(now, timezone.utc).strftime('%Y-%m-%d')
             if state.get('day') != day:
                 state.update(day=day, submissions=0)
-            if now - state.get('last_submission', -300) < 300 or state['submissions'] >= 312:
+            if (now - state.get('last_submission', -MINIMUM_INTERVAL_SECONDS) < MINIMUM_INTERVAL_SECONDS
+                    or state['submissions'] >= MAXIMUM_DAILY_REQUESTS):
                 result.update(status='BUDGET_LIMIT', reason='PUBLIC_CANARY_REQUEST_LIMIT')
                 atomic_json(path, state)
                 return result
