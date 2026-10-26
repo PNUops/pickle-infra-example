@@ -394,6 +394,22 @@ histogram 경계는 128개로 제한합니다.
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_inference_metrics.py
 ```
 
+전용 관측 프로그램 `scripts/inference-observation.py`는 기존 health/incident 경로와 별도
+파일을 사용합니다. 모델 호스트에서 정규화한 최신 표본을 고정 SSH 명령으로 읽고, 중계
+호스트의 bounded outbox가 같은 HTTP body bytes를 API에 재전송합니다. source/epoch/sequence와
+body SHA가 맞는 ACK 뒤에만 checkpoint를 먼저 보존하고 원문을 제거합니다. 누락·미지원과
+실제 0, CPU 1분 load average와 GPU 사용률, producer 시각과 전달 시각을 구분합니다.
+코드와 systemd 예시의 설치·활성화 및 자격증명 준비는 별도입니다. 설정과 실패/만료 시
+원문 보존, 운영 승인 경계는 [전용 관측 런북](runbooks/inference-observations.md)에 있습니다.
+
+전용 outbox와 전달 fixture는 운영 호스트에 연결하지 않습니다.
+
+```bash
+python3 -B scripts/tests/test_observation_spool.py
+python3 -B scripts/tests/test_inference_observations.py
+python3 -B scripts/tests/test_observation_io.py
+```
+
 설정 초기화 테스트는 Python 3와 jq를 사용합니다. 호스트에 연결하지 않고 로컬 SQL
 픽스처로 스크립트를 두 번 실행해 기존 설정값과 수정 시각이 유지되는지 검사합니다.
 PostgreSQL의 타입 검사와 실제 컨테이너 연결은 이 테스트의 범위에 포함하지 않습니다.

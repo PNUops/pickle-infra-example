@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "source_id": "00000000-0000-4000-8000-000000000101",
+  "expected_hostname": "model-host",
+  "metrics_url": "http://127.0.0.1:8000/metrics",
+  "metrics_credential_file": null,
+  "service": "model-serving.service",
+  "configuration_id": "configured-runtime-1",
+  "gpu_index": 0
+}
