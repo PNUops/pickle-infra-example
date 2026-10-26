@@ -81,5 +81,5 @@
     "completion_sha256": "EXAMPLE_HISTORICAL_SQL_RESTORE_SHA256",
     "scope": "2026-10-10 isolated same-point SQL restore; retained historical drill, not a new current-point SQL restore"
   },
-  "release_version": "0.104/V141 operating release 2026.10.16, gateway 2026.10.22"
+  "release_version": "0.104/V141 operating release 2026.10.16, gateway 2026.10.27"
 }
