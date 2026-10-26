@@ -1,0 +1,12 @@
+[Unit]
+Description=Run pickle-inference-observation-sampler every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=1s
+Persistent=false
+Unit=pickle-inference-observation-sampler.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,27 @@
+[Unit]
+Description=Import fixed observation results and deliver acknowledged immutable samples
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+StateDirectory=pickle-inference-observation-reporter
+StateDirectoryMode=0700
+TimeoutStartSec=65
+Nice=10
+MemoryMax=256M
+TasksMax=16
+LoadCredential=api-token:/etc/pickle-inference-observation/api-token
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/pickle/inference-observation.py report --config /etc/pickle-inference-observation/reporter.json --state-dir /var/lib/pickle-inference-observation-reporter

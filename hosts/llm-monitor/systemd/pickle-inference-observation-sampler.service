@@ -1,0 +1,26 @@
+[Unit]
+Description=Sample dedicated typed inference observations without serving changes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+StateDirectory=pickle-inference-observation
+StateDirectoryMode=0700
+TimeoutStartSec=25
+Nice=10
+MemoryMax=256M
+TasksMax=16
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/pickle/inference-observation.py sample --config /etc/pickle-inference-observation/sampler.json --state-dir /var/lib/pickle-inference-observation

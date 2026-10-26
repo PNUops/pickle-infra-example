@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "source_id": "00000000-0000-4000-8000-000000000101",
+  "expected_hostname": "observation-reporter",
+  "ssh": {
+    "address": "198.18.0.10",
+    "port": 22,
+    "user": "root",
+    "identity_file": "/etc/pickle-inference-observation/reader-key",
+    "known_hosts_file": "/etc/pickle-inference-observation/reader-known-hosts"
+  },
+  "api_url": "https://api.example.invalid/internal/inference-observations",
+  "credential_file": "/run/credentials/pickle-inference-observation-reporter.service/api-token",
+  "max_pending_samples": 4096,
+  "max_pending_bytes": 67108864,
+  "max_exports_per_run": 2
+}

@@ -5,6 +5,9 @@ cd "$(dirname "$0")/.."
 mapfile -t scripts < <(find . -name '*.sh' -not -path './.git/*')
 shellcheck "${scripts[@]}"
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_inference_metrics.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_observation_spool.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_inference_observations.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_observation_io.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_platform_dns_health.py
 python3 scripts/tests/test_settings_bootstrap.py
 python3 -B scripts/tests/test_backup_storage.py
