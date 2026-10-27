@@ -504,6 +504,26 @@ VPN NTP server는 distro chrony deb를 별도 경로에 추출하고 기존 시�
 
 배포 workflow 예시는 `.github/deploy.example.yml`에 있습니다. GitHub Actions 실행 폴더 밖의 비활성 예시이며 실제 배포 workflow를 설치했다고 표현하지 않습니다. 개발 전용 key와 운영 key 분리 조건을 예시 파일에도 검증합니다.
 
+## CI 배포용 NetBird 연결
+
+배포 workflow는 `NETBIRD_SETUP_KEY`가 있으면 배포 job의 일시 peer를 연결합니다.
+`DEPLOY_TRANSPORT=netbird` 변수로 VPN 사용을 필수로 고정할 수도 있습니다. 키와 모드가
+모두 없으면 기존 native SSH 경로를 사용합니다. 선택된 VPN 연결이 실패하면 배포를
+중단하며 native SSH로 다시 시도하지 않습니다. Build job에는 VPN 키를 주입하지 않습니다.
+
+`EXAMPLE_DEV_VPN_HOST`, `EXAMPLE_PROD_VPN_HOST` 변수는 각각 개발 호스트와 운영 호스트의 VPN IPv4입니다.
+기존 SSH Secret의 호스트명은 `HostKeyAlias`에 사용하므로 개인키와 known_hosts pin을
+교체하지 않습니다. 포트22는 기존 호스트명, 다른 포트는 `[기존 호스트명]:포트`를 사용합니다.
+
+`scripts/ci-netbird.py`는 GitHub-hosted Linux X64 runner에서 공식 NetBird0.81.5 CLI를
+고정 SHA256으로 설치합니다. DNS와 client/server routes, 내장 SSH, remote jobs를 끄며,
+종료 시 자신이 만든 연결만 중단합니다. 키는 별도로 승인한 전용 CI 그룹의 ephemeral
+Setup Key여야 합니다. 전용 키는 reusable, 사용 횟수 무제한, 만료 없음으로 설정합니다.
+키를 회수하면 새 등록이 차단되며 이미 등록된 peer 제거는 별도로 확인합니다.
+`check-ssh.example.yml`은 비활성 인증 점검 예시입니다.
+prod 환경의 기존 키와 pin으로 SSH 인증만 확인하며 원격 session을 열지 않습니다.
+job 실행 제한은3분입니다. 필요한 권한과 전환 절차는 [배포 런북](runbooks/deploy-environments.md#ci-vpn-배포-경로)에 있습니다.
+
 ## 개발 TLS 암호화 백업
 
 개발 전용 TLS/SNI 선택과 15분 backup timer 활성화 후 공개 console/API/Host 검증을 마쳤습니다.
@@ -538,6 +558,8 @@ custody와 GitHub secret 등록은 별도 절차이며 이 TLS 백업을 설정�
 ## 전체 아키텍처
 
 Dev 배포는 root 보호 manifest의 `approved_artifacts[target][source_commit]` digest pin을 요구합니다. CI에서 같은 commit을 다시 빌드해 digest가 달라지면 검증한 실제 artifact의 수동 pin 갱신이 필요하며, 검토된 gateway archive pin이 없으면 배포를 거부합니다.
+
+최종 갱신: 2026-10-28
 
 <!-- arch:begin -->
 ```mermaid

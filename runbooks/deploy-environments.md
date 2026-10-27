@@ -167,6 +167,95 @@ job 사이 산출물에는 [upload-artifact v7](https://github.com/actions/uploa
 ProxyJump와 example-prod-host 자체 신뢰 핀·키를 사용합니다. 이 경로의 도달성과 GitHub 비밀 설정은
 실제 stage/check 전에 별도 확인해야 합니다. 공개 중계 설정은 workflow가 바꾸지 않습니다.
 
+## CI VPN 배포 경로
+
+이 절은 배포 소스의 선택 기능입니다. CI Setup Key 발급, Cloud 정책과 GitHub 설정,
+실제 연결과 배포는 별도 실행 승인 후 진행합니다. SSH private key, 고정 receiver와
+운영 stage/check 의미는 유지합니다. `DEPLOY_TRANSPORT`와 키가 없으면 기존 native
+경로를 사용합니다. 키가 있거나 모드가 `netbird`이면 VPN 준비에 실패한 job은 중단하며
+자동 native fallback을 하지 않습니다. `DEPLOY_TRANSPORT=netbird`를 유지하면 키 누락도
+실패합니다. `native`는 운영자가 명시적으로 선택하는 원복 모드입니다.
+
+| GitHub 항목 | 종류 | 용도 |
+|---|---|---|
+|`NETBIRD_SETUP_KEY`|Secret|전용 CI peer 등록, build job에는 전달하지 않음|
+|`EXAMPLE_DEV_VPN_HOST`|Variable|example-dev의 overlay IPv4, TCP 포트는 기존 `EXAMPLE_DEV_PORT` 유지|
+|`EXAMPLE_PROD_VPN_HOST`|Variable|운영 ProxyJump 목적 example-prod의 overlay IPv4|
+|`DEPLOY_TRANSPORT`|선택 Variable|`netbird`로 VPN 필수, `native`로 명시적 원복; 미설정은 키 존재 여부로 선택|
+
+기존 개발 Secret은 `EXAMPLE_DEV_HOST`, `EXAMPLE_DEV_PORT`, `EXAMPLE_DEV_KNOWN_HOSTS`,
+`DEV_DEPLOY_SSH_KEY`입니다. 운영에는 같은 example-dev host/port/pin과 `EXAMPLE_HOP_SSH_KEY`,
+`EXAMPLE_PROD_HOST`, `EXAMPLE_PROD_PORT`, `EXAMPLE_PROD_KNOWN_HOSTS`, `EXAMPLE_PROD_SSH_KEY`를 사용합니다.
+VPN 모드에서도 이 값을 덮어쓰지 않습니다. SSH HostName만 VPN 변수로 바꾸고,
+HostKeyAlias는 원래 호스트와 포트에서 계산하여 이미 신뢰한 공개키를 대조합니다.
+포트22는 bare host, 다른 포트는 `[host]:port`이며 새 키를 자동 수집하지 않습니다.
+
+CI용 Setup Key는 사용자 전달 키와 분리한 reusable 키로 발급하며 사용 횟수와 만료 기간을
+제한하지 않습니다. ephemeral=true, extra DNS labels=false를 사용합니다. GitHub-hosted
+runner는 job마다 새 peer를 등록하므로 키가 만료되면 이후 job이 등록하지 못합니다.
+[NetBird Setup Key 안내](https://docs.netbird.io/manage/peers/register-machines-using-setup-keys)에
+따라 키 만료와 회수 후에도 이미 등록된 peer는 연결을 유지합니다.
+자동 배정은 전용 `ci-deploy-runners` 그룹 하나이며
+`operators`나 사용자 그룹을 추가하지 않습니다. Cloud 정책은 이 그룹에서 example-dev의
+정확한 한 peer에 TCP22를 시작하는 단방향 규칙만 허용합니다. CI peer끼리 통신과
+서버발 역방향 새 연결을 허용하지 않습니다. 현재 운영 ProxyJump 구조를 유지하므로
+example-dev에서 example-prod의 정확한 VPN 주소에 TCP22로 연결하는 별도 정책도 먼저 필요합니다.
+이 정책에 CI나 사용자 peer를 섞지 않습니다. 두 VPN IP 변수는 `100.64.0.0/10` 안의
+정확한 IPv4만 받습니다. Runner는 목적 example-dev 외의 peer가 배포되면 준비를 거부합니다.
+
+키는 GitHub Actions Secret에 보관하고 외부 전달이나 서버 등록에 재사용하지 않습니다.
+키가 노출되거나 CI 등록 용도가 끝나면 회수하여 새 등록을 차단합니다. 이미 등록된 peer와
+관련 정책은 별도로 확인해 필요한 대상을 제거합니다. 무기한 키의 등록 권한을 전용 그룹과
+한 SSH 대상·포트로 제한하고, 키 회수와 등록된 peer 제거를 함께 관리합니다.
+
+`scripts/ci-netbird.py start`는 disposable GitHub-hosted Linux X64 runner만 지원하며
+기존 NetBird 설치나 소유 불명의 임시 상태를 재사용하지 않습니다. 공식 amd64 deb를
+SHA256으로 확인한 뒤 설치하고 `NB_DISABLE_SSH_CONFIG=true` daemon 환경을 적용합니다.
+등록 키는 runner 임시 디렉터리의0700/0600 파일로 전달하고 성공과 실패 모두 제거합니다.
+DNS, client/server routes, 내장 SSH와 remote jobs를 끕니다. Control-plane 연결과 대상 peer를
+확인한 뒤 기존 SSH 포트에 최대2초 TCP 연결로 lazy peer 연결을 유도합니다. 인증 데이터를
+전송하지 않는 이 준비는 전체45초 대기 안에 끝나야 하며 SSH host-key와 사용자 인증은
+이후 기존 전송 단계에서 검증합니다. 항상 실행하는 stop 단계는 자신의 run/attempt/job과 일치하는
+연결만 중단합니다. 호스트 VM 폐기 후 Cloud의 ephemeral peer 정리는10분 offline 기준이며
+GitHub 종료 순간의 즉시 peer 삭제를 주장하지 않습니다. 원문 상태와 인증값을 로그에 출력하지 않습니다.
+
+버전은2026-10-28 확인한 [공식 최신 안정 릴리스0.81.5](https://github.com/netbirdio/netbird/releases/tag/v0.81.5)입니다.
+[공식 APT amd64 인덱스](https://pkgs.netbird.io/debian/dists/stable/main/binary-amd64/Packages.gz)의
+`netbird_0.81.5_linux_amd64.deb` SHA256
+`d4cdd97734055f810ff4b5af8eacac3b19a2a50e3ff594fb4353151725374800`을 핀했습니다.
+[공식 Linux 안내](https://docs.netbird.io/get-started/install/linux)의 CLI 지원 범위를 사용하며
+GUI와 다른 패키지는 설치하지 않습니다. 이 선택은 runner용이며 기존 노드 버전을 바꾸지 않습니다.
+
+전환은 Cloud 그룹과 제한 정책, 전용 키를 승인해 준비한 뒤 GitHub의 선택 환경에 Secret과
+VPN 변수를 추가하고 `DEPLOY_TRANSPORT=netbird`로 고정합니다. 먼저 승인된 비배포 연결
+점검에서 기존 SSH host-key와 계정의 인증을 확인합니다. 운영 workflow는 기존처럼 stage/check에서
+멈춥니다. 성공을 확인한 뒤 native SSH 차단을 별도 적용합니다. 원복은 진행 중인 job을 정리하고
+검증된 native 경로를 먼저 복구한 다음 `DEPLOY_TRANSPORT=native`로 명시합니다. Cloud 키 회수와
+이미 등록된 peer 제거는 서로 다른 작업이며 별도로 확인합니다.
+
+### 수동 SSH 인증 점검
+
+실제 배포 workflow로 VPN 경로를 시험하지 않습니다. 별도 `.github/check-ssh.example.yml`은
+`workflow_dispatch`로만 실행하며 build나 artifact 전송 없이 기존 `prod` 환경의 키와 pin을
+사용합니다. NetBird 연결을 필수로 선택하고 example-dev 및 기존 ProxyJump를 거친 example-prod에
+원격 command, shell, subsystem과 PTY를 요청하지 않는 SSH 연결만 인증합니다.
+
+각 대상은 runner의0700 임시 디렉터리 안에 고유 control socket을 만들고
+`ssh -M -S <소유 socket> -fNT`로 인증한 뒤 `-O check`를 확인합니다. 성공과 실패 모두
+finally에서 같은 socket에 `-O exit`를 요청합니다. [OpenSSH의 `-N`과 control 명령](https://github.com/openssh/openssh-portable/blob/master/ssh.1)은
+원격 session을 열지 않으므로 서버 키에 설정된 forced command를 실행 요청으로 호출하지 않습니다.
+원문 SSH 출력과 IP, 인증값은 로그에 출력하지 않습니다. 서버 파일 upload, 배포 receiver 호출,
+서비스 restart, 생성 요청, DB와 VM 작업을 수행하지 않습니다.
+
+이 점검은 고정 pin을 가진 대상과 설정한 `root` 계정의 SSH 인증만 확인합니다.
+원격 hostname, 실제 Unix UID와 명령 실행 권한, 개발 receiver 권한이나 배포 성공은
+검증하지 않습니다. SSH 서버의 일반적인 인증 로그가 남을 수 있습니다.
+
+승인할 실행 단위는 전용 CI 키 발급, GitHub Secret과 VPN 변수 설정, 이 인증 점검1회입니다.
+job timeout은3분이며 runner 배정과 environment 승인 대기 시간은 포함하지 않습니다.
+항상 실행하는 종료 단계에서 해당 job이 등록한 NetBird 연결만 중단합니다. 현재 소스 준비 단계이며
+키 발급, GitHub 설정과 실제 workflow 실행 결과는 별도로 확인해야 합니다.
+
 `config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-10-16부터
 0.104/V141 판이고, 산출물은 고정 artifact 수동 배포로 올렸습니다. 별도
 `config/deploy-target-prod-release-candidate.json`은 그 전의 미활성 0.100/V140 미집행 후보이며
@@ -349,3 +438,5 @@ Pin 갱신은 실제 배포할 artifact의 hash·source provenance와 필요한 
 합니다. Commit label만으로 재현 가능한 build provenance를 증명했다고 표현하지 않습니다.
 Tool/receiver 코드가 변경되면 새 SHA의 독립 검토와 설치 config pin을 대조하며, 기존 SSH
 authorized row bytes를 보존한 CAS 절차로 필요한 변경만 적용합니다.
+
+최종 갱신: 2026-10-28

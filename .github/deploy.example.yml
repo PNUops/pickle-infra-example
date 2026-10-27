@@ -139,11 +139,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Check out trusted deployment network tool
+        uses: actions/checkout@v7
+        with:
+          path: infra-example
+          ref: refs/heads/main
+          persist-credentials: false
       - name: Download isolated build artifact
         uses: actions/download-artifact@v8
         with:
           name: pinned-service-artifact
           path: payload
+      - name: Select and prepare deployment network
+        id: transport
+        env:
+          DEPLOY_TRANSPORT: ${{ vars.DEPLOY_TRANSPORT }}
+          NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
+          EXAMPLE_DEV_VPN_HOST: ${{ vars.EXAMPLE_DEV_VPN_HOST }}
+          EXAMPLE_DEV_SSH_PORT: ${{ secrets.EXAMPLE_DEV_PORT }}
+        run: python3 -I -B infra-example/scripts/ci-netbird.py start
       - name: Send development artifact through the fixed receiver
         env:
           TARGET: ${{ inputs.target }}
@@ -151,6 +165,8 @@ jobs:
           FILENAME: ${{ needs.build.outputs.filename }}
           DIGEST: ${{ needs.build.outputs.sha256 }}
           DEV_HOST: ${{ secrets.EXAMPLE_DEV_HOST }}
+          DEV_VPN_HOST: ${{ vars.EXAMPLE_DEV_VPN_HOST }}
+          DEPLOY_TRANSPORT: ${{ steps.transport.outputs.mode }}
           DEV_PORT: ${{ secrets.EXAMPLE_DEV_PORT }}
           DEV_KNOWN_HOSTS: ${{ secrets.EXAMPLE_DEV_KNOWN_HOSTS }}
           DEV_DEPLOY_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
@@ -164,6 +180,12 @@ jobs:
           [ "$(sha256sum "payload/$FILENAME" | cut -d ' ' -f 1)" = "$DIGEST" ] || exit 1
           [ -n "$DEV_DEPLOY_KEY" ] && [ -n "$DEV_KNOWN_HOSTS" ] || exit 1
           [[ "$DEV_HOST" =~ ^[A-Za-z0-9.-]+$ ]] && [[ "$DEV_PORT" =~ ^[0-9]{1,5}$ ]] || exit 1
+          ssh_host_options=()
+          if [ "$DEPLOY_TRANSPORT" = netbird ]; then
+            alias=$(python3 -I -B infra-example/scripts/ci-netbird.py ssh-alias "$DEV_HOST" "$DEV_PORT")
+            DEV_HOST=$(python3 -I -B infra-example/scripts/ci-netbird.py vpn-host "$DEV_VPN_HOST")
+            ssh_host_options=(-o "HostKeyAlias=$alias")
+          fi
           install -d -m 700 ~/.ssh
           printf '%s\n' "$DEV_DEPLOY_KEY" > ~/.ssh/id_dev_deploy
           printf '%s\n' "$DEV_KNOWN_HOSTS" > ~/.ssh/dev_known_hosts
@@ -173,9 +195,13 @@ jobs:
           [ "$TARGET" != llm-gateway ] || export RECEIVER_ACTION=check
           python3 -c 'import json,os,pathlib,shutil,sys; p=pathlib.Path(os.environ["ARTIFACT_PATH"]); h={"version":1,"action":os.environ["RECEIVER_ACTION"],"target":os.environ["TARGET"],"commit":os.environ["COMMIT"],"sha256":os.environ["DIGEST"],"size":p.stat().st_size}; sys.stdout.buffer.write((json.dumps(h,separators=(",",":"))+"\n").encode()); sys.stdout.buffer.flush(); f=p.open("rb"); shutil.copyfileobj(f,sys.stdout.buffer)' | \
             ssh -F /dev/null -i ~/.ssh/id_dev_deploy -p "$DEV_PORT" \
+              "${ssh_host_options[@]}" \
               -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
               -o UpdateHostKeys=no -o ConnectTimeout=10 -o UserKnownHostsFile="$HOME/.ssh/dev_known_hosts" \
               "root@$DEV_HOST" pickle-dev-deploy-v1
+      - name: Disconnect owned deployment peer
+        if: always()
+        run: python3 -I -B infra-example/scripts/ci-netbird.py stop
 
   deploy-production:
     if: inputs.environment == 'prod'
@@ -210,6 +236,14 @@ jobs:
           [ "$(sha256sum "payload/$FILENAME" | cut -d ' ' -f 1)" = "$EXPECTED_SHA256" ] || {
             echo 'artifact digest changed between jobs' >&2; exit 1;
           }
+      - name: Select and prepare deployment network
+        id: transport
+        env:
+          DEPLOY_TRANSPORT: ${{ vars.DEPLOY_TRANSPORT }}
+          NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
+          EXAMPLE_DEV_VPN_HOST: ${{ vars.EXAMPLE_DEV_VPN_HOST }}
+          EXAMPLE_DEV_SSH_PORT: ${{ secrets.EXAMPLE_DEV_PORT }}
+        run: python3 -I -B infra-example/scripts/ci-netbird.py start
       - name: Stage and check target
         env:
           ENVIRONMENT: ${{ inputs.environment }}
@@ -218,6 +252,9 @@ jobs:
           FILENAME: ${{ needs.build.outputs.filename }}
           DIGEST: ${{ needs.build.outputs.sha256 }}
           HOP_HOST: ${{ secrets.EXAMPLE_DEV_HOST }}
+          HOP_VPN_HOST: ${{ vars.EXAMPLE_DEV_VPN_HOST }}
+          PROD_VPN_HOST: ${{ vars.EXAMPLE_PROD_VPN_HOST }}
+          DEPLOY_TRANSPORT: ${{ steps.transport.outputs.mode }}
           HOP_PORT: ${{ secrets.EXAMPLE_DEV_PORT }}
           HOP_KEY: ${{ secrets.EXAMPLE_HOP_SSH_KEY }}
           HOP_KNOWN_HOSTS: ${{ secrets.EXAMPLE_DEV_KNOWN_HOSTS }}
@@ -247,10 +284,18 @@ jobs:
             echo 'trusted example hop settings are incomplete' >&2; exit 1;
           }
           [[ "$HOP_PORT" =~ ^[0-9]{1,5}$ ]] && [[ "$HOP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || exit 1
+          hop_alias=''; target_alias=''
+          if [ "$DEPLOY_TRANSPORT" = netbird ]; then
+            hop_alias="  HostKeyAlias $(python3 -I -B infra-example/scripts/ci-netbird.py ssh-alias "$HOP_HOST" "$HOP_PORT")"
+            target_alias="  HostKeyAlias $(python3 -I -B infra-example/scripts/ci-netbird.py ssh-alias "$host" "$port")"
+            HOP_HOST=$(python3 -I -B infra-example/scripts/ci-netbird.py vpn-host "$HOP_VPN_HOST")
+            host=$(python3 -I -B infra-example/scripts/ci-netbird.py vpn-host "$PROD_VPN_HOST")
+          fi
           jump='  ProxyJump pickle-hop'; target_identity=id_example_prod
           cat > ~/.ssh/config <<EOF
           Host pickle-hop
             HostName $HOP_HOST
+          $hop_alias
             Port $HOP_PORT
             User root
             IdentityFile ~/.ssh/id_example_hop
@@ -260,6 +305,7 @@ jobs:
             UpdateHostKeys no
           Host pickle-target
             HostName $host
+          $target_alias
             Port $port
             User root
             IdentityFile ~/.ssh/$target_identity
@@ -277,3 +323,6 @@ jobs:
           ssh -F ~/.ssh/config pickle-target \
             "python3 '$stage/deploy-environment.py' check '$ENVIRONMENT' '$TARGET' '$COMMIT' '$stage/$FILENAME' '$DIGEST'"
           echo "production artifact staged and checked; a separate approved release remains required"
+      - name: Disconnect owned deployment peer
+        if: always()
+        run: python3 -I -B infra-example/scripts/ci-netbird.py stop

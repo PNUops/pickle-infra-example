@@ -1,0 +1,45 @@
+# Inactive example: this file is outside .github/workflows.
+# Manual authentication-only transport checks. No remote SSH sessions or deployment.
+name: check-ssh
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-production-ssh:
+    environment: prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check out trusted SSH check tools
+        uses: actions/checkout@v7
+        with:
+          path: infra-example
+          ref: refs/heads/main
+          persist-credentials: false
+      - name: Connect the dedicated CI peer
+        env:
+          DEPLOY_TRANSPORT: netbird
+          NETBIRD_SETUP_KEY: ${{ secrets.NETBIRD_SETUP_KEY }}
+          EXAMPLE_DEV_VPN_HOST: ${{ vars.EXAMPLE_DEV_VPN_HOST }}
+          EXAMPLE_DEV_SSH_PORT: ${{ secrets.EXAMPLE_DEV_PORT }}
+        run: python3 -I -B infra-example/scripts/ci-netbird.py start
+      - name: Authenticate to pinned SSH endpoints without remote sessions
+        env:
+          EXAMPLE_DEV_VPN_HOST: ${{ vars.EXAMPLE_DEV_VPN_HOST }}
+          EXAMPLE_PROD_VPN_HOST: ${{ vars.EXAMPLE_PROD_VPN_HOST }}
+          EXAMPLE_DEV_HOST: ${{ secrets.EXAMPLE_DEV_HOST }}
+          EXAMPLE_DEV_PORT: ${{ secrets.EXAMPLE_DEV_PORT }}
+          EXAMPLE_HOP_SSH_KEY: ${{ secrets.EXAMPLE_HOP_SSH_KEY }}
+          EXAMPLE_DEV_KNOWN_HOSTS: ${{ secrets.EXAMPLE_DEV_KNOWN_HOSTS }}
+          EXAMPLE_PROD_HOST: ${{ secrets.EXAMPLE_PROD_HOST }}
+          EXAMPLE_PROD_PORT: ${{ secrets.EXAMPLE_PROD_PORT }}
+          EXAMPLE_PROD_SSH_KEY: ${{ secrets.EXAMPLE_PROD_SSH_KEY }}
+          EXAMPLE_PROD_KNOWN_HOSTS: ${{ secrets.EXAMPLE_PROD_KNOWN_HOSTS }}
+        run: python3 -I -B infra-example/scripts/check-ci-ssh.py
+      - name: Disconnect the owned CI peer
+        if: always()
+        run: python3 -I -B infra-example/scripts/ci-netbird.py stop
