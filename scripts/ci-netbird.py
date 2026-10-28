@@ -96,7 +96,12 @@ def tcp_ready(peer, port, timeout):
 
 
 def ready(status, expected_peer, port, timeout):
-    details = status.get('peers', {}).get('details', [])
+    details = status.get('peers', {}).get('details')
+    if details is None:
+        return False
+    require(isinstance(details, list) and all(
+        isinstance(row, dict) and isinstance(row.get('netbirdIp'), str) for row in details),
+        'Malformed NetBird peer details')
     actual = {row.get('netbirdIp', '').split('/')[0] for row in details}
     require(actual <= {expected_peer}, 'Runner received an unexpected peer; check its dedicated group')
     control_ready = (status.get('management', {}).get('connected') is True
