@@ -99,6 +99,24 @@ class DeploymentNetworkTest(unittest.TestCase):
             status['sshServer']['enabled'] = True
             self.assertFalse(ci.ready(status, '100.64.0.10', 22, 2))
 
+    def test_null_peer_details_waits_without_a_tcp_probe_then_accepts_the_expected_peer(self):
+        status = json.loads('{"management":{"connected":true},"signal":{"connected":true},'
+                            '"sshServer":{"enabled":false},"peers":{"total":0,"details":null}}')
+        status['daemonVersion'] = ci.VERSION
+        with patch.object(ci, 'tcp_ready', return_value=True) as probe:
+            self.assertFalse(ci.ready(status, '100.64.0.10', 22, 2))
+            probe.assert_not_called()
+            status['peers']['details'] = [{'netbirdIp': '100.64.0.10'}]
+            self.assertTrue(ci.ready(status, '100.64.0.10', 22, 2))
+            probe.assert_called_once_with('100.64.0.10', 22, 2)
+
+    def test_malformed_peer_details_refuse_before_any_tcp_probe(self):
+        for details in ({}, '', False, [None], ['invalid'], [{'netbirdIp': None}]):
+            with self.subTest(details=details), patch.object(ci, 'tcp_ready') as probe:
+                with self.assertRaises(ci.Refusal):
+                    ci.ready({'peers': {'details': details}}, '100.64.0.10', 22, 2)
+                probe.assert_not_called()
+
     def test_lazy_peer_needs_a_successful_bounded_tcp_probe(self):
         status = {'management': {'connected': True}, 'signal': {'connected': True},
                   'daemonVersion': ci.VERSION, 'sshServer': {'enabled': False},
