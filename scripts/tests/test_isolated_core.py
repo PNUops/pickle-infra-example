@@ -518,6 +518,7 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
         content = core.nginx(config())
         self.assertIn('location ~* ^/assets/.+\\.vtt$ { types { } default_type "text/vtt; charset=utf-8"; '
                       'try_files $uri =404; }', content)
+        self.assertLess(content.index('.vtt$'), content.index('location / '))
 
     def test_changed_container_ownership_blocks_guest_file_writes(self):
         runner = FakeRunner({'owned container identity': 'hostname: other\ndescription: not-owned\n'})

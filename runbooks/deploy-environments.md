@@ -470,4 +470,4 @@ Pin 갱신은 실제 배포할 artifact의 hash·source provenance와 필요한 
 Tool/receiver 코드가 변경되면 새 SHA의 독립 검토와 설치 config pin을 대조하며, 기존 SSH
 authorized row bytes를 보존한 CAS 절차로 필요한 변경만 적용합니다.
 
-최종 갱신: 2026-10-28
+최종 갱신: 2026-10-30
