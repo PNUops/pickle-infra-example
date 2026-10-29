@@ -61,7 +61,7 @@ gateway는 관리 symlink `current-production`과 기존 명령 경로 `llm-keyg
 선택해야 합니다. 운영 `apply`는 고정 artifact unit을 허용하지 않습니다. 관리형 unit 준비 외에도
 artifact에 결합된 root 보호 승인 창과 실제 PBS 독립 파일 복원 검증을 모두 요구합니다.
 운영 unit은 관리형 경로로 전환하지 않은 고정 경로 상태입니다. 운영 호스트에는 아직 이 도구, `/etc/pickle/deploy-targets/prod.json`,
-승인과 호환 기록 경로가 설치되지 않았습니다(2026-10-16 확인). 설치하면 `check`는 현재 고정 ExecStart와 기록된
+승인과 호환 기록 경로가 설치되지 않았습니다(2026-10-30 확인). 설치하면 `check`는 현재 고정 ExecStart와 기록된
 artifact SHA를 읽기 전용으로 대조할 수 있습니다. 이 준비가 서비스 재시작이나 공개 중계 변경을
 요구한다면 대상·영향·복구 방법과 작업 창을 정해 별도로 승인받습니다.
 
