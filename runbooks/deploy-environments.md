@@ -52,9 +52,10 @@ Console artifact에 운영 주소가 포함되면 배포를 거부합니다. `pi
 공개 TLS와 CT900 경로는 별도 승인 전까지 확인된 접속 경로로 취급하지 않습니다.
 
 현재 운영 API unit은 고정 `production-example/pickle-api.jar`를, gateway unit은 drop-in
-`40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-16 수동 배포, 게이트웨이는
-2026-10-21과 2026-10-22에 다시 수동 배포, 2026-10-27에 핫픽스 수동 배포).
-이전 판의 고정 경로도 남아 있습니다. 운영 API의 준비 대상 명령은
+`40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-29 API·console·게이트웨이 수동
+배포, 게이트웨이 env에 `LLMGW_UPSTREAM_OPENROUTER_REASONING=effort` 한 줄 추가).
+이전 판의 고정 경로도 남아 있습니다. 2026-10-29에 Flyway V143을 적용했으므로 이전 API JAR 단독 재기동은 금지이고,
+데이터까지 되돌리려면 V142 전 복구점에서 새 DB를 복원하는 별도 운영자 판단이 필요합니다. 운영 API의 준비 대상 명령은
 `/usr/local/libexec/pickle-api-start.py /opt/pickle/api/production-current.jar prod`이며,
 gateway는 관리 symlink `current-production`과 기존 명령 경로 `llm-keygen`을
 선택해야 합니다. 운영 `apply`는 고정 artifact unit을 허용하지 않습니다. 관리형 unit 준비 외에도
@@ -63,6 +64,24 @@ artifact에 결합된 root 보호 승인 창과 실제 PBS 독립 파일 복원 
 승인과 호환 기록 경로가 설치되지 않았습니다(2026-10-16 확인). 설치하면 `check`는 현재 고정 ExecStart와 기록된
 artifact SHA를 읽기 전용으로 대조할 수 있습니다. 이 준비가 서비스 재시작이나 공개 중계 변경을
 요구한다면 대상·영향·복구 방법과 작업 창을 정해 별도로 승인받습니다.
+
+### 2026-10-29 릴리스 되돌림 자료
+
+수동 배포가 남긴 원본 사본과 되돌리는 순서입니다. 파일은 기록이 끝날 때까지 지우지 않습니다.
+
+- 정본 사본: 운영 호스트 `/pickle/backup/release-<날짜>/`(root 0700, 파일 0600). 앱 컨테이너 nginx 설정과
+  `pickle-api.service`, 게이트웨이 컨테이너 env와 drop-in 네 개의 배포 전 원본이며, 파일마다 SHA-256을 대조했습니다.
+  env의 정본은 비밀 볼트의 게이트웨이 env 사본입니다.
+- 현장 사본: 앱 컨테이너 nginx 설정과 console 웹 루트, 게이트웨이 컨테이너 env와 drop-in의 `.before-<날짜>` 파일.
+- 공개 차단(fence): 앱 컨테이너 `/etc/nginx/pickle-release-fence.conf.staged`. 루프백이 아닌 요청을 503으로 돌리는
+  설정이며, 다시 걸 때는 nginx 설정에 복사하고 `nginx -t` 뒤 reload합니다. 풀 때는 `.before-<날짜>`를 복사하고 SHA가
+  배포 전 기록값과 같은지 확인합니다.
+- 게이트웨이 되돌림: 두 `.before-<날짜>`를 원래 이름으로 복사하고 `systemctl daemon-reload`, restart. 실행 바이너리가
+  이전 판이고 env에 `_REASONING` 줄이 없는지 확인합니다.
+- API 되돌림: V143을 적용했으므로 이전 JAR 단독 기동은 금지입니다. 되돌리려면 V142 전 복구점에서 새 DB를 복원해
+  전환하는 별도 운영자 판단이 필요하고, 그때만 이전 JAR와 이전 console을 함께 되돌립니다.
+- console 되돌림: 같은 날 후속 배포 전 판은 웹 루트의 `.before-<날짜>-followup`입니다. 이전 릴리스 console은 새 API와
+  짝이 맞지 않으므로 되돌림 대상이 아닙니다.
 
 ## 제한된 실연동 개발 후보
 
@@ -256,8 +275,10 @@ job timeout은3분이며 runner 배정과 environment 승인 대기 시간은 �
 항상 실행하는 종료 단계에서 해당 job이 등록한 NetBird 연결만 중단합니다. 현재 소스 준비 단계이며
 키 발급, GitHub 설정과 실제 workflow 실행 결과는 별도로 확인해야 합니다.
 
-`config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-10-16부터
-0.104/V141 판이고, 산출물은 고정 artifact 수동 배포로 올렸습니다. 별도
+`config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-10-29부터
+0.113/V145 판이고, 산출물은 고정 artifact 수동 배포로 올렸습니다. 같은 파일과 `config/deploy-backup-reader.json`의
+`expected_schema_version`은 아직 141이며, 백업 reader 호스트의 설정과 함께 145로 맞추기 전에는 이 도구의 백업 검증이
+현재 운영 스키마와 맞지 않습니다. 별도
 `config/deploy-target-prod-release-candidate.json`은 그 전의 미활성 0.100/V140 미집행 후보이며
 이번 배포에 쓰지 않았습니다. 파일에 남은 0.99 API·console SHA는 과거 검증한 snapshot이며 최종 0.100 source로 확인된 값이 아닙니다. API·console 새 source, 검증된 Chat 집행 gateway source와 세 artifact
 SHA를 함께 검증하기 전에는 `release_candidate_ready=false`이며 apply를 거부합니다.
