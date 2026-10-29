@@ -52,17 +52,47 @@ Console artifact에 운영 주소가 포함되면 배포를 거부합니다. `pi
 공개 TLS와 CT900 경로는 별도 승인 전까지 확인된 접속 경로로 취급하지 않습니다.
 
 현재 운영 API unit은 고정 `production-example/pickle-api.jar`를, gateway unit은 drop-in
-`40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-16 수동 배포, 게이트웨이는
-2026-10-21과 2026-10-22에 다시 수동 배포, 2026-10-27에 핫픽스 수동 배포).
-이전 판의 고정 경로도 남아 있습니다. 운영 API의 준비 대상 명령은
+`40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-29 API·console·게이트웨이 수동
+배포, 게이트웨이 env에 `LLMGW_UPSTREAM_OPENROUTER_REASONING=effort` 한 줄 추가).
+이전 판의 고정 경로도 남아 있습니다. 2026-10-29에 Flyway V143을 적용했으므로 이전 API JAR 단독 재기동은 금지이고,
+데이터까지 되돌리려면 V142 전 복구점에서 새 DB를 복원하는 별도 운영자 판단이 필요합니다. 운영 API의 준비 대상 명령은
 `/usr/local/libexec/pickle-api-start.py /opt/pickle/api/production-current.jar prod`이며,
 gateway는 관리 symlink `current-production`과 기존 명령 경로 `llm-keygen`을
 선택해야 합니다. 운영 `apply`는 고정 artifact unit을 허용하지 않습니다. 관리형 unit 준비 외에도
 artifact에 결합된 root 보호 승인 창과 실제 PBS 독립 파일 복원 검증을 모두 요구합니다.
 운영 unit은 관리형 경로로 전환하지 않은 고정 경로 상태입니다. 운영 호스트에는 아직 이 도구, `/etc/pickle/deploy-targets/prod.json`,
-승인과 호환 기록 경로가 설치되지 않았습니다(2026-10-16 확인). 설치하면 `check`는 현재 고정 ExecStart와 기록된
+승인과 호환 기록 경로가 설치되지 않았습니다(2026-10-30 확인). 설치하면 `check`는 현재 고정 ExecStart와 기록된
 artifact SHA를 읽기 전용으로 대조할 수 있습니다. 이 준비가 서비스 재시작이나 공개 중계 변경을
 요구한다면 대상·영향·복구 방법과 작업 창을 정해 별도로 승인받습니다.
+
+### 2026-10-29 릴리스 되돌림 자료
+
+수동 배포가 남긴 원본 사본과 되돌리는 순서입니다. 파일은 기록이 끝날 때까지 지우지 않습니다.
+
+- 정본 사본: 운영 호스트 `/pickle/backup/release-<날짜>/`(root 0700, 파일 0600). 앱 컨테이너 nginx 설정과
+  `pickle-api.service`, 게이트웨이 컨테이너 env와 drop-in 네 개의 배포 전 원본이며, 파일마다 SHA-256을 대조했습니다.
+  env의 정본은 비밀 볼트의 게이트웨이 env 사본입니다.
+- 현장 사본: 앱 컨테이너 nginx 설정과 console 웹 루트, 게이트웨이 컨테이너 env와 drop-in의 `.before-<날짜>` 파일.
+- 공개 차단(fence): 앱 컨테이너 `/etc/nginx/pickle-release-fence.conf.staged`. 루프백이 아닌 요청을 503으로 돌리는
+  설정입니다. 다시 걸기 전에 지금 활성 파일을 `.before-<날짜>`로 남기고, staged 파일을 nginx 설정에 복사한 뒤
+  `nginx -t`와 reload를 합니다. 풀 때는 그때 남긴 `.before-<날짜>`를 복사하고 SHA가 걸기 전과 같은지 확인합니다.
+  평시 파일은 생성기 `scripts/lib/isolated_core.py`의 출력이며, 자막 MIME location이 없는 이전 판은 fence 복귀 기준으로
+  쓰지 않습니다.
+- 자막 MIME: 앱 컨테이너 nginx에 `/assets/` 아래 `.vtt`만 `text/vtt; charset=utf-8`로 내보내는 location을 더했습니다.
+  되돌릴 때는 `.before-<날짜>-vtt`를 복사하고 `nginx -t`, reload 뒤 SHA를 대조합니다.
+- 게이트웨이 되돌림: 두 `.before-<날짜>`를 원래 이름으로 복사하고 `systemctl daemon-reload`, restart. 실행 바이너리가
+  이전 판이고 env에 `_REASONING` 줄이 없는지 확인합니다. 이전 게이트웨이는 추론 강도(`reasoning_effort`)를 업스트림에
+  맞춰 바꾸지 않으므로, 되돌리면 사용 가이드의 추론 강도 설명이 사실과 달라집니다. 가이드 문구 수정이나 공지를 함께 정합니다.
+- API 되돌림: V143을 적용했으므로 이전 JAR 단독 기동은 금지입니다. 되돌리려면 V142 전 복구점에서 새 DB를 복원해
+  전환하는 별도 운영자 판단이 필요하고, 그때만 이전 JAR와 이전 console을 함께 되돌립니다.
+- console 되돌림: 같은 날 후속 배포 전 판은 웹 루트의 `.before-<날짜>-followup`입니다.
+  `mv --exchange -T <웹 루트>.before-<날짜>-followup <웹 루트>`로 두 디렉터리를 한 번에 맞바꾸고(coreutils 9.5 이상),
+  두 `index.html`의 SHA를 배포 기록과 대조합니다. 같은 명령을 다시 실행하면 원래대로 돌아갑니다. 이전 릴리스 console은
+  새 API와 짝이 맞지 않으므로 되돌림 대상이 아닙니다.
+- 백업 reader 스키마: 백업 reader 호스트에 설치한 `deploy-backup-reader.json`의 `expected_schema_version`을
+  레포 판과 함께 145로 바꿨고, 원본은 같은 폴더의 `.before-<날짜>`(root 0600)입니다. 되돌릴 때는
+  `install -o root -g root -m 0600`으로 원본을 다시 설치하고 SHA를 대조하지만, 운영 DB가 V145이므로 이전 값은
+  검증을 거부하게 됩니다.
 
 ## 제한된 실연동 개발 후보
 
@@ -256,8 +286,9 @@ job timeout은3분이며 runner 배정과 environment 승인 대기 시간은 �
 항상 실행하는 종료 단계에서 해당 job이 등록한 NetBird 연결만 중단합니다. 현재 소스 준비 단계이며
 키 발급, GitHub 설정과 실제 workflow 실행 결과는 별도로 확인해야 합니다.
 
-`config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-10-16부터
-0.104/V141 판이고, 산출물은 고정 artifact 수동 배포로 올렸습니다. 별도
+`config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-10-29부터
+0.113/V145 판이고, 산출물은 고정 artifact 수동 배포로 올렸습니다. 같은 파일과 `config/deploy-backup-reader.json`의
+`expected_schema_version`은 2026-10-30에 백업 reader 호스트의 설정과 함께 145로 맞췄습니다. 별도
 `config/deploy-target-prod-release-candidate.json`은 그 전의 미활성 0.100/V140 미집행 후보이며
 이번 배포에 쓰지 않았습니다. 파일에 남은 0.99 API·console SHA는 과거 검증한 snapshot이며 최종 0.100 source로 확인된 값이 아닙니다. API·console 새 source, 검증된 Chat 집행 gateway source와 세 artifact
 SHA를 함께 검증하기 전에는 `release_candidate_ready=false`이며 apply를 거부합니다.
@@ -267,7 +298,7 @@ Gateway placeholder와 미확인 digest를 제거하지 않고 READY로 바꿔�
 `PICKLE_PRODUCTION_RELEASE_APPROVED`는 운영 적용을 허용하지 않습니다.
 
 `config/deploy-backup-reader.json`은 example-backup-host 독립 DB reader의 현재 선택 profile,
-배치된 기존 native library SHA, 실제 DB instance/system ID와 현재 스키마 버전(2026-10-16부터 V141)을 고정한 후보입니다.
+배치된 기존 native library SHA, 실제 DB instance/system ID와 현재 스키마 버전(2026-10-30부터 V145)을 고정한 후보입니다.
 백업 reader 호스트에 설치한 사본도 레포 판과 같아야 하므로, 이 파일이 바뀌면 호스트 사본을 같은 소유와 권한(root 0600)으로 다시 설치합니다.
 이 파일과 `verify-production-backup.py`를 별도 root 보호 경로에 stage하고, example-prod-host→example-backup-host
 reader 및 example-backup-host→example-prod-host의 native PostgreSQL 읽기 actor를 각각 기존 신뢰 핀·키의 새 전용
@@ -439,4 +470,4 @@ Pin 갱신은 실제 배포할 artifact의 hash·source provenance와 필요한 
 Tool/receiver 코드가 변경되면 새 SHA의 독립 검토와 설치 config pin을 대조하며, 기존 SSH
 authorized row bytes를 보존한 CAS 절차로 필요한 변경만 적용합니다.
 
-최종 갱신: 2026-10-28
+최종 갱신: 2026-10-30

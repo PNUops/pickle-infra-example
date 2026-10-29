@@ -514,6 +514,12 @@ class IsolatedCoreSafetyTest(unittest.TestCase):
         self.assertNotIn('listen 80;', content)
         self.assertNotIn('real_ip_header', content)
 
+    def test_subtitle_assets_are_served_as_webvtt(self):
+        content = core.nginx(config())
+        self.assertIn('location ~* ^/assets/.+\\.vtt$ { types { } default_type "text/vtt; charset=utf-8"; '
+                      'try_files $uri =404; }', content)
+        self.assertLess(content.index('.vtt$'), content.index('location / '))
+
     def test_changed_container_ownership_blocks_guest_file_writes(self):
         runner = FakeRunner({'owned container identity': 'hostname: other\ndescription: not-owned\n'})
         bootstrap = core.Bootstrap(config(), runner)
