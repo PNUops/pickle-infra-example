@@ -53,7 +53,8 @@ Console artifact에 운영 주소가 포함되면 배포를 거부합니다. `pi
 
 현재 운영 API unit은 고정 `production-example/pickle-api.jar`를, gateway unit은 drop-in
 `40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-29 API·console·게이트웨이 수동
-배포, 게이트웨이 env에 `LLMGW_UPSTREAM_OPENROUTER_REASONING=effort` 한 줄 추가).
+배포, 게이트웨이 env에 `LLMGW_UPSTREAM_OPENROUTER_REASONING=effort` 한 줄 추가). console은 2026-10-30에 두 번 더
+배포했습니다.
 이전 판의 고정 경로도 남아 있습니다. 2026-10-29에 Flyway V143을 적용했으므로 이전 API JAR 단독 재기동은 금지이고,
 데이터까지 되돌리려면 V142 전 복구점에서 새 DB를 복원하는 별도 운영자 판단이 필요합니다. 운영 API의 준비 대상 명령은
 `/usr/local/libexec/pickle-api-start.py /opt/pickle/api/production-current.jar prod`이며,
