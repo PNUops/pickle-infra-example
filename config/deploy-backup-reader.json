@@ -12,7 +12,7 @@
   "expected_system_identifier": "EXAMPLE_DATABASE_SYSTEM_IDENTIFIER",
   "namespace": "example-platform",
   "backup_id": "application-db-production",
-  "expected_schema_version": 141,
+  "expected_schema_version": 145,
   "maximum_point_age_seconds": 600,
   "temporary_root": "/root/pickle-release-backup-readback",
   "postgres_restore_command": [

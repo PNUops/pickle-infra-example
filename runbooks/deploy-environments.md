@@ -82,6 +82,10 @@ artifact SHA를 읽기 전용으로 대조할 수 있습니다. 이 준비가 �
   전환하는 별도 운영자 판단이 필요하고, 그때만 이전 JAR와 이전 console을 함께 되돌립니다.
 - console 되돌림: 같은 날 후속 배포 전 판은 웹 루트의 `.before-<날짜>-followup`입니다. 이전 릴리스 console은 새 API와
   짝이 맞지 않으므로 되돌림 대상이 아닙니다.
+- 백업 reader 스키마: 백업 reader 호스트에 설치한 `deploy-backup-reader.json`의 `expected_schema_version`을
+  레포 판과 함께 145로 바꿨고, 원본은 같은 폴더의 `.before-<날짜>`(root 0600)입니다. 되돌릴 때는
+  `install -o root -g root -m 0600`으로 원본을 다시 설치하고 SHA를 대조하지만, 운영 DB가 V145이므로 이전 값은
+  검증을 거부하게 됩니다.
 
 ## 제한된 실연동 개발 후보
 
@@ -277,8 +281,7 @@ job timeout은3분이며 runner 배정과 environment 승인 대기 시간은 �
 
 `config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-10-29부터
 0.113/V145 판이고, 산출물은 고정 artifact 수동 배포로 올렸습니다. 같은 파일과 `config/deploy-backup-reader.json`의
-`expected_schema_version`은 아직 141이며, 백업 reader 호스트의 설정과 함께 145로 맞추기 전에는 이 도구의 백업 검증이
-현재 운영 스키마와 맞지 않습니다. 별도
+`expected_schema_version`은 2026-10-30에 백업 reader 호스트의 설정과 함께 145로 맞췄습니다. 별도
 `config/deploy-target-prod-release-candidate.json`은 그 전의 미활성 0.100/V140 미집행 후보이며
 이번 배포에 쓰지 않았습니다. 파일에 남은 0.99 API·console SHA는 과거 검증한 snapshot이며 최종 0.100 source로 확인된 값이 아닙니다. API·console 새 source, 검증된 Chat 집행 gateway source와 세 artifact
 SHA를 함께 검증하기 전에는 `release_candidate_ready=false`이며 apply를 거부합니다.
@@ -288,7 +291,7 @@ Gateway placeholder와 미확인 digest를 제거하지 않고 READY로 바꿔�
 `PICKLE_PRODUCTION_RELEASE_APPROVED`는 운영 적용을 허용하지 않습니다.
 
 `config/deploy-backup-reader.json`은 example-backup-host 독립 DB reader의 현재 선택 profile,
-배치된 기존 native library SHA, 실제 DB instance/system ID와 현재 스키마 버전(2026-10-16부터 V141)을 고정한 후보입니다.
+배치된 기존 native library SHA, 실제 DB instance/system ID와 현재 스키마 버전(2026-10-30부터 V145)을 고정한 후보입니다.
 백업 reader 호스트에 설치한 사본도 레포 판과 같아야 하므로, 이 파일이 바뀌면 호스트 사본을 같은 소유와 권한(root 0600)으로 다시 설치합니다.
 이 파일과 `verify-production-backup.py`를 별도 root 보호 경로에 stage하고, example-prod-host→example-backup-host
 reader 및 example-backup-host→example-prod-host의 native PostgreSQL 읽기 actor를 각각 기존 신뢰 핀·키의 새 전용
