@@ -74,14 +74,21 @@ artifact SHA를 읽기 전용으로 대조할 수 있습니다. 이 준비가 �
   env의 정본은 비밀 볼트의 게이트웨이 env 사본입니다.
 - 현장 사본: 앱 컨테이너 nginx 설정과 console 웹 루트, 게이트웨이 컨테이너 env와 drop-in의 `.before-<날짜>` 파일.
 - 공개 차단(fence): 앱 컨테이너 `/etc/nginx/pickle-release-fence.conf.staged`. 루프백이 아닌 요청을 503으로 돌리는
-  설정이며, 다시 걸 때는 nginx 설정에 복사하고 `nginx -t` 뒤 reload합니다. 풀 때는 `.before-<날짜>`를 복사하고 SHA가
-  배포 전 기록값과 같은지 확인합니다.
+  설정입니다. 다시 걸기 전에 지금 활성 파일을 `.before-<날짜>`로 남기고, staged 파일을 nginx 설정에 복사한 뒤
+  `nginx -t`와 reload를 합니다. 풀 때는 그때 남긴 `.before-<날짜>`를 복사하고 SHA가 걸기 전과 같은지 확인합니다.
+  평시 파일은 생성기 `scripts/lib/isolated_core.py`의 출력이며, 자막 MIME location이 없는 이전 판은 fence 복귀 기준으로
+  쓰지 않습니다.
+- 자막 MIME: 앱 컨테이너 nginx에 `/assets/` 아래 `.vtt`만 `text/vtt; charset=utf-8`로 내보내는 location을 더했습니다.
+  되돌릴 때는 `.before-<날짜>-vtt`를 복사하고 `nginx -t`, reload 뒤 SHA를 대조합니다.
 - 게이트웨이 되돌림: 두 `.before-<날짜>`를 원래 이름으로 복사하고 `systemctl daemon-reload`, restart. 실행 바이너리가
-  이전 판이고 env에 `_REASONING` 줄이 없는지 확인합니다.
+  이전 판이고 env에 `_REASONING` 줄이 없는지 확인합니다. 이전 게이트웨이는 추론 강도(`reasoning_effort`)를 업스트림에
+  맞춰 바꾸지 않으므로, 되돌리면 사용 가이드의 추론 강도 설명이 사실과 달라집니다. 가이드 문구 수정이나 공지를 함께 정합니다.
 - API 되돌림: V143을 적용했으므로 이전 JAR 단독 기동은 금지입니다. 되돌리려면 V142 전 복구점에서 새 DB를 복원해
   전환하는 별도 운영자 판단이 필요하고, 그때만 이전 JAR와 이전 console을 함께 되돌립니다.
-- console 되돌림: 같은 날 후속 배포 전 판은 웹 루트의 `.before-<날짜>-followup`입니다. 이전 릴리스 console은 새 API와
-  짝이 맞지 않으므로 되돌림 대상이 아닙니다.
+- console 되돌림: 같은 날 후속 배포 전 판은 웹 루트의 `.before-<날짜>-followup`입니다.
+  `mv --exchange -T <웹 루트>.before-<날짜>-followup <웹 루트>`로 두 디렉터리를 한 번에 맞바꾸고(coreutils 9.5 이상),
+  두 `index.html`의 SHA를 배포 기록과 대조합니다. 같은 명령을 다시 실행하면 원래대로 돌아갑니다. 이전 릴리스 console은
+  새 API와 짝이 맞지 않으므로 되돌림 대상이 아닙니다.
 - 백업 reader 스키마: 백업 reader 호스트에 설치한 `deploy-backup-reader.json`의 `expected_schema_version`을
   레포 판과 함께 145로 바꿨고, 원본은 같은 폴더의 `.before-<날짜>`(root 0600)입니다. 되돌릴 때는
   `install -o root -g root -m 0600`으로 원본을 다시 설치하고 SHA를 대조하지만, 운영 DB가 V145이므로 이전 값은

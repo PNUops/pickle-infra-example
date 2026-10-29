@@ -535,6 +535,7 @@ def nginx(c: Config) -> str:
         proxy_set_header Connection "upgrade";
         proxy_read_timeout 300s;
     }}
+    location ~* ^/assets/.+\\.vtt$ {{ types {{ }} default_type "text/vtt; charset=utf-8"; try_files $uri =404; }}
     location / {{ try_files $uri $uri/ /index.html; }}
 }}
 """
