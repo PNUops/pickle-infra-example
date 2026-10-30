@@ -53,8 +53,16 @@ Console artifact에 운영 주소가 포함되면 배포를 거부합니다. `pi
 
 현재 운영 API unit은 고정 `production-example/pickle-api.jar`를, gateway unit은 drop-in
 `40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-29 API·console·게이트웨이 수동
-배포, 게이트웨이 env에 `LLMGW_UPSTREAM_OPENROUTER_REASONING=effort` 한 줄 추가). console은 2026-10-30에 두 번 더
+배포, 게이트웨이 env에 `LLMGW_UPSTREAM_OPENROUTER_REASONING=effort` 한 줄 추가). console은 2026-10-30에 세 번 더
 배포했습니다.
+
+CLI 연결 안내 후속은 2026-10-30 09:45 KST에 태그 `2026.10.30c`로 운영 반영했습니다. 빌드 artifact는 83파일이고
+이미 열린 탭의 지연 로딩을 위한 기존 assets 네 개를 별도 SHA 검산 뒤 보존했으므로 실제 웹루트 manifest는 87파일입니다.
+새 빌드 목록과 이전 판에서 보존한 목록의 출처를 구분하고 소스와 릴리스 CI 및 두 목록의 전체 검산 뒤 정적 웹루트를
+원자 교체했습니다. 교체 후 파일 검산도 통과했고 공개 87파일 SHA와 영상 Range 206, 자막 `text/vtt` 및 가이드 화면도
+검수했습니다.
+API, DB, 게이트웨이와 nginx 설정은 이 후속에서 바꾸지 않았습니다.
+
 이전 판의 고정 경로도 남아 있습니다. 2026-10-29에 Flyway V143을 적용했으므로 이전 API JAR 단독 재기동은 금지이고,
 데이터까지 되돌리려면 V142 전 복구점에서 새 DB를 복원하는 별도 운영자 판단이 필요합니다. 운영 API의 준비 대상 명령은
 `/usr/local/libexec/pickle-api-start.py /opt/pickle/api/production-current.jar prod`이며,
@@ -86,7 +94,17 @@ artifact SHA를 읽기 전용으로 대조할 수 있습니다. 이 준비가 �
   맞춰 바꾸지 않으므로, 되돌리면 사용 가이드의 추론 강도 설명이 사실과 달라집니다. 가이드 문구 수정이나 공지를 함께 정합니다.
 - API 되돌림: V143을 적용했으므로 이전 JAR 단독 기동은 금지입니다. 되돌리려면 V142 전 복구점에서 새 DB를 복원해
   전환하는 별도 운영자 판단이 필요하고, 그때만 이전 JAR와 이전 console을 함께 되돌립니다.
-- console 되돌림: 같은 날 여러 번 배포했다면 판마다 웹 루트의 `.before-<날짜>-<이름>`이 남습니다. 가장 최근 것부터
+- console 되돌림(CLI 안내 후속): 직전 웹루트는 `.before-<날짜>-cli-guides`에 보존했습니다. 그 경로가 이미 있거나
+  symlink이면 덮어쓰지 않습니다. 되돌리기 전에 현재와 보존본 index가 배포 기록의 교환 전 SHA와 같은지, 같은 파일시스템의
+  실제 디렉터리인지 먼저 확인합니다. `mv --exchange -T <웹 루트>.before-<날짜>-cli-guides <웹 루트>`로 맞바꾸고
+  두 index가 반대로 놓였는지 대조합니다. 되돌린 웹루트는 83파일이고 보존 경로에는 87파일이 남습니다. 다시 후속 판으로
+  전환할 때도 SHA 위치를 먼저 확인한 뒤 같은 교환을 합니다.
+  공개 200, JS/CSS MIME, 영상 Range 206과 자막 `text/vtt`를 확인하고 nginx의 자막 설정은 유지합니다. API나 DB,
+  게이트웨이는 재시작하지 않습니다.
+  운영 호스트와 앱 컨테이너의 보호된 릴리스 자료 폴더(0700)에 artifact와 교체 helper(0600)를 남기고, 직전 웹루트와
+  함께 배포 기록의 보존 기한까지 유지합니다. 이후 정리는 별도로 판단합니다.
+- console 되돌림(그 이전 판): 대상의 직전 판인지 먼저 확인하고, CLI 안내 후속이 적용됐다면 먼저 되돌립니다. 같은 날 여러 번 배포했다면 판마다
+  웹 루트의 `.before-<날짜>-<이름>`이 남습니다. 가장 최근 것부터
   하나씩 맞바꿉니다. 예를 들어 그 전 판은 `.before-<날짜>-followup`입니다.
   `mv --exchange -T <웹 루트>.before-<날짜>-followup <웹 루트>`로 두 디렉터리를 한 번에 맞바꾸고(coreutils 9.5 이상),
   두 `index.html`의 SHA를 배포 기록과 대조합니다. 같은 명령을 다시 실행하면 원래대로 돌아갑니다. 이전 릴리스 console은
