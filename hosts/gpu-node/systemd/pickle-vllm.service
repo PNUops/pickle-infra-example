@@ -12,10 +12,13 @@ Requires=docker.service
 Type=exec
 # VLLM_API_KEY lives here (vault master).
 EnvironmentFile=/etc/pickle/vllm.env
-# --max-model-len 262144 is the model's native context, set for a long-context
-# load measurement; the KV pool is sized by --gpu-memory-utilization, not by
-# this cap. --enable-prompt-tokens-details adds the prefix-cache hit count to
-# usage (prompt_tokens_details.cached_tokens, cache_read_input_tokens).
+# --max-model-len 131072 is a policy choice for coding agents. KV does not bind
+# on this box; long prefills run one at a time and slow or stall every other
+# request, so a higher cap only buys longer stalls. Shared chat is protected by
+# a gateway-side input cap and agent concurrency limit, not by this number.
+# Read the KV size off the first start. --enable-prompt-tokens-details adds the
+# prefix-cache hit count to usage (prompt_tokens_details.cached_tokens,
+# cache_read_input_tokens).
 # Unified-memory workaround: vLLM's startup memory check counts reclaimable
 # page cache as used on UMA boxes (vllm-project/vllm#35313); drop caches first.
 ExecStartPre=/bin/sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
@@ -34,7 +37,7 @@ ExecStart=/usr/bin/docker run --name pickle-vllm --rm \
   --served-model-name qwen3.6-35b-a3b-nvfp4 \
   --kv-cache-dtype fp8 \
   --gpu-memory-utilization 0.70 \
-  --max-model-len 262144 \
+  --max-model-len 131072 \
   --max-num-seqs 8 \
   --max-num-batched-tokens 8192 \
   --enable-prefix-caching \
