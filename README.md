@@ -23,7 +23,7 @@ Proxmox 외의 GPU 노드와 백업 호스트도 각 런북에서 설치와 복�
 
 ## 주요 기능
 
-플랫폼은 VM 신청·승인·생성, SSH와 웹 터미널 접속, 도메인 공개, 만료와
+플랫폼은 VM 신청과 승인, 생성, SSH와 웹 터미널 접속, 도메인 공개, 만료와
 삭제까지 다뤄요. 이 레포지토리는 다음 기능을 맡아요.
 
 - **프로비저닝**: 호스트 위의 컨테이너와 사용자 VM 템플릿을 스크립트로 만들어요.
@@ -69,9 +69,9 @@ runbooks/         운영 절차                                    // 이 예시
 | 분류 | 스크립트 |
 |---|---|
 | 프로비저닝 | `create-app-lxc.sh`, `create-sshgw-lxc.sh`, `bootstrap-backup-host.sh`, `create-pbs-vm.sh`, `install-pbs-guest.sh`, `bootstrap-isolated-core.sh`, `bootstrap-isolated-services.sh`, `bootstrap-candidate-llm.sh` |
-| 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 물리 예약·CPU 공유 용량 기록) |
-| CPU 경계 | `cpu-isolation.py` (whole-SMT 후보·native 조회, 설치·적용은 기본 차단과 별도 승인 창) |
-| 배포 | `deploy-environment.py`(환경·artifact 검사 예시), `pickle-api-start.py`(열린 JAR descriptor를 유지하는 시작 wrapper), `verify-production-backup.py`(독립 PBS 복원 검사), `deploy-api.sh`, `deploy-console.sh`(명시 환경·artifact 진입점), `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
+| 노드 등록 | `register-node.py` (실측, 기본 dry-run, 신규 MAINTENANCE, 기존 IP pool 연결과 물리 예약과 CPU 공유 용량 기록) |
+| CPU 경계 | `cpu-isolation.py` (whole-SMT 후보와 native 조회, 설치와 적용은 기본 차단과 별도 승인 창) |
+| 배포 | `deploy-environment.py`(환경과 artifact 검사 예시), `pickle-api-start.py`(열린 JAR descriptor를 유지하는 시작 wrapper), `verify-production-backup.py`(독립 PBS 복원 검사), `deploy-api.sh`, `deploy-console.sh`(명시 환경과 artifact 진입점), `deploy-proxy-agent.sh`, `deploy-relay.sh`, `deploy-sshgw.sh`, `sync-systemd-units.sh`, `apply-gpu-node-vllm.sh` |
 | 정책 적용 | `apply-tls-ciphers.sh`, `apply-terminal-ingress.sh`, `apply-log-retention.sh`, `apply-main-domain-vhost.sh`, `apply-ops-timers.sh`, `apply-platform-inventory.sh`, `apply-settings.sh`, `apply-terms.sh`, `apply-os-catalog.sh`, `register-image.py`, `apply-relay-token.sh`, `apply-production-sdn.sh`, `apply-production-network.sh` |
 | 운영 | `db-backup.sh`, `db-pbs-backup.sh`(host runner의 DB LXC dump와 독립 복구점 감시), `candidate-core-vzdump-hook.sh`, `core-pbs-monitor.py`, `health-check.sh`, `cron-wrap.sh`, `ops-unit-failed.sh`, `enroll-backup-peer.sh`, `configure-qnetd.sh`, `check-backup-host.py`, `check-backup-storage.py`, `activate-qdevice.py`, `pbs-capacity-probe.py`, `pbs-capacity-monitor.py`, `discord-ops-alerts.py` |
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
@@ -79,38 +79,38 @@ runbooks/         운영 절차                                    // 이 예시
 
 `deploy-api.sh`, `deploy-console.sh`, `deploy-llm-gateway.sh`는
 `<check|apply> <dev|prod> <commit> <artifact> <sha256>`을 받아 환경 배포 도구에 전달해요.
-기본 호출과 CTID·hostname·체크아웃 override는 빌드나 대상 조회 전에 거부해요.
+기본 호출과 CTID와 hostname, 체크아웃 override는 빌드나 대상 조회 전에 거부해요.
 Target 설정은 보존 source CT를 제외하며 artifact는 root 보호 staging 경로에서 선택해요.
 빌드와 Vite flag 선택은 별도 build job에서 수행해요.
 
 Dev 배포는 root 보호 manifest의 `approved_artifacts[target][source_commit]` digest pin을 요구해요. CI에서 같은 commit을 다시 빌드해 digest가 달라지면 검증한 실제 artifact의 수동 pin 갱신이 필요하며, 검토된 gateway archive pin이 없으면 배포를 거부해요.
 
 개발 CI는 새 전용 key와 frozen forced-command receiver로 artifact만 전달해요.
-운영 key는 별도 production job이 사용해요. Receiver 설치·secret 등록은 별도 검토 후 준비해요.
+운영 key는 별도 production job이 사용해요. Receiver 설치와 secret 등록은 별도 검토 후 준비해요.
 
 새 [개발·운영 배포 예시](runbooks/deploy-environments.md)는 root 소유 대상 설정과
 40자리 commit, artifact SHA-256을 검사해요. 이 공개 레포지토리의
-`config/deploy-target-{dev,prod}.json`은 예약 주소·예시 이름을 사용하므로 실제
+`config/deploy-target-{dev,prod}.json`은 예약 주소와 예시 이름을 사용하므로 실제
 운영 파일로 설치하지 않아요. 비공개 운영 workflow는 개발 배포와 운영 artifact
 stage/check를 분리하며 이 예시 레포지토리에는 실행 workflow를 싣지 않아요.
 운영 `apply`는 artifact와 복구 범위에 결합된 root 보호 승인 창 및 실제 PBS 독립
-파일 복원·TOC·Flyway 대조를 요구해요. 현재 고정 production unit은 apply를 거부해요.
-개발·운영 API의 명시 rollback 정책, 실행 프로세스가 연 artifact의 inode·SHA,
-개발 effective environment·loopback authority와 Chat-free 정상 키를 포함한 독립
-호환 검증 결과를 검사해요. Console archive는 root 소유·directory 0755·file 0644로
+파일 복원과 TOC, Flyway 대조를 요구해요. 현재 고정 production unit은 apply를 거부해요.
+개발과 운영 API의 명시 rollback 정책, 실행 프로세스가 연 artifact의 inode와 SHA,
+개발 effective environment와 loopback authority와 Chat-free 정상 키를 포함한 독립
+호환 검증 결과를 검사해요. Console archive는 root 소유이며 directory 0755와 file 0644로
 정규화해요. 초기 mock과 별도 실연동 개발 manifest, 독립 reader 설정의 예시는
 `config/deploy-target-dev-real.json`과 `config/deploy-backup-reader.json`에 있어요.
 자리표시자는 실제 검증한 배치 값으로 교체하며 기존 운영 helper는 수정하지 않아요.
 
 운영 DB 사본으로 시험하는 개발 환경은 보호 manifest의
-`PICKLE_DEV_DATA_MODE=production-copy`를 사용해요. 같은 개발 CT·DB 배치에서
-API의 `isolated` profile을 선택하며, 복제한 계정·비밀번호·MFA·기관 권한과 이력을
-유지해요. 관리자 MFA는 계속 요구해요. JobRunr·외부 polling·메일·DNS 쓰기와
+`PICKLE_DEV_DATA_MODE=production-copy`를 사용해요. 같은 개발 CT와 DB 배치에서
+API의 `isolated` profile을 선택하며, 복제한 계정과 비밀번호, MFA, 기관 권한, 이력을
+유지해요. 관리자 MFA는 계속 요구해요. JobRunr와 외부 polling, 메일, DNS 쓰기,
 VM 제어를 중단하고 guest outbound를 개발 DB로 제한해요. Gateway 배포도 거부해요.
 Google 계정 연결 기록은 보존하지만 개발용 Google OAuth는 별도 구성 전까지 사용할
 수 없어요. 기존 합성 DB는 별도 이름으로 보존하고 복원 절차에서 다시 선택할 수 있어요.
 
-이 환경 배포 예시는 개발 CT901·DB902, DB 주소 `198.18.0.60`과
+이 환경 배포 예시는 개발 CT901과 DB902, DB 주소 `198.18.0.60`과
 `example-dev-host`를 사용해요. Source commit과 artifact SHA는 `EXAMPLE_*`
 자리표시자이며 실제 배치 전에 검증한 값으로 교체해요.
 
@@ -136,7 +136,7 @@ PBS 준비 도구는 Ubuntu 22.04 amd64의 libvirt와 네트워크를 유지하�
 따라 설정 잠금과 TLS 및 정족수 확인을 진행해요.
 
 운영 SDN 도구는 `hosts/production/network.json`을 입력으로 사용해요. 예시 운영망은
-`100.65.0.0/16`과 `100.66.0.0/16`이며 기존 개발망 `198.18.0.0/16`·`198.19.0.0/16`과
+`100.65.0.0/16`과 `100.66.0.0/16`이며 기존 개발망 `198.18.0.0/16`과 `198.19.0.0/16`에
 mesh `100.64.0.*` 예시를 구분해요. 실제 배포 전에는 이 예약 주소를 해당 환경에 맞게 교체해요.
 PVE와 NetBird의 기존 firewall을 유지하며, guest 정책을 우회하는 mark와 VLAN frame을
 별도 guard로 처리해요.
@@ -153,10 +153,10 @@ source 방화벽 파일을 새 디렉터리에 생성해요. 입력과 적용 �
 순서는 [SSH 중계 런북](runbooks/ssh-transit.md)에 있어요. 파일 설치나 서비스 기동은
 별도로 승인된 절차에서 수행해요.
 선택 설정 `relay_transit`는 릴레이의 고정 IPv4에서 활성 gateway owner로 들어온
-새 TCP·UDP 연결만 guest 망으로 전달하고, API의 릴레이 동기화 포트 8080을 별도로
+새 TCP, UDP 연결만 guest 망으로 전달하고, API의 릴레이 동기화 포트 8080을 별도로
 허용해요. Guest 포트 22는 차단하며, guest 연결은 `RETURN`으로 PVE VM 방화벽의
 최종 판단을 받아요. Standby에는 이 신규 연결 예외를 만들지 않아요.
-기본 실행은 사전 검사예요. 생성된 SDN 파일을 수동으로 편집하지 않는 적용·부팅·rollback
+기본 실행은 사전 검사예요. 생성된 SDN 파일을 수동으로 편집하지 않는 적용과 부팅, rollback
 절차는 [운영 네트워크 런북](runbooks/production-network.md)에 있어요.
 
 격리 core 도구는 Debian 13 템플릿으로 PostgreSQL 18과 Java 25 실행 환경을 준비해요.
@@ -165,7 +165,7 @@ hook으로 지속 적용하고, APT 전에 `ip -j link` readback으로 검증해
 PVE는 `net0`의 `mtu=`를 기동 때 만드는 veth에만 걸고 guest의 interfaces 파일에는 쓰지 않아,
 hook이 없으면 guest의 networking이 다시 올라올 때 1500으로 돌아가요. 그래서 격리 core,
 후보 서비스 core, 후보 LLM 게이트웨이 세 생성 경로가 `isolated_core.install_guest_mtu`
-하나로 hook 설치·적용·readback을 수행하고, hook 파일 이름만 경로마다 달라요.
+하나로 hook 설치와 적용, readback을 수행하고, hook 파일 이름만 경로마다 달라요.
 대상 노드와 CTID, private 주소, 검증한 패키지 버전 및 새 자격증명 파일을 명시해요.
 API는 `isolated` profile, 시작을 막는 marker와 비활성 job/정책/vendor 설정을 적용한 상태로
 남아요. 별도 `--bootstrap-admin` one-shot은 host/CT/machine/DB identity와 빈 DB를 확인한
@@ -174,10 +174,10 @@ disabled 상태로 둬요. 카탈로그, 기존 데이터 이관과 공개 진�
 [격리 core 런북](runbooks/isolated-core-bootstrap.md)의 순서와 소유권 확인을 따라요.
 
 후보 LLM 게이트웨이는 `examples/candidate-llm.json`에 대상 노드와 새 CTID, proxy 주소,
-proxy CT 설정 파일, Debian 템플릿 및 바이너리·유닛 경로와 SHA-256을 명시해요. `--config`만 주면 계획을
-출력하고 `--apply`를 추가해야 생성해요. 적용 전에 게스트 소유권과 빈 CTID·volume,
-클러스터의 활성 PVE 작업·HA 리소스 부재, proxy가 실행 중인지와 단일 `net0`, 네트워크 및 저장소 여유를 확인해요. 첫 부팅
-직후 SSH와 Postfix service/path를 중지·mask하고, APT 전에 `eth0` MTU를
+proxy CT 설정 파일, Debian 템플릿 및 바이너리와 유닛 경로와 SHA-256을 명시해요. `--config`만 주면 계획을
+출력하고 `--apply`를 추가해야 생성해요. 적용 전에 게스트 소유권과 빈 CTID와 volume,
+클러스터의 활성 PVE 작업과 HA 리소스 부재, proxy가 실행 중인지와 단일 `net0`, 네트워크 및 저장소 여유를 확인해요. 첫 부팅
+직후 SSH와 Postfix service/path를 중지하고 mask하며, APT 전에 `eth0` MTU를
 `/etc/network/if-pre-up.d/candidate-llm-mtu` hook으로 지속 적용해요. APT 전후와 완료 시
 unit 상태, hook과 실제 MTU, 설정한 DNS를 확인하고, TCP listener가 없음을 확인해요. 게스트 방화벽은 APT 설치 뒤에 켜지므로 그 사이에는 기존
 격리망 경계에 의존해요. 실패하면 소유권을 다시 확인해 제한 시간 안에 CT 정지를 시도하고
@@ -197,21 +197,21 @@ DB/PBS 도구는 Python 3와 `proxmox-backup-client`, source의 PostgreSQL 18 cl
 선택 config로 점검해요. 정기 점검과 와일드카드 갱신 소유, expiry row 인계 절차는
 [운영 점검 런북](runbooks/production-ops.md)에 있어요.
 
-`discord-ops-alerts.py`는 호스트 감시와 generation collector의 확정 사건·관측 장애를
+`discord-ops-alerts.py`는 호스트 감시와 generation collector의 확정 사건과 관측 장애를
 Discord 전용 대기열로 전달해요. 원본 상태와 요약의 시각을 대조하며 보호 설정,
 전송 상태와 설치 절차는 [운영 알림 런북](runbooks/discord-ops-alerts.md)에 있어요.
 
 `candidate-core-vzdump-hook.sh`는 예시 후보 노드 pve-node-2의 CT 1200/1201/1202/1204를
-PBS로 백업하기 전 노드·스토리지·정족수·설정·실행 상태를 확인해요. 등록 절차는
+PBS로 백업하기 전 노드와 스토리지, 정족수, 설정, 실행 상태를 확인해요. 등록 절차는
 [후보 코어 백업 런북](runbooks/candidate-core-backup.md)에 있어요.
 `core-pbs-monitor.py`는 pve-node-3의 읽기 전용 PBS storage에서 다섯 CT의 일일 복구점과
-기존 네 보호 baseline을 확인해요. 최신 관측·복구점 나이와 최초 사건 기록을 분리하고
-기존 장애·복구 메일을 유지해요. 설치 절차는
+기존 네 보호 baseline을 확인해요. 최신 관측과 복구점 나이, 최초 사건 기록을 분리하고
+기존 장애와 복구 메일을 유지해요. 설치 절차는
 [독립 감시 런북](runbooks/core-pbs-monitor.md)에 있어요. CTID, 설정 해시, 암호화
 fingerprint와 날짜는 예시 값이며 실제 환경에 맞게 검증해 채워야 해요.
 
-`backup-health-summary.py`는 기존 core 관측과 DB 정상 캐시·native 실행을 읽어 현재 판정과
-마지막 정상 증거를 분리해요. 추가 백업·알림 없이 [로컬 요약](runbooks/backup-health-summary.md)을
+`backup-health-summary.py`는 기존 core 관측과 DB 정상 캐시, native 실행을 읽어 현재 판정과
+마지막 정상 증거를 분리해요. 추가 백업이나 알림 없이 [로컬 요약](runbooks/backup-health-summary.md)을
 게시하며 기존 감시와 SMTP state를 변경하지 않아요.
 
 `pbs-capacity-probe.py`는 인증서 pin을 확인하고 읽기 전용 token으로 datastore 용량만
@@ -221,7 +221,7 @@ fingerprint와 날짜는 예시 값이며 실제 환경에 맞게 검증해 채�
 
 합성 계정 로그인 공개 시험 예시는 CT1200의 health-only TLS vhost 한 파일을
 일시적으로 교체해요. `scripts/apply-candidate-synthetic-login.py`는 예시 설정
-SHA와 nginx 문법·응답을 검사하고, `recover`는 health-only 상태를 복원해요.
+SHA와 nginx 문법, 응답을 검사하고, `recover`는 health-only 상태를 복원해요.
 적용 조건과 허용 경로는 [합성 로그인 진입 런북](runbooks/candidate-synthetic-login-ingress.md)에
 있어요. 예시 해시와 주소는 실제 장비에 그대로 사용할 수 없어요.
 
@@ -262,11 +262,11 @@ DB에서 확인해요. 메일함 앱 비밀번호는 볼트 파일 `smoke-mailbo
 메일함 도착 여부는 별도로 확인해요. `smoke-prod.sh`는 읽기 전용이고
 인자를 받지 않아요. VM 생성부터 삭제까지는 `smoke-provisioning.sh`가 확인해요.
 `smoke-llm-key-lifecycle.sh`는 LLM gateway까지 배포한 뒤 평문 키를 출력하지 않고 실제
-1-token 호출과 snapshot 기반 정지·재개·폐기 반영을 확인해요. 이 일반 lifecycle은
+1-token 호출과 snapshot 기반 정지와 재개, 폐기 반영을 확인해요. 이 일반 lifecycle은
 OpenRouter 사업 account가 없어도 실행할 수 있도록 금액 한도를 0으로 둔 TOKEN 축 smoke예요.
 호출 모델은 기본 `pickle-general`이며 다른 TOKEN 모델을 검증할 때만 `LLM_SMOKE_MODEL`로
 바꿔요. 지정한 모델이 gateway `/models`에 없으면 호출 전에 실패해요.
-양수 CREDIT 최초 binding과 cross-org account isolation은 실제 account 준비·binding ON 뒤 별도
+양수 CREDIT 최초 binding과 cross-org account isolation은 실제 account 준비와 binding ON 뒤 별도
 smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아니에요.
 
 사용자 VM 템플릿을 만드는 빌드 레시피는 이 레포지토리에 없어요. 공개 레포지토리
@@ -274,7 +274,7 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아니�
 
 ### runbooks/
 
-`node-registration.md`는 Proxmox 노드 단독 등록과 core·복구 용량 예약,
+`node-registration.md`는 Proxmox 노드 단독 등록과 core와 복구 용량 예약,
 활성화 전 검증을 설명해요.
 
 노드 등록 설정의 `cpu_allocation_ratio`와 `committed_vcpu`는 함께 지정해요.
@@ -282,25 +282,25 @@ smoke를 구현해 검증해야 하며 현재 이 script의 coverage가 아니�
 공유 정책은 schema 2의 `cpu_policy`에 기록하며 CPU 배치 가능량을
 `(물리 thread - 보호할 물리 예약 thread) × 비율 - 별도 commit된 vCPU`로 계산해요.
 비율은 정수 `1` 또는 `2`이고 이미 플랫폼 DB의 VM으로 계산되는 vCPU를
-`committed_vcpu`에 다시 넣지 않아요. RAM·디스크 예약은 공유 비율과 무관해요.
+`committed_vcpu`에 다시 넣지 않아요. RAM과 디스크 예약은 공유 비율과 무관해요.
 `examples/node-registration-cpu-sharing.json`은 공유 정책의 입력 형상을 보여 줘요.
-schema 2를 읽는 API 배치 consumer를 먼저 배포·검증한 뒤 노드를 활성화해 주세요.
+schema 2를 읽는 API 배치 consumer를 먼저 배포하고 검증한 뒤 노드를 활성화해 주세요.
 
 플랫폼 CPU를 학생 영역과 분리할 때는 host 2물리 core/4thread와 플랫폼 4물리
 core/8thread를 합친 `reserve_cpu_threads=12`를 먼저 차감하고 학생 영역에만 2:1을
 적용해요. 물리 24/32thread에서 별도 보존 VM 5/3vCPU를 차감한 예산은 19/37vCPU예요.
 플랫폼 CT의 vCPU를 별도 commit에 다시 넣지 않아요. label 계산은 kernel 격리를
 대신하지 않아요. `scripts/cpu-isolation.py`의 whole-SMT 후보, 정상 exclusive partition,
-CT mask와 QEMU hook의 영속화·실패 경계는 [CPU 격리 런북](runbooks/cpu-isolation.md)에
-있어요. 이 도구는 host IP·부팅 인자·IRQ 정책을 바꾸지 않으며 I/O와 latency 검증은 별도예요.
+CT mask와 QEMU hook의 영속화와 실패 경계는 [CPU 격리 런북](runbooks/cpu-isolation.md)에
+있어요. 이 도구는 host IP와 부팅 인자, IRQ 정책을 바꾸지 않으며 I/O와 latency 검증은 별도예요.
 
 학생 VM이 모두 중지된 뒤에도 child cpuset controller를 유지하는
 `examples/pickle-student-cpu-controller.service.template`은 같은 학생 mask의 idle process를
 `qemu.slice`에 둬요. 템플릿의 보호 배치와 별도 소유 기록, 부팅 순서와 원복 조건은
 [CPU 격리 런북](runbooks/cpu-isolation.md#학생-child-controller-유지)에 있어요.
 
-이 예시본에는 `proxmox-api-principal.md`(Proxmox API 서비스 principal 권한 분리와 token custody), `new-environment.md`(신규 환경 관통 구축 순서 — 환경별로 바꿀 값 표와
-사람만 할 수 있는 단계·절차가 없는 지점 명시), `node-intake.md`(비Proxmox 노드 편입 절차 —
+이 예시본에는 `proxmox-api-principal.md`(Proxmox API 서비스 principal 권한 분리와 token custody), `new-environment.md`(신규 환경 관통 구축 순서: 환경별로 바꿀 값 표와
+사람만 할 수 있는 단계와 절차가 없는 지점 명시), `node-intake.md`(비Proxmox 노드 편입 절차:
 실측 체크리스트, 운영자 접속 키 설치, 대역외 관리 평면 점검), `drift-resolution.md`(DB와
 하이퍼바이저 상태가 어긋났을 때의 판정 절차), `db-restore.md`(백업 복원),
 `inventory-readiness.md`(IP pool 한 건 등록과 MAINTENANCE 노드의 VM 방화벽 opt-in 준비),
@@ -310,11 +310,11 @@ CT mask와 QEMU hook의 영속화·실패 경계는 [CPU 격리 런북](runbooks
 `candidate-llm-gateway.md`(새 후보 LLM 게이트웨이 LXC의 닫힌 상태 준비와 활성화 경계),
 `pbs-egress.md`(DB LXC의 PBS TCP 8007 egress와 state-guarded 재적용),
 `db-pbs-backup.md`(플랫폼 DB의 암호화 PBS 백업, 독립 복구점 감시 및 같은 서비스의 수동 복원),
-`gpu-node-vllm.md`(GPU 노드 vLLM 서빙 운영 — 시작·종료, 모델·플래그 교체와 롤백, 장애
-복구, 재부팅), `proxmox-node-intake.md`(Proxmox 노드 후보 인수 절차 초안 — 초기화 전
+`gpu-node-vllm.md`(GPU 노드 vLLM 서빙 운영: 시작과 종료, 모델과 플래그 교체와 롤백, 장애
+복구, 재부팅), `proxmox-node-intake.md`(Proxmox 노드 후보 인수 절차 초안: 초기화 전
 실측, 설치 전 결정 항목, standalone 설치, 등록 전에 실행하면 안 되는 스크립트),
-`gpu-passthrough.md`(GPU 패스스루 — Resource Mapping 생성, 토큰 최소 권한, VM 모양(`rombar=0`),
-붙이기·떼기·인계, 카드 상태 확인과 손실 대응, 시험 게스트 정리)를 담고 있어요. 나머지 재구축과 복구 절차는 비공개 레포지토리에 둬요.
+`gpu-passthrough.md`(GPU 패스스루: Resource Mapping 생성, 토큰 최소 권한, VM 모양(`rombar=0`),
+붙이기와 떼기, 인계, 카드 상태 확인과 손실 대응, 시험 게스트 정리)를 담고 있어요. 나머지 재구축과 복구 절차는 비공개 레포지토리에 둬요.
 
 | 문서 | 내용 |
 |---|---|
@@ -349,11 +349,11 @@ scripts/verify.sh        # shellcheck, 설정 초기화, core, DB 백업, SDN, q
 
 오프라인 추론 metric 파서 `scripts/lib/inference_metrics.py`는 Prometheus 텍스트와 관측 시각,
 source와 boot, process, configuration identity를 입력으로 받아요. 모델과 엔진을 구분한 누적
-counter와 histogram을 보존하고 실제 관측 간격으로 차분해요. 미관측·미지원·수집 실패는
+counter와 histogram을 보존하고 실제 관측 간격으로 차분해요. 미관측과 미지원, 수집 실패는
 0과 구분하며 identity 변경이나 긴 공백은 새 baseline으로 처리해요. snapshot 파싱의
-입력과 출력은 각각 512 KiB, 모델·엔진 그룹은 32개, 선택 sample은 2,048개,
+입력과 출력은 각각 512 KiB, 모델과 엔진 그룹은 32개, 선택 sample은 2,048개,
 histogram 경계는 128개로 제한해요.
-이는 파서의 기술 제한이며 장비 용량이나 수집·보관 정책을 뜻하지 않아요. 합성 입력을
+이는 파서의 기술 제한이며 장비 용량이나 수집과 보관 정책을 뜻하지 않아요. 합성 입력을
 검증하는 순수 모듈로 네트워크 수집, 저장 또는 호스트 설치를 실행하지 않아요.
 `verify.sh`에 포함된 회귀는 아래 명령으로 따로 실행할 수 있어요.
 
@@ -364,9 +364,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_inference_metrics.py
 전용 관측 프로그램 `scripts/inference-observation.py`는 기존 health/incident 경로와 별도
 파일을 사용해요. 모델 호스트에서 정규화한 최신 표본을 고정 SSH 명령으로 읽고, 중계
 호스트의 bounded outbox가 같은 HTTP body bytes를 API에 재전송해요. source/epoch/sequence와
-body SHA가 맞는 ACK 뒤에만 checkpoint를 먼저 보존하고 원문을 제거해요. 누락·미지원과
+body SHA가 맞는 ACK 뒤에만 checkpoint를 먼저 보존하고 원문을 제거해요. 누락과 미지원,
 실제 0, CPU 1분 load average와 GPU 사용률, producer 시각과 전달 시각을 구분해요.
-코드와 systemd 예시의 설치·활성화 및 자격증명 준비는 별도예요. 설정과 실패/만료 시
+코드와 systemd 예시의 설치와 활성화, 자격증명 준비는 별도예요. 설정과 실패/만료 시
 원문 보존, 운영 승인 경계는 [전용 관측 런북](runbooks/inference-observations.md)에 있어요.
 
 전용 outbox와 전달 fixture는 운영 호스트에 연결하지 않아요.
@@ -414,7 +414,7 @@ DB 백업 테스트는 PBS 응답을 대신하는 메모리 객체로 snapshot �
 
 | 항목 | 이 레포지토리의 값 |
 |---|---|
-| 호스트 LAN 주소·게이트웨이 | `192.0.2.10/24`, `192.0.2.1` |
+| 호스트 LAN 주소와 게이트웨이 | `192.0.2.10/24`, `192.0.2.1` |
 | 리버스 프록시 공인 IP | `203.0.113.10` |
 | 플랫폼 DNS 런북의 루트와 수동 ingress | `example.dev`, `staging.example.dev` |
 | 플랫폼 DNS 런북의 NS 집합 | `ns1.example.test`부터 `ns4.example.test`까지 |
@@ -424,18 +424,18 @@ DB 백업 테스트는 PBS 응답을 대신하는 메모리 객체로 snapshot �
 | 시크릿 볼트 경로 | `$VAULT/` |
 | 플랫폼 브리지 대역 | `198.18.0.0/16` |
 | 게스트 대역 | `198.19.0.0/16` |
-| 개발용 임시 NAT 브리지 대역(시험 게스트, 런북 `gpu-passthrough.md`; 프록시·패스스루 공인 IP와 겹치지 않게 선택) | `203.0.113.224/27` |
+| 개발용 임시 NAT 브리지 대역(시험 게스트, 런북 `gpu-passthrough.md`; 프록시와 패스스루 공인 IP와 겹치지 않게 선택) | `203.0.113.224/27` |
 | 릴레이 터널 대역 | `100.64.0.0/30` |
 | 호스트 이름 | `pve-node`, `gpu-node`, `dept-node`, `pve-node-2`, `pve-node-3` |
-| 비Proxmox 노드 주소·접속명 | `192.0.2.20`, `dept-node.example.ac.kr` |
-| 합성 로그인 시험 허용 출발지·앱 주소 | `203.0.113.14`, `203.0.113.182`, `198.18.1.20` |
+| 비Proxmox 노드 주소와 접속명 | `192.0.2.20`, `dept-node.example.ac.kr` |
+| 합성 로그인 시험 허용 출발지와 앱 주소 | `203.0.113.14`, `203.0.113.182`, `198.18.1.20` |
 | Proxmox 노드 후보 주소 | `192.0.2.30`, `192.0.2.31` |
 | 코어 PBS 예시 CTID | `1200`, `1201`, `1202`, `1203`, `1204` |
-| 코어 PBS 예시 storage·작업 이름 | `pbs-example-core-write`, `pbs-example-core-read`, `example-core-daily` |
-| 코어 PBS 예시 설정 해시·암호화 fingerprint | 동일 숫자 64자리의 합성 SHA-256 문자열과 `aa` 32쌍 |
-| 코어 PBS 예시 복구점·시행 날짜 | `2025-01-01` 수동 복구점, `2025-01-02` 첫 일일 백업 시행 |
+| 코어 PBS 예시 storage와 작업 이름 | `pbs-example-core-write`, `pbs-example-core-read`, `example-core-daily` |
+| 코어 PBS 예시 설정 해시와 암호화 fingerprint | 동일 숫자 64자리의 합성 SHA-256 문자열과 `aa` 32쌍 |
+| 코어 PBS 예시 복구점과 시행 날짜 | `2025-01-01` 수동 복구점, `2025-01-02` 첫 일일 백업 시행 |
 | 코어 PBS 예시 메일 설정 경로 | `/etc/pickle-example/mail.json` |
-| 비Proxmox 노드 하드웨어 모델 | 아키텍처만 남기고 제조사·모델명 생략 |
+| 비Proxmox 노드 하드웨어 모델 | 아키텍처만 남기고 제조사와 모델명 생략 |
 | 기관 이름 | `예시 기관` |
 
 `192.0.2.0/24`와 `198.51.100.0/24`, `203.0.113.0/24`는 RFC 5737이 문서화 용도로 예약한
@@ -444,12 +444,12 @@ DB 백업 테스트는 PBS 응답을 대신하는 메모리 객체로 snapshot �
 
 내부 대역도 예시 값이에요. 사설 대역은 인터넷에서 도달할 수 없지만, 어떤 컨테이너가 어느
 주소를 쓰고 터널이 어디로 이어지는지는 그 자체로 내부 지도예요. 구조는 그대로 두고 숫자만
-바꿨으므로(3·4번째 옥텟 유지) 스크립트가 무슨 일을 하는지는 그대로 읽혀요.
+바꿨으므로(3번째와 4번째 옥텟 유지) 스크립트가 무슨 일을 하는지는 그대로 읽혀요.
 `198.18.0.0/15`는 RFC 2544의 성능 시험용 대역이고, `100.64.0.0/10`은 RFC 6598의
 공유 주소 공간이에요. 두 대역은 인터넷에서 전역 도달 가능한 주소가 아니며, 여기서는
 내부 배치를 표현하는 예시 값으로 사용해요. LXC 번호와 서비스 포트는 그대로예요.
 
-검사기(`scripts/sanitization-check.sh`)는 **허용 목록**으로 동작해요 — 위 자리표시자
+검사기(`scripts/sanitization-check.sh`)는 **허용 목록**으로 동작해요. 위 자리표시자
 대역만 통과하고 사설 대역을 포함한 나머지는 거부해요. 원본에서 값을 옮겨 오다 실제 주소가
 섞이면 그 자리에서 검사에 실패해요.
 
@@ -459,7 +459,7 @@ DB 백업 테스트는 PBS 응답을 대신하는 메모리 객체로 snapshot �
 
 ## NetBird 관리와 내부 NTP
 
-관리 peer는 root 전용 일회용 key 파일로 등록하며 DNS·route·SSH config를 보존해요.
+관리 peer는 root 전용 일회용 key 파일로 등록하며 DNS와 route, SSH config를 보존해요.
 신규 관리 peer의 선택 버전은 NetBird 0.80.0이며 기존 peer를 일괄 업그레이드하지 않아요.
 VPN NTP server는 distro chrony deb를 별도 경로에 추출하고 기존 시간 client를 유지해요.
 
@@ -468,7 +468,7 @@ VPN NTP server는 distro chrony deb를 별도 경로에 추출하고 기존 시�
 | `enroll-management-peer.sh` | setup-key-file과 명시적 apply로 새 management peer 등록 |
 | `install-vpn-ntp-server.sh` | exact overlay 주소와 client allowlist로 clock-control 없는 NTP server 구성 |
 
-실행·보호·검증·원복은 [NetBird 관리/NTP 런북](runbooks/netbird-management-ntp.md)을 따라요.
+실행과 보호, 검증, 원복은 [NetBird 관리/NTP 런북](runbooks/netbird-management-ntp.md)을 따라요.
 
 배포 workflow 예시는 `.github/deploy.example.yml`에 있어요. GitHub Actions 실행 폴더 밖의 비활성 예시이며 실제 배포 workflow를 설치했다고 표현하지 않아요. 개발 전용 key와 운영 key 분리 조건을 예시 파일에도 검증해요.
 
@@ -497,29 +497,31 @@ job 실행 제한은 3분이에요. 필요한 권한과 전환 절차는 [배포
 개발 TLS 인증서는 15분 backup timer로 암호화해 보관해요. 복구 때는 독립 snapshot의
 파일 hash를 대조하고 인증서 갱신은 dry-run으로 확인해요.
 
-`dev-tls-export.py`는 지정된 개발 인증서·개인 키 bundle을 CMS recipient 공개 인증서로
-호스트 안에서 암호화해요. `dev-tls-backup.py`는 크기·SHA와 recipient를 대조한 암호문을
+`dev-tls-export.py`는 지정된 개발 인증서와 개인 키 bundle을 CMS recipient 공개 인증서로
+호스트 안에서 암호화해요. `dev-tls-backup.py`는 크기와 SHA, recipient를 대조한 암호문을
 PBS에 보관하고, 독립 복구에서 원래 파일 hash를 확인해요. 평문 키는 플랫폼 호스트와 독립 복구 서버의
-보호 경로에만 남겨요. 예제 설정은 `hosts/`의 `dev-tls-backup.example.json`, 실행·복구
+보호 경로에만 남겨요. 예제 설정은 `hosts/`의 `dev-tls-backup.example.json`, 실행과 복구
 절차는 [개발 TLS 백업 런북](runbooks/dev-tls-backup.md)에 있어요. 개발 CI SSH key의
 custody와 GitHub secret 등록은 별도 절차이며 이 TLS 백업을 설정했다고 완료되지 않아요.
 
 ## 자체 서빙 LLM 정기 감시
 
 `llm-health-probe.py`는 host/query와 정답 생성 결과를 분리하고,
-`service-health-monitor.py`는 로컬 결과의 신선도와 최초 장애·60분 안정 복구를 기록해요.
-원격 결과의 `observer_parent`를 지정하면 공통 수집 중단으로 누락·만료된 결과의 observer
-경보를 묶으며, 신선한 서비스 실패·TLS 보안 실패·개별 probe 오류는 독립 판정해요.
+`service-health-monitor.py`는 로컬 결과의 신선도와 최초 장애, 60분 안정 복구를 기록해요.
+원격 결과의 `observer_parent`를 지정하면 공통 수집 중단으로 누락되거나 만료된 결과의 observer
+경보를 묶으며, 신선한 서비스 실패와 TLS 보안 실패, 개별 probe 오류는 독립 판정해요.
 초기 통지는 꺼져 있으며 공개 인증 경로와 원격 수집은 별도 배치예요. Python3 표준
-라이브러리와 systemd를 쓰며 실행·검증·credential 설치와 원복은
+라이브러리와 systemd를 쓰며 실행과 검증, credential 설치, 원복은
 [LLM 감시 런북](runbooks/llm-health-monitor.md)을 따라요.
 
-스테이징 health-only 경로는 외부의 HTTP 200·정확한 본문, 7일 TLS 장애,
+스테이징 health-only 경로는 외부의 HTTP 200과 정확한 본문, 7일 TLS 장애,
 30일 만료 주의와 내부 ingress의 403 접근통제 검사를 별도 source로 구성해요.
 주의는 기존 상태 enum과 별도의 `severity: warning`을 사용하며 장애와 다른 제목으로
 전달해요. 설정과 전환 시 이력 보존은 [스테이징 감시 런북](runbooks/staging-health-monitor.md)을 따라요.
 공개 HTTPS/TLS 감시와 고정 SSH reader/importer의 배치 및 전용 진단 키 검증은
 [외부 감시와 결과 수집 런북](runbooks/llm-health-external.md)에 있어요.
+
+최종 갱신: 2026-11-03
 
 ## 전체 아키텍처
 
