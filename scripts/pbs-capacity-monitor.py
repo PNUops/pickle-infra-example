@@ -163,7 +163,14 @@ def send(event: str, report: dict, sequence: int) -> None:
     message['From'] = config['sender']
     message['To'] = config['recipient']
     message['Subject'] = f"[Example PBS capacity] {event}"
-    message.set_content(json.dumps({'event': event, 'sequence': sequence, **report}, sort_keys=True))
+    message.set_content(
+        'PBS datastore 용량 상태가 바뀌었어요.\n'
+        f"알림: {event}\n확인 결과: {report.get('status', '확인 불가')}\n"
+        f"시각: {report.get('checked_at', '확인 불가')}\n"
+        f"전체: {report.get('total_bytes', '측정 불가')} bytes\n"
+        f"사용: {report.get('used_bytes', '측정 불가')} bytes\n"
+        f"가용: {report.get('avail_bytes', '측정 불가')} bytes\n"
+        + (f"확인할 내용: {report['error']}\n" if report.get('error') else ''))
     smtp = None
     try:
         factory = smtplib.SMTP_SSL if config['tls_mode'] == 'tls' else smtplib.SMTP

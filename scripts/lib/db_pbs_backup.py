@@ -693,7 +693,7 @@ def send_mail(c: Config, report: dict, *, test=False) -> bool:
     def stamp(value):
         return (datetime.fromtimestamp(value, timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M:%S KST')
                 if isinstance(value, int) else '확인되지 않음')
-    message.set_content(('운영 백업 알림 테스트입니다.\n' if test else 'DB 백업의 복구 가능 시점 상태가 변경됐습니다.\n')
+    message.set_content(('운영 백업 알림 테스트예요.\n' if test else 'DB 백업의 복구 가능 시점 상태가 바뀌었어요.\n')
                         + '\n상태: ' + labels.get(report['status'], report['status'])
                         + '\n판정: ' + report['reason']
                         + '\n검증된 데이터 시점: ' + stamp(report.get('recovery_point_epoch'))

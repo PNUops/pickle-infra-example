@@ -226,9 +226,8 @@ def send_mail(report: dict, event: str) -> None:
     message['From'] = config['sender']
     message['To'] = config['recipient']
     message['Subject'] = '[Pickle 코어 PBS 백업] ' + ('장애' if event == 'FAILED' else '복구')
-    message.set_content('pve-node-3 코어 LXC 백업 감시 상태가 변경됐습니다.\n'
-                        f"상태: {event}\n기준일: {report['date']} KST\n판정: {report['reason']}\n"
-                        f"CT별 최근 아카이브 시각(epoch): {json.dumps(report['latest'], sort_keys=True)}\n")
+    message.set_content('pve-node-3 코어 LXC 백업 감시 상태가 바뀌었어요.\n'
+                        f"상태: {event}\n기준일: {report['date']} KST\n판정: {report['reason']}\n")
     smtp = None
     try:
         context = ssl.create_default_context()
