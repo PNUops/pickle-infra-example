@@ -13,7 +13,7 @@
 | `host-query`의 host | 서빙 호스트, 1분 | boot ID, 서비스 기동 경과, MemAvailable, GPU 온도/사용률. 부팅 또는 서비스 시작 뒤 10분은 LOADING |
 | `host-query`의 query | 서빙 호스트, 1분 | 인증된 `/health`와 `/v1/models`, 예상 모델 일치. 실제 생성 정상과 별도 |
 | `local-generation` | 서빙 호스트, 15분 | 고정 산술 질문, 정답 `4`, 정상 종료와 양수 입력/출력 토큰, 최대 출력 8토큰 |
-| `upstream-generation` | 실제 gateway가 있는 컨테이너, 5분 | 같은 자체 서빙 엔드포인트를 직접 호출. gateway의 학생 인증·인가·사용량 적재는 통과하지 않음 |
+| `upstream-generation` | 실제 gateway가 있는 컨테이너, 5분 | 같은 자체 서빙 엔드포인트를 직접 호출. gateway의 학생 인증과 인가, 사용량 적재는 통과하지 않음 |
 | collector | 결과가 있는 호스트, 1분 | 허용한 로컬 결과의 신선도와 상태 전이. 원격 SSH 수집과 외부 감시는 별도 배치 |
 
 생성은 thinking off, temperature 0, 비스트리밍이며 DNS를 쓰지 않는 명시적 내부 IP의
@@ -37,11 +37,11 @@ optional metrics는 health/models와 별도 자식 프로세스에서 최대 3�
 unified memory 장비에서 GPU memory가 N/A면 UNSUPPORTED로 남겨요. host memory는
 `/proc/meminfo`에서 별도로 읽어요. 지원하지 않는 지표를 0으로 바꾸지 않아요.
 
-공개 gateway의 인증·인가·통계 경로는 이 패키지가 검증하지 않아요. 그 경로는
+공개 gateway의 인증과 인가, 통계 경로는 이 패키지가 검증하지 않아요. 그 경로는
 [외부 HTTPS 감시](llm-health-external.md)의 공개 생성 canary 가 전용 비학생 진단 key 로
 봐요. 그 canary 는 route 를 가리지 않으므로(유료 upstream 포함) 자체 서빙 생성 정상의
 증거로 읽지 않아요. 학생 키로 대신하지 않아요. 외부 모델 fallback과
-서비스 자동 재시작·호스트 재부팅도 이 패키지의 동작이 아니에요.
+서비스 자동 재시작과 호스트 재부팅도 이 패키지의 동작이 아니에요.
 
 ## 설치 전 검증
 
@@ -83,7 +83,7 @@ unified memory 장비에서 GPU memory가 N/A면 UNSUPPORTED로 남겨요. host 
 
 결과와 budget 디렉터리는 systemd StateDirectory가 root 0700으로 만들어요. 각 결과와
 state는 0600이며 고정 크기의 최신 JSON만 보존해요. 본문과 응답 원문, credential은
-결과에 없고 journal에도 정형 상태·지연·토큰만 남아요. journal 보존은 호스트의 기존
+결과에 없고 journal에도 정형 상태와 지연, 토큰만 남아요. journal 보존은 호스트의 기존
 용량/기간 정책을 따르며 운영자 조사는 해당 기간 안에서 수행해요.
 
 ## 최초 경보와 안정 복구
@@ -94,7 +94,7 @@ collector는 실제 새 생성 결과 두 번, 조회/host 결과 세 번 실패
 5분 결과는 12분, 15분 결과는 35분의 신선도 상한을 사용해요.
 
 장애 메일은 사건 최초 1회예요. 복구는 신선한 정상 결과가 2개 이상이고 첫 정상부터
-60분간 유지된 뒤 1회예요. 중간 실패·LOADING·UNKNOWN·신선도 공백은 안정 창을
+60분간 유지된 뒤 1회예요. 중간 실패나 LOADING, UNKNOWN, 신선도 공백은 안정 창을
 초기화하고 같은 incident를 유지해요. 닫힌 incident 이후 새 확정 실패는 새 사건이에요.
 통지 off에서 이미 열린 incident는 통지 활성화 시 현재 상태를 한 번 보내요.
 이때 과거 사건의 전송 기록과 현재 incident 번호를 대조해요. 과거 장애 메일이 SENT여도
@@ -106,22 +106,22 @@ NEW/NOT_SENT 장애 통지를 취소해 뒤늦은 과거 장애와 복구를 함
 담당을 분리해요. 원격 source에는 `observer_parent`로 같은 설정의 importer source 한 개를
 명시할 수 있어요. [외부 수집 예시](../hosts/llm-monitor/collector-import.example.json)의 부모는
 `expected_kind=observer-report`이며 `kind`, 상태와 importer의 고정 reason을 확인해요.
-부모 누락·self 참조·순환·다단계 관계는 설정 오류예요. 관계가 없는 기존 설정은 그대로 동작해요.
+부모 누락이나 self 참조, 순환, 다단계 관계는 설정 오류예요. 관계가 없는 기존 설정은 그대로 동작해요.
 
 collector는 모든 결과 경로를 한 번 읽은 뒤 고정한 snapshot으로 판단해요. 공통 importer가
-현재 OBSERVER_ERROR이거나 결과가 누락·만료·유효하지 않을 때, 그 부모에 연결된 **누락되거나
+현재 OBSERVER_ERROR이거나 결과가 누락되거나 만료됐거나 유효하지 않을 때, 그 부모에 연결된 **누락되거나
 만료된 child**의 observer 실패를 UNKNOWN으로 묶어요. 공통 parent의 observer incident만
 원래 3회 기준으로 열고, child의 실패 횟수와 안정 복구 창은 초기화해요. 신선한 서비스 FAILED,
 TLS 보안 FAILED, 개별 probe의 명시적 OBSERVER_ERROR와 잘못된 child 문서는 억제하지 않아요.
 parent가 현재 HEALTHY이면 과거 incident의 안정 복구 중이어도 child를 억제하지 않아요.
 
 summary는 UNKNOWN의 원본 epoch와 reason, `suppressed_by`, `parent_status`를 보존해요.
-억제 중 기존 child incident·sequence를 지우거나 새 번호를 만들지 않으며, child observer의
-NEW/NOT_SENT 장애 통지 예약·재전송은 보류해요. 부모가 돌아온 뒤 child 자체가 계속 없으면
+억제 중 기존 child incident와 sequence를 지우거나 새 번호를 만들지 않으며, child observer의
+NEW/NOT_SENT 장애 통지 예약과 재전송은 보류해요. 부모가 돌아온 뒤 child 자체가 계속 없으면
 기존 observer 판정을 재개해요. 불확실한 구간에는 NEW/NOT_SENT 복구 통지를 취소하고
 ATTEMPTED/SENT/UNCERTAIN 기록은 보존해요. 억제로 새 child incident가 열리지 않았으면
-그 child의 복구 통지도 생기지 않아요. 실제 배치 설정을 바꾼 뒤 bundle 전체 단절·개별 child
-단절·신선한 TLS 실패 fixture와 자연 실행을 확인하고 초기 관찰이 끝난 뒤 통지를 켜요.
+그 child의 복구 통지도 생기지 않아요. 실제 배치 설정을 바꾼 뒤 bundle 전체 단절과 개별 child
+단절, 신선한 TLS 실패 fixture, 자연 실행을 확인하고 초기 관찰이 끝난 뒤 통지를 켜요.
 
 수신자와 제목의 대상 이름을 검토하고 초기 관찰이 끝난 뒤 `notifications_enabled: true`와
 root 0600 `mail_config` 경로를 설정해요. SMTP JSON은 기존 백업 메일의 TLS 설정 형식
@@ -129,7 +129,7 @@ root 0600 `mail_config` 경로를 설정해요. SMTP JSON은 기존 백업 메�
 수 있어요. 비밀번호는 JSON에 넣지 않고 별도 root 0600 파일로 둬요. 시험 메일은
 명시적으로 승인된 경우에만 보내요. SMTP 수락은 inbox 도착의 증거가 아니에요.
 
-메일 전에 ATTEMPTED를 원자 저장해요. 새 실패·LOADING·UNKNOWN이 관측되면 이전 사건의 NEW/NOT_SENT
+메일 전에 ATTEMPTED를 원자 저장해요. 새 실패나 LOADING, UNKNOWN이 관측되면 이전 사건의 NEW/NOT_SENT
 복구 통지는 SUPERSEDED로 막아 현재 장애 중 과거 복구 메일이 나가지 않게 해요.
 이미 수락되거나 불확실한 ATTEMPTED/SENT/UNCERTAIN 기록은 그대로 보존해요.
 수락 여부 불확실/중단 ATTEMPTED는 자동
@@ -146,3 +146,5 @@ heartbeat가 배치되기 전 이를 교차 감시 완료로 기록하지 않아
 3. budget과 incident/sequence/delivery state를 과거 값으로 되감지 않아요. UNCERTAIN과
    ATTEMPTED는 수신 기록 대조 전 재전송하지 않아요. 폐기할 파생 credential만 회수하고
    기존 upstream 원본과 학생 키, 백업 복구점은 보존해요.
+
+최종 갱신: 2026-11-03

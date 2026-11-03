@@ -9,8 +9,8 @@
 
 `public-service-health-probe.py`는 root 소유 0600 설정에 명시한 HTTPS 호스트만 요청해요.
 실제 observer hostname도 설정과 같아야 해요. CA/hostname 검증을 끄거나 redirect를
-따라가지 않아요. console은 HTTP200·HTML content type과 root marker를 확인하고,
-API는 HTTP200·JSON content type과 지정한 필드 값/타입을 확인해요. SPA HTML이 API
+따라가지 않아요. console은 HTTP200과 HTML content type, root marker를 확인하고,
+API는 HTTP200과 JSON content type, 지정한 필드 값/타입을 확인해요. SPA HTML이 API
 응답으로 잘못 돌아오는 상황을 정상 처리하지 않아요. 인증 실패 401/403은 정상 생성의
 증거가 아니에요.
 
@@ -25,9 +25,9 @@ NXDOMAIN이나 전체 서비스 다운을 확정하지 않아요. 실제 TLS cha
 예상 HTTP/JSON 불일치는 해당 공개 target의 FAILED로 남겨요.
 
 인증서 보안 오류는 HTTP 경로 장애와 독립적인 `kind=tls` source로 추가해요.
-`public-tls-production`·`public-tls-development`·`public-tls-gateway`는 실제 HTTP 요청 없이
+`public-tls-production`과 `public-tls-development`, `public-tls-gateway`는 실제 HTTP 요청 없이
 CA/hostname 검증과 7일 만료 기준만 확인해요. 인증서 chain/SAN 검증이 실패하거나 확인된 인증서의
-잔여 기간이 7일 미만일 때만 FAILED이고 DNS/TCP/인증서 확인 전 timeout·handshake 불가는
+잔여 기간이 7일 미만일 때만 FAILED이고 DNS/TCP/인증서 확인 전 timeout이나 handshake 불가는
 OBSERVER_ERROR예요. 별도 HTTP source가 이미 장애여도 새 TLS 보안 incident를 숨기지
 않으며 reason/IP가 바뀔 때마다 사건을 만들지 않아요.
 
@@ -64,7 +64,7 @@ probe 가 설정 오류로 거부해요. 이때 보이는 증상은 journal 의
 비용의 상한은 두 겹이에요. 아래 서버 쪽 경계는 모델 행이 TOKEN 축에 있는 동안의
 이야기예요. 일 토큰 quota 는 TOKEN 축 모델에만 걸리고, upstream 을 외부 API 로 바꿔도 축은
 움직이지 않아요. 모델을 CREDIT 축으로 옮기면 진단 key 에 credential 이 필요해지고 64k 는 더
-이상 경계가 아니므로 이 절을 다시 검토해요. probe 쪽은 최소 간격 300초, UTC 하루 312시도(실패·중단 포함,
+이상 경계가 아니므로 이 절을 다시 검토해요. probe 쪽은 최소 간격 300초, UTC 하루 312시도(실패와 중단 포함,
 전송 전에 durable 저장), 요청당 `max_completion_tokens` 128, 전체 20초예요. 서버 쪽은
 진단 key 자체의 한도(Chat 전용, rpm 1, 동시 1, 일 64k 토큰)이에요. 2026-10-24 실측(유료
 추론 모델 route): 입력 19토큰, 출력 17~20토큰(그중 추론 10~13), 요청당 약 $0.00001,
@@ -94,7 +94,7 @@ collector 양쪽) 먼저, probe 와 설정이 그다음이에요.
 
 ## 고정 policy receipt 전달
 
-이 receipt 는 2026-10-24 부터 공개 canary 의 조건이 아니에요(위 절). 전송 형식과 reader·
+이 receipt 는 2026-10-24 부터 공개 canary 의 조건이 아니에요(위 절). 전송 형식은 그대로이고 reader와
 importer 의 처리는 남아 있지만 소비자가 없어요. 운영 host 의 producer 를 은퇴시킨 뒤에는
 receipt 가 `valid=false` 로 고정되며, 이는 장애가 아니에요.
 
@@ -110,16 +110,16 @@ reader의 `gateway-host` 역할은 `/var/lib/pickle-public-policy/attestation.js
 `/var/lib/pickle-health-import-collector/policy-attestation.json`에 게시해요. 이 마지막
 경로는 2026-10-24 전까지 공개 probe 설정의 `policy_attestation`으로 지정하던 자리예요.
 **지금의 canary 설정에는 `policy_attestation`을 지정하지 않아요.** 지정하면 probe 가
-설정 오류(journal 의 `PUBLIC_CONFIGURATION_OR_STATE_INVALID`, exit 2)로 거부해요. 각 호스트명·IP·key·pin은 실제 검증값으로
+설정 오류(journal 의 `PUBLIC_CONFIGURATION_OR_STATE_INVALID`, exit 2)로 거부해요. 각 호스트명과 IP, key, pin은 실제 검증값으로
 대체하며 공개 예시를 그대로 활성화하지 않아요.
 
 importer는 key와 SSH 검증 전에 기존 허가를 원자적으로 `valid=false`로 바꿔요. bundle의
-health와 policy가 모두 검증된 뒤에만 새 receipt를 게시해요. 누락·전송·형식·파일 게시 오류는
+health와 policy가 모두 검증된 뒤에만 새 receipt를 게시해요. 누락이나 전송 오류, 형식 오류, 파일 게시 오류는
 고정 invalid receipt로 남겨 이전 허가가 재사용되지 않게 해요. producer나 전송이 멈추면
 180초 원본 만료가 그대로 작동해요. 가져온 시각으로 issued_at/expires_at을 갱신하지 않아요.
 
 valid true는 origin/model/hash와 서버 정책의 알려진 필드만 투영하고, producer의 추가 진단값이나
-raw body·secret 필드는 전달하지 않아요. valid false는 kind/valid/reason/issued_at/expires_at만
+raw body와 secret 필드는 전달하지 않아요. valid false는 kind/valid/reason/issued_at/expires_at만
 허용해요. 전체 health+policy bundle은 계속 64KiB 이하예요. 이 전달은 보호된 원본과
 고정 SSH 경로의 검증 결과를 옮기며 서버 정책을 새로 만들거나 변경하지 않아요.
 
@@ -137,7 +137,7 @@ hostname과 다음 역할 하나를 선택해요.
 | `public-observer` | 고정 public-console/api/development 파일. 별도 검증 후에만 public-generation 포함 |
 | `collector-host` | 고정 `/var/lib/pickle-service-health-monitor/summary.json`의 원본 epoch heartbeat |
 
-reader는 상태·epoch·지연·토큰·부팅 ID·알려진 숫자 지표만 whitelist로 내보내요. 본문과
+reader는 상태와 epoch, 지연, 토큰, 부팅 ID, 알려진 숫자 지표만 whitelist로 내보내요. 본문과
 credential, 임의 문자열 필드는 제거해요. 파일 조회/형식 오류는 OBSERVER_ERROR이며
 서비스 장애로 바꾸지 않아요. 실제 결과의 원본 sample epoch를 유지하므로 오래된 결과를
 새로 가져와도 신선해지지 않아요.
@@ -146,7 +146,7 @@ credential, 임의 문자열 필드는 제거해요. 파일 조회/형식 오류
 권한이 없어야 해요. 결과가 root 0600이므로 reader도 보호 경계 안에서 실행해요.
 운영자가 별도 scoped key와 out-of-band host fingerprint를 검증한 뒤에만 root authorized_keys에
 다음과 같은 forced-command 제한을 설치해요. 기존 root 관리 키를 importer에 복사하거나
-비밀값을 공개 예시에 넣지 않아요. 새 사용자·키 발급과 authorized_keys 변경은 이 도구가
+비밀값을 공개 예시에 넣지 않아요. 새 사용자 생성과 키 발급, authorized_keys 변경은 이 도구가
 수행하지 않아요.
 
 ```text
@@ -156,9 +156,9 @@ restrict,command="/usr/bin/python3 -I -B /usr/local/libexec/pickle/health-result
 `health-result-importer.py`는 명시적 내부 IP/user/port와 root 0600 key/known_hosts 파일을
 선택해요. `ssh -F /dev/null`로 ambient 설정을 배제하고 strict host checking,
 IdentitiesOnly/BatchMode, agent/forward/ControlPath/ProxyCommand 비활성화를 강제해요.
-고정 protocol 외 원격 명령이 없고 전체 SSH는 15초·stdout 64KiB로 제한해요.
+고정 protocol 외 원격 명령이 없고 전체 SSH는 15초와 stdout 64KiB로 제한해요.
 NetBird의 RFC6598 `100.64.0.0/10`은 Python의 private 판정과 별도로 명시 허용해요.
-공개·link-local·multicast·unspecified·reserved 주소는 허용하지 않아요. gateway-host의
+공개 주소와 link-local, multicast, unspecified, reserved 주소는 허용하지 않아요. gateway-host의
 PVE 명령은 제한된 PATH와 무관하게 `/usr/sbin/pct`를 명시해요. timeout/크기 초과/오류에서는
 leader가 먼저 종료돼도 stdout을 상속한 자식까지 해당 실행의 새 process group으로 종료해요.
 leader를 reap하기 전까지 PID를 보존해 process-group ID 재사용을 피해요.
@@ -174,11 +174,11 @@ collector가 오래된 원격 결과를 재사용해 서비스 정상이나 복�
 
 같은 import bundle의 child에는 `collector-import.example.json`처럼 `observer_parent`를 지정해요.
 부모 importer source의 `expected_kind=observer-report`를 함께 지정해야 해요. 부모 결과의
-현재 수집 오류·누락·만료·형식 오류는 공통 observer에 귀속하며, 그때 누락·만료된 child의
+현재 수집 오류나 누락, 만료, 형식 오류는 공통 observer에 귀속하며, 그때 누락되거나 만료된 child의
 별도 observer incident와 미전송 observer 통지는 보류해요. 각 child의 UNKNOWN과 원본 epoch,
-reason은 summary에 남아요. 신선한 child의 서비스 실패·TLS 보안 실패·개별 probe 오류는 계속
+reason은 summary에 남아요. 신선한 child의 서비스 실패와 TLS 보안 실패, 개별 probe 오류는 계속
 독립 판정해요. 부모가 현재 HEALTHY이면 기존 incident가 복구 관찰 중이어도 child의 개별
-신선도와 3회 observer 실패 기준을 적용해요. 관계는 한 단계만 허용하며 상세 상태·전송 보존은
+신선도와 3회 observer 실패 기준을 적용해요. 관계는 한 단계만 허용하며 상세 상태와 전송 보존은
 [최초 경보와 안정 복구](llm-health-monitor.md#최초-경보와-안정-복구)를 따라요.
 
 양방향 heartbeat는 collector 호스트의 `collector-host` 역할과 외부 호스트의
@@ -197,11 +197,13 @@ NetBird 전송 권한은 policy 하나에 rule 하나씩 등록해요. 여러 ru
 연결과 허용하지 않은 명령/port의 거부를 확인한 뒤 전송 경로를 완료로 기록해요.
 서버가 반환한 본문이나 활성 상태만으로 실제 연결을 대신하지 않아요.
 
-실제 양쪽의 scoped key·host pin·접속 경로와 collector source를 설치하고 양방향 신선도를
+실제 양쪽의 scoped key와 host pin, 접속 경로, collector source를 설치하고 양방향 신선도를
 검증하기 전 상호 dead-man 완료로 기록하지 않아요. 공유 VPN이나 SMTP가 함께 고장나는
 경우에는 여전히 통지 공백이 남으며, 이 패키지는 별도 외부 dead-man 서비스를 만들지 않아요.
 
-## 검증과 배포·원복
+<a id="검증과-배포원복"></a>
+
+## 검증과 배포, 원복
 
 새 테스트는 운영 네트워크나 SMTP를 호출하지 않아요.
 
@@ -211,7 +213,7 @@ python3 -B scripts/tests/test_health_result_transport.py
 ```
 
 배포는 기존 감시 package에 새 public probe/reader/importer와
-`lib/health_result_transport.py`를 root 소유 0644로 더한 뒤 설정·key·host pin을 검토해요.
+`lib/health_result_transport.py`를 root 소유 0644로 더한 뒤 설정과 key, host pin을 검토해요.
 서버 reader를 먼저 설치하고 forced-command 제한과 허용 protocol 외 거부를 확인한 다음,
 observer의 GET과 importer timer를 통지 off로 켜요. 24~48시간 동안 TLS/JSON 형태와
 source epoch, 수집 실패와 서비스 실패 구분을 비교해요. 공개 canary는 전용 key 검증이
@@ -219,5 +221,7 @@ source epoch, 수집 실패와 서비스 실패 구분을 비교해요. 공개 c
 
 원복은 새 public/import timer를 먼저 disable/stop하고 oneshot 종료를 확인해요. 새
 forced-command key 한 줄과 파생 diagnostic key만 회수하며 기존 관리 키와 upstream/학생
-키는 보존해요. 이전 검증 파일을 복원하되 budget·incident·delivery를 과거로 되감지
+키는 보존해요. 이전 검증 파일을 복원하되 budget과 incident, delivery를 과거로 되감지
 않아요. collector source를 조정할 때 사라진 observer를 서비스 정상으로 표시하지 않아요.
+
+최종 갱신: 2026-11-03

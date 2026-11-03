@@ -33,7 +33,7 @@ webhook 파일에는 URL 한 줄만 기록해요. URL은
 | `monitor_state` | JSON의 `status` 또는 `level`과 `last_check_epoch`를 읽어요. `OK`, `HEALTHY`는 정상이고 경고, 실패와 오류는 장애로 알려요. 기존 sequence는 복제하지 않아요. |
 | `db_cache` | 마지막 정상 PBS 조회 캐시의 `recovery_point_epoch`, `last_readback_epoch`와 파일 수정 시각을 확인해요. 복구점이 제한보다 오래되면 정상 확인 지연, 캐시 갱신이 늦으면 결과 갱신 지연으로 알려요. |
 | `service_health` | collector의 durable 사건 번호와 같은 수집 시점의 요약을 함께 확인해요. 서비스 장애와 observer 장애를 분리하며 원본의 확인 횟수와 60분 복구 판정을 따라요. |
-| `systemd` | service의 `Result`, `ExecMainStatus`와 monotonic 시작·종료 시각을 조회해요. 실패 종료와 실행 중단을 별도로 판정해요. 한 설정에 네 개까지 사용해요. |
+| `systemd` | service의 `Result`와 `ExecMainStatus`, monotonic 시작 시각, 종료 시각을 조회해요. 실패 종료와 실행 중단을 별도로 판정해요. 한 설정에 네 개까지 사용해요. |
 
 운영 서비스가 있는 호스트는 `production-health` 마커를 선택해요.
 독립 감시 호스트는 코어 PBS, 용량과 공개 경로 감시 상태 파일을 선택해요.
@@ -68,7 +68,7 @@ state/summary 양쪽에서 확인한 키를 사용해요. 원본 collector의 �
 
 | 호스트 | 선택 범위 | 제외 범위 |
 |---|---|---|
-| pve-node-3 | DGX 호스트·질의·로컬 generation·gateway 직접 generation, DGX/gateway/AWS import | public generation, 백업 요약 |
+| pve-node-3 | DGX 호스트와 질의, 로컬 generation, gateway 직접 generation, DGX/gateway/AWS import | public generation, 백업 요약 |
 | AWS | pve-node-3 collector heartbeat와 collector import | DGX 서비스 사건, public generation |
 | DGX / gateway | Discord source 추가 없음 | 로컬 중복 발신 |
 
@@ -76,11 +76,11 @@ state/summary 양쪽에서 확인한 키를 사용해요. 원본 collector의 �
 원본 상태 파일도 유지하며 이 DGX 연결에서 새 source로 선택하지 않아요.
 표의 역할은 배치할 설정의 선택 기준이에요. 예제 파일 자체는 활성화 증거가 아니에요.
 
-`max_age`는 원본 probe 설정의 freshness와 같게 지정해요. 호스트·질의·import는
+`max_age`는 원본 probe 설정의 freshness와 같게 지정해요. 호스트와 질의, import는
 180초, 로컬 generation은 2100초처럼 원래 관측 간격을 반영해요. 실제 적용 값은
 선택한 collector 설정에서 대조해요. 별도로 state와 summary의 수집 시각이 같아야
 하며 수집 후 180초 이내여야 해요. 원본 sample 시각은 가져온 파일의 수정 시각으로
-대체하지 않아요. 두 파일을 다시 읽었을 때 내용이 바뀌거나 source·sample·사건 번호가
+대체하지 않아요. 두 파일을 다시 읽었을 때 내용이 바뀌거나 source와 sample, 사건 번호 중 하나라도
 다르면 해당 실행은 전이를 보류해요. 같은 파일 쌍을 쓰는 source는 한 번 읽은
 snapshot을 공유해요.
 
@@ -91,15 +91,15 @@ snapshot을 공유해요.
 현재 장애로 남아 있지 않은 사건은 뒤늦게 발송하지 않아요.
 
 복구는 원본이 신선한 정상 sample을 60분 유지해 같은 사건을 닫았을 때만 선택해요.
-원본 실패·`LOADING`·`UNKNOWN`과 오래된 sample은 복구가 아니에요. 장애가 실제 제출된
+원본 실패와 `LOADING`, `UNKNOWN`, 오래된 sample은 복구가 아니에요. 장애가 실제 제출된
 `SENT` 또는 제출 여부가 불확실한 사건에만 복구를 만들어요. 전송 증거는 별도 cursor에
 보존하므로 오래 열린 사건의 이전 메시지가 보존 범위 밖으로 밀려도 복구를 놓치지
 않아요. 아직 제출하지 않은 장애가 종료되면 해당 대기 건은 `SUPERSEDED`로 기록하며
-뒤늦은 장애·복구 쌍을 발송하지 않아요.
+뒤늦은 장애와 복구 쌍을 발송하지 않아요.
 
 공통 import 장애의 `suppressed_by`는 해당 child의 observer 알림에만 적용해요.
 신선한 개별 서비스 실패나 잘못된 개별 probe 결과는 계속 독립적으로 판단해요.
-이미 대기 중인 복구도 원본에서 새 실패·미확인·로딩 증거가 확인되면
+이미 대기 중인 복구도 원본에서 새 실패나 미확인, 로딩 증거가 확인되면
 `SUPERSEDED`가 돼요. 파일 읽기 실패나 수집 시점 불일치만 확인된 경우에는 대기를
 보존하고 발송을 보류해요. 설정에서 제외된 source도 대기 건과 이력을 보존하며
 발송하지 않아요. 기존 `ATTEMPTED`는 일반 실행에서 `UNCERTAIN`으로 정리해요.
@@ -112,7 +112,7 @@ snapshot을 공유해요.
 `MemoryMax=48M`, `CPUQuota=10%`, `TasksMax=16`이에요. 기본 `system.slice`에서
 동작하며 기존 96MiB `pickle-monitoring.slice`에 합치지 않아요. 이 예제는 새 AWS
 설치용이에요. 기존 pve-node-3 service와 해당 호스트의 자원 배치를 변경하지 않아요.
-설치 후 `systemctl show`의 실제 한도와 자연 실행의 memory peak·unit 결과를 확인해요.
+설치 후 `systemctl show`의 실제 한도와 자연 실행의 memory peak, unit 결과를 확인해요.
 
 ## 설치와 무발송 확인
 
@@ -196,7 +196,7 @@ timer가 나머지를 이어가요. 기존 API나 DB 재기동은
 일부만 유지해요. `SUPERSEDED`도 이 보존 범위에 포함해요. 미해결 대기열이 제한을 넘으면 기록을 버리지 않고 중단해요.
 
 되돌릴 때에는 이 timer만 stop/disable한 뒤 진행 중인 service가 끝났는지
-확인해요. 자신의 설치 파일과 설정은 경로·해시로 대조하고 회수해요. 전송 상태는
+확인해요. 자신의 설치 파일과 설정은 경로와 해시로 대조하고 회수해요. 전송 상태는
 중복 방지와 사건 이력의 증거이므로 보존해요. 기존 감시 timer와 SMTP 설정은
 별개로 유지해요. `SUPERSEDED` 기록이 생긴 뒤에는 이 상태를 읽지 못하는 이전
 worker로 되돌리지 않아요. 새 worker를 유지한 채 추가한 `service_health` source만
@@ -209,3 +209,5 @@ worker로 되돌리지 않아요. 새 worker를 유지한 채 추가한 `service
 ```bash
 python3 -B scripts/tests/test_discord_ops_alerts.py
 ```
+
+최종 갱신: 2026-11-03

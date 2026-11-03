@@ -1,9 +1,9 @@
 # 백업 근거와 신선도 요약
 
 `backup-health-summary.py`는 독립 감시 호스트에서 기존 core 상태와 DB 정상 조회 캐시,
-DB monitor의 native systemd 실행 결과를 읽어요. 백업·PBS 조회·HTTP·SMTP를 실행하지
+DB monitor의 native systemd 실행 결과를 읽어요. 백업과 PBS 조회, HTTP, SMTP를 실행하지
 않고 기존 감시 파일과 알림 상태를 변경하지 않아요. Python 표준 라이브러리와 기존
-`lib/llm_health.py`의 보호 파일 읽기·lock·원자 저장을 사용해요.
+`lib/llm_health.py`의 보호 파일 읽기와 lock, 원자 저장을 사용해요.
 
 결과는 `/var/lib/pickle-backup-health-summary/result.json`의 root 0600 파일이에요.
 상위 디렉터리는 root 0700이며 요약 자신의 lock만 함께 둬요. top-level은
@@ -19,7 +19,7 @@ HEALTHY나 FAILED라고 선언하는 top-level status는 없어요.
 
 관측이 12분 이내이고 목록 조회가 OK일 때만 native의 HEALTHY/FAILED/PENDING을
 현재 행에 표시해요. 오래되거나 query가 UNAVAILABLE이면 current_verdict는 UNKNOWN이고
-원본 관측 시각·목록 조회 시각·native 판정은 별도로 남겨요. CT1200~1204의 진단 행이
+원본 관측 시각과 목록 조회 시각, native 판정은 별도로 남겨요. CT1200~1204의 진단 행이
 하나라도 빠지거나 시각이 잘못되면 현재 정상을 추론하지 않아요.
 
 각 last_valid_points의 `ctime`은 원래 값이고 `current_age_seconds`는 요약의 현재 시각에서
@@ -39,7 +39,7 @@ snapshot과 현재 나이를 `last_healthy_evidence`에 별도로 표시해요. 
 읽어요. 현재 HEALTHY는 다음 조건이 모두 성립한 경우뿐이에요.
 
 - inactive/dead, Result=success, ExecMainStatus=0인 종료된 invocation이에요.
-- monotonic 시작·종료 시각이 현재 boot의 시간 범위 안에 있고 종료와 캐시 as-of가 3분 이내예요.
+- monotonic 시작 시각과 종료 시각이 현재 boot의 시간 범위 안에 있고 종료와 캐시 as-of가 3분 이내예요.
 - 캐시 as-of가 그 invocation의 시작~종료 범위에 들어가요. native 캐시의 정수 초와
   monotonic→wall 변환 오차 때문에 양쪽 경계에 최대 2초만 허용해요.
 
@@ -74,11 +74,13 @@ systemd-analyze verify hosts/production/systemd/pickle-backup-health-summary.ser
 ```
 
 대상 Linux에서 unit 검증과 보호 파일 hash/권한을 확인한 뒤 새 timer만 배치해요.
-다음 자연 실행의 원본 시각과 현재 나이를 native 입력·종료 invocation과 대조해요.
+native 입력과 종료 invocation을 기준으로 다음 자연 실행의 원본 시각과 현재 나이를 대조해요.
 요약 자체의 종료 코드 0은 계산/저장이 끝났다는 뜻이며 백업 정상 신호가 아니에요.
 이 결과를 generic collector의 FAILED source나 별도 Discord/메일 producer로 등록하지 않아요.
 기존 native 감시의 SMTP 담당과 delivery state는 그대로 유지해요.
 
 되돌릴 때에는 새 summary timer만 stop/disable하고 oneshot 종료를 확인해요. 자신의
-코드/unit/config와 result를 소유 hash로 대조해 회수하며 native 감시·캐시·state·백업점은
+코드/unit/config와 result를 소유 hash로 대조해 회수하며 native 감시와 캐시, state, 백업점은
 원복 대상으로 삼지 않아요. 요약을 지운 뒤 백업이 정상이라고 표시하지 않아요.
+
+최종 갱신: 2026-11-03
