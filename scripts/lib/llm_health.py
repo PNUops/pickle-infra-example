@@ -200,8 +200,7 @@ def smtp_sender(config: dict):
             stage = '주의' if delivery['event'] == 'FAILED' else '주의 해소'
         message['Subject'] = f"[PNU Cloud 감시] {delivery['target']} {stage}"
         message.set_content(f"대상: {delivery['target']}\n상태: {stage}\n"
-                            f"incident: {delivery['incident']}\n"
-                            '실제 생성·조회·감시자 상태는 개별 결과 파일에서 확인하세요.\n')
+                            '자세한 상태는 감시 결과 파일에서 확인해 주세요.\n')
         smtp = None
         try:
             context = ssl.create_default_context()

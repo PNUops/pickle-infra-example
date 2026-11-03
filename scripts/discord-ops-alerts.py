@@ -51,7 +51,7 @@ def read_file(path, *, private=False, limit=65536):
         with os.fdopen(fd, 'rb', closefd=False) as handle:
             raw = handle.read(limit + 1)
         if len(raw) > limit:
-            raise AlertError('파일 크기 제한을 초과했습니다.')
+            raise AlertError('파일 크기 제한을 넘었어요.')
         return raw, info
     finally:
         os.close(fd)
@@ -83,7 +83,7 @@ def load_config(path):
         if not isinstance(source, dict) or set(source) != fields:
             raise AlertError('감시 대상 항목을 확인하세요.')
         if not isinstance(source['name'], str) or not NAME.fullmatch(source['name']) or source['name'] in names:
-            raise AlertError('감시 이름은 고유해야 합니다.')
+            raise AlertError('감시 이름의 형식과 중복 여부를 확인해 주세요.')
         names.add(source['name'])
         if not isinstance(source['label'], str) or not LABEL.fullmatch(source['label']):
             raise AlertError('감시 표시 이름은 한글과 숫자로 입력하세요.')
@@ -103,7 +103,7 @@ def load_config(path):
         elif source['type'] in ('cron_markers', 'monitor_state', 'db_cache'):
             absolute_path(source['path'])
         else:
-            raise AlertError('지원하지 않는 감시 유형입니다.')
+            raise AlertError('지원하지 않는 감시 유형이에요.')
     if systemd_count > 4:
         raise AlertError('실행 시간 제한을 위해 서비스 감시는 네 개까지 설정하세요.')
     return value
@@ -377,7 +377,7 @@ def validate_state(state):
             or not isinstance(state.get('observations'), dict) or not isinstance(state.get('outbox'), list)):
         raise AlertError('알림 상태 파일을 확인하세요.')
     if len(state['outbox']) > MAX_OUTBOX:
-        raise AlertError('알림 대기열 제한을 초과했습니다.')
+        raise AlertError('알림 대기열이 가득 찼어요.')
     for item in state['outbox']:
         if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
                 or not isinstance(item.get('content'), str)
@@ -420,7 +420,7 @@ def message_content(config, source, dimension, current, now):
     stamp = datetime.fromtimestamp(now, timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M:%S')
     content = f"[Pickle 운영 알림] {label}\n대상: {config['host_label']} / {source['label']}\n확인 시각: {stamp} 한국 표준시"
     if source['type'] == 'db_cache':
-        content += '\n정상 판정 때만 갱신되는 기록을 확인했습니다. 현재 백업 결과는 별도로 확인하세요.'
+        content += '\n마지막으로 정상 확인한 백업 기록이에요. 최근 백업 결과를 확인해 주세요.'
     return content
 
 
@@ -578,7 +578,7 @@ def run(config, *, inspect=False, test_message=False, now=None, collector=collec
         path = directory / 'state.json'
         state = validate_state(json.loads(read_file(path, private=True, limit=MAX_BYTES)[0])) if path.exists() else new_state()
         if now + 1 < state.get('last_run', 0):
-            raise AlertError('시스템 시각이 이전 실행보다 과거입니다.')
+            raise AlertError('시스템 시각이 이전 실행 시각보다 일러요.')
         # Keep unresolved evidence and a bounded tail of confirmed deliveries.
         completed = [item for item in state['outbox'] if item['delivery'] in {'SENT', 'SUPERSEDED'}][-100:]
         state['outbox'] = [item for item in state['outbox'] if item['delivery'] not in {'SENT', 'SUPERSEDED'}] + completed
@@ -601,7 +601,7 @@ def run(config, *, inspect=False, test_message=False, now=None, collector=collec
                     else:
                         enqueue(state, config, source, dimension, current, now)
         if len(state['outbox']) > MAX_OUTBOX:
-            raise AlertError('알림 대기열 제한을 초과했습니다.')
+            raise AlertError('알림 대기열이 가득 찼어요.')
         state['last_run'] = now
         atomic_json(path, state)
         sent = dispatch(state, path, webhook, now, sender=sender, only_test=test_message,
@@ -628,7 +628,7 @@ def main():
         print(json.dumps(result, sort_keys=True))
         return 2 if any(result.get('deliveries', {}).get(k, 0) for k in ('UNCERTAIN', 'FAILED')) else 0
     except (AlertError, OSError, ValueError, TypeError, KeyError):
-        print('운영 알림 처리를 중단했습니다. 보호된 설정과 전송 기록을 확인하세요.', file=sys.stderr)
+        print('운영 알림 처리를 중단했어요. 보호된 설정과 전송 기록을 확인해 주세요.', file=sys.stderr)
         return 2
 
 
