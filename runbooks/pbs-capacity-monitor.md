@@ -1,12 +1,12 @@
 # PBS datastore 용량 조회기
 
-정기 용량 조회는 PBS API의 datastore 상태 endpoint 한 번에서 전체·사용·가용 바이트를 읽습니다. 별도 `--check-read-denied` 권한 시험은 합성된 존재하지 않는 snapshot 경로에 download 요청을 보내므로 상태 조회와 분리해 수동 실행합니다. 정기 검사는 pve-node-3에서 5분 간격으로 실행하고 상태가 바뀔 때 운영자에게 메일을 보냅니다. datastore를 수정하거나 오래된 백업을 정리하지 않습니다.
+정기 용량 조회는 PBS API의 datastore 상태 endpoint 한 번에서 전체와 사용, 가용 바이트를 읽어요. 별도 `--check-read-denied` 시험은 존재하지 않는 합성 snapshot 경로에 download 요청을 보내므로 상태 조회와 분리해 수동 실행해요. 정기 검사는 pve-node-3에서 5분 간격으로 실행하고 상태가 바뀔 때 운영자에게 메일을 보내요. datastore 수정과 오래된 백업 정리는 하지 않아요.
 
 ## 읽기 전용 계정
 
-기존 백업 계정의 권한을 넓히지 말고 용량 확인 전용 사용자와 privilege separation이 켜진 token을 만듭니다. 사용자의 권한과 token 자체 권한 양쪽에 같은 역할을 지정 datastore 경로에서만 부여합니다. PBS token의 실효 권한은 두 ACL의 교집합입니다. 다음 명령에서 모든 이름은 예시입니다.
+기존 백업 계정의 권한을 넓히지 말고 용량 확인 전용 사용자와 privilege separation이 켜진 token을 만들어요. 사용자와 token 양쪽에 같은 역할을 지정 datastore 경로에서만 부여해요. 실효 권한은 두 ACL의 교집합이에요. 다음 명령의 이름은 모두 예시예요.
 
-먼저 아래의 user/token 발급 및 secret 보관 절차를 완료한 뒤 다음 ACL 명령을 실행합니다.
+아래 user/token 발급과 secret 보관 절차를 마친 뒤 다음 ACL 명령을 실행해요.
 
 ```bash
 set -euo pipefail
@@ -19,15 +19,15 @@ proxmox-backup-manager user permissions 'capacity@pbs!probe' --path /datastore/e
 proxmox-backup-manager acl list
 ```
 
-두 identity 모두 지정 datastore에서 감사 권한만 보여야 합니다. 읽기·쓰기·백업·prune·verify 권한이나 더 넓은 경로가 나오면 적용하지 않습니다. 기존 writer/reader ACL도 대조해 변경되지 않았는지 확인합니다.
+두 identity 모두 지정 datastore에서 감사 권한만 보여야 해요. 읽기나 쓰기, 백업, prune, verify 권한 또는 더 넓은 경로가 나오면 적용하지 않아요. 기존 writer/reader ACL이 바뀌지 않았는지도 대조해요.
 
-조회 token으로 상태 endpoint가 성공하고 백업 파일 읽기 요청은 권한 거부를 반환하는지 확인합니다. 부정 검사는 존재하지 않는 합성 snapshot 식별자를 사용합니다. 응답 본문에는 백업 파일 내용이 포함될 수 있으므로 출력하지 않습니다. 정확한 권한 거부만 합격이며 다른 오류 코드는 통과로 취급하지 않습니다.
+조회 token으로 상태 endpoint가 성공하고 백업 파일 읽기는 권한 거부를 반환하는지 확인해요. 부정 검사는 존재하지 않는 합성 snapshot 식별자를 사용해요. 응답에 백업 파일 내용이 포함될 수 있으므로 본문을 출력하지 않아요. 정확한 권한 거부만 합격이며 다른 오류 코드를 통과로 보지 않아요.
 
 ### 전용 user·token 발급과 일회용 secret 보관
 
-token을 발급하기 전에 `pve-node-3`의 최종 경로(`/etc/pickle-example-capacity/token`)가 비어 있는지, PBS VM에서 해당 노드로 옮길 보호된 단일 secret 전달 경로를 정했는지 확인합니다. 이 런북에는 두 호스트 사이의 전달 명령이 검증되어 있지 않습니다. 먼저 비밀이 아닌 canary 파일로 전달 방식을 시험해 secret이 명령 인자, 터미널, shell history, 세션 기록이나 일반 로그에 나타나지 않고 목적지에 root 소유 `0600` 파일로 저장되는지 확인합니다. **검증된 전달 경로가 없으면 user나 token을 만들지 말고 중단합니다.**
+token을 발급하기 전에 `pve-node-3`의 최종 경로(`/etc/pickle-example-capacity/token`)가 비어 있는지 확인하고 PBS VM에서 옮길 보호된 단일 전달 경로를 정해요. 이 런북에서 두 호스트 사이의 전달 명령은 검증하지 않았어요. 비밀이 아닌 canary로 먼저 시험해 secret이 명령 인자와 터미널, shell history, 세션 기록, 일반 로그에 나타나지 않고 목적지에 root 소유 `0600` 파일로 저장되는지 확인해요. **검증된 전달 경로가 없으면 user나 token을 만들지 말고 중단해요.**
 
-`pve-node-3`의 root shell에서 설정 상위 디렉터리가 없으면 만들고, 있으면 일반 디렉터리이며 root 소유 mode `0700`인지 확인합니다. 기존 경로의 종류나 권한이 예상과 다르면 수정하지 말고 중단합니다. 디렉터리 준비 후 최종 token 경로에 파일이나 심볼릭 링크가 없는지도 확인합니다.
+`pve-node-3`의 root shell에서 설정 상위 디렉터리가 없으면 만들고, 있으면 일반 디렉터리이며 root 소유 mode `0700`인지 확인해요. 종류나 권한이 다르면 수정하지 말고 중단해요. 준비한 뒤 최종 token 경로에 파일이나 심볼릭 링크가 없는지도 확인해요.
 
 ```bash
 set -euo pipefail
@@ -50,7 +50,7 @@ if test -e "$token_dir/token" || test -L "$token_dir/token"; then
 fi
 ```
 
-PBS에서 root shell 하나를 열어 절차를 이어서 실행합니다. 각 Bash block은 `set -euo pipefail`을 먼저 켜며 어떤 검사든 실패하면 원인을 확인하기 전까지 다음 명령을 실행하지 않습니다. 위 ACL 예시는 user `capacity@pbs`, token 이름 `probe`를 사용합니다. 다른 이름을 고르면 모든 단계에서 같은 이름을 사용합니다. 다른 운영자가 같은 ID를 동시에 만들지 않도록 발급을 직렬화합니다. 보호 디렉터리에 JSON user 목록을 저장한 뒤 새 user ID가 없는지 확인합니다. 이미 있거나 출력 형식을 판정할 수 없으면 기존 항목을 재사용하거나 덮어쓰지 말고 중단합니다. 명령은 [PBS 공식 user 관리 문서](https://pbs.proxmox.com/docs/user-management.html)와 [CLI 명세](https://pbs.proxmox.com/docs/proxmox-backup-manager/man1.html)를 따르며, 실행 전에 설치된 버전에서 문법을 다시 확인합니다.
+PBS의 root shell 하나에서 이어 실행해요. 각 Bash block은 `set -euo pipefail`을 먼저 켜요. 어떤 검사든 실패하면 원인을 확인하기 전까지 다음 명령을 실행하지 않아요. ACL 예시는 user `capacity@pbs`, token 이름 `probe`를 사용해요. 다른 이름을 고르면 모든 단계에서 같은 이름을 써요. 다른 운영자가 같은 ID를 동시에 만들지 않도록 발급을 직렬화해요. 보호 디렉터리에 JSON user 목록을 저장하고 새 ID가 없는지 확인해요. 이미 있거나 출력 형식을 판정할 수 없으면 재사용하거나 덮어쓰지 말고 중단해요. 명령은 [PBS 공식 user 관리 문서](https://pbs.proxmox.com/docs/user-management.html)와 [CLI 명세](https://pbs.proxmox.com/docs/proxmox-backup-manager/man1.html)를 따르며 실행 전에 설치 버전에서 문법을 다시 확인해요.
 
 ```bash
 set -euo pipefail
@@ -64,7 +64,7 @@ users_file=$(mktemp "$protected_token_dir/users.XXXXXXXX")
 proxmox-backup-manager user list --output-format json > "$users_file"
 ```
 
-다음 검사는 JSON이 list인지, 모든 항목에 형식이 맞는 고유한 `userid`가 있는지, 새 ID가 없는지를 확인합니다. 원본 JSON이나 ID 목록은 출력하지 않고 고정 문구만 출력합니다. 형식이 달라지거나 해석할 수 없는 항목이 있으면 종료 코드 1로 중단합니다.
+다음 검사는 JSON이 list인지, 모든 항목에 형식이 맞는 고유한 `userid`가 있는지, 새 ID가 없는지 확인해요. 원본 JSON과 ID 목록 대신 고정 문구만 출력해요. 형식이 달라지거나 해석할 수 없는 항목이 있으면 종료 코드 1로 중단해요.
 
 ```bash
 set -euo pipefail
@@ -94,7 +94,7 @@ then
 fi
 ```
 
-ID가 없음을 확인한 뒤 PBS의 Debian `date`로 발급 시점부터 180일 뒤 Unix expiry를 한 번 계산합니다. 같은 값을 user와 token 모두에 적용하고 UTC 만료 날짜와 token ID만 보호된 운영 기록에 남깁니다. secret은 기록하지 않습니다. 만료 14일 전에는 새 180일 expiry를 계산해 `user update capacity@pbs --expire "$token_expiry"`로 부모 user 만료도 연장합니다. 충돌이 없는 새 token 이름을 확인해 교체 token을 발급하고 ACL·전달·조회·403을 검증한 다음 이전 token과 ACL을 폐기합니다. 이 순서로 처리하면 user가 먼저 만료돼 새 token까지 무효가 되는 일을 막습니다. 새 user의 token 목록이 비어 있는지도 확인합니다.
+ID가 없음을 확인한 뒤 PBS의 Debian `date`로 발급 시점부터 180일 뒤 Unix expiry를 한 번 계산해요. 같은 값을 user와 token 모두에 적용하고 UTC 만료 날짜와 token ID만 보호된 운영 기록에 남겨요. secret은 기록하지 않아요. 만료 14일 전에는 새 180일 expiry를 계산해 `user update capacity@pbs --expire "$token_expiry"`로 부모 user 만료도 연장해요. 충돌이 없는 새 이름으로 교체 token을 발급하고 ACL과 전달, 조회, 403을 검증한 다음 이전 token과 ACL을 폐기해요. 부모 user가 먼저 만료돼 새 token까지 무효가 되지 않도록 이 순서를 지켜요. 새 user의 token 목록이 비어 있는지도 확인해요.
 
 ```bash
 set -euo pipefail
@@ -107,7 +107,7 @@ tokens_file=$(mktemp "$protected_token_dir/tokens.XXXXXXXX")
 proxmox-backup-manager user list-tokens capacity@pbs --output-format json > "$tokens_file"
 ```
 
-새 user의 token 목록도 검사합니다. 각 항목에 `tokenid`가 있고 ID가 user와 일치하는 형식이며 중복이 없는지 확인합니다. 신규 user이므로 목록은 비어 있어야 합니다. secret이나 JSON은 출력하지 않습니다.
+새 user의 token 목록도 검사해요. 각 항목에 `tokenid`가 있고 ID가 user와 일치하는 형식이며 중복이 없는지 확인해요. 신규 user의 목록은 비어 있어야 해요. secret이나 JSON은 출력하지 않아요.
 
 ```bash
 set -euo pipefail
@@ -135,7 +135,7 @@ then
 fi
 ```
 
-`generate-token`은 Result secret을 한 번만 반환하며 `--output-format`을 지원하지 않습니다. stdout을 root 소유 `0600` 파일로 바로 보냅니다. shell tracing, `tee`, secret이 포함된 command substitution, `cat` 또는 JSON을 화면에 표시하는 명령은 사용하지 않습니다.
+`generate-token`은 Result secret을 한 번만 반환하며 `--output-format`을 지원하지 않아요. stdout은 root 소유 `0600` 파일로 바로 보내요. shell tracing과 `tee`, secret이 포함된 command substitution, `cat`, JSON을 화면에 표시하는 명령은 쓰지 않아요.
 
 ```bash
 set -euo pipefail
@@ -153,7 +153,7 @@ if test "$(stat -c '%u:%a' "$token_result")" != '0:600'; then
 fi
 ```
 
-다음 Python 처리는 Result에서 `tokenid`와 `value`만 읽습니다. 예상한 token ID와 지원되는 ASCII 형식인지 확인한 뒤 token byte를 그대로 담은 root 소유 `0600` 파일을 만듭니다. **끝에 개행을 추가하지 않습니다.** probe는 token 앞뒤 공백을 거부합니다. argv에는 파일 경로와 비밀이 아닌 token ID만 전달하며 secret은 argv, 환경변수, 터미널 출력이나 로그에 넣지 않습니다.
+다음 Python 처리는 Result에서 `tokenid`와 `value`만 읽어요. 예상한 token ID와 지원하는 ASCII 형식인지 확인한 뒤 token byte를 그대로 담은 root 소유 `0600` 파일을 만들어요. **끝에 개행을 추가하지 않아요.** probe는 token 앞뒤 공백을 거부해요. argv에는 파일 경로와 비밀이 아닌 token ID만 전달하고 secret은 argv와 환경변수, 터미널, 로그에 넣지 않아요.
 
 ```bash
 set -euo pipefail
@@ -211,15 +211,15 @@ if test -e "$token_result" || test -L "$token_result"; then
 fi
 ```
 
-payload를 쓴 뒤 일반 파일이며 심볼릭 링크가 아니고, 비어 있지 않으며 root 소유 mode `0600`인지 확인합니다. 확인이 끝나면 Result JSON을 삭제하고 사라졌는지 확인합니다. 파싱·ID 확인·쓰기 중 실패하면 token이 이미 만들어졌을 수 있으므로 보호 파일을 보존하고 발급을 재시도하지 않은 채 중단합니다. 목적지에서 파일을 읽어 검증한 뒤 원본 payload, user/token 목록 파일과 비어 있는 보호 디렉터리를 삭제하고 모두 사라졌는지 확인합니다.
+payload를 쓴 뒤 일반 파일이며 심볼릭 링크가 아니고, 비어 있지 않으며 root 소유 mode `0600`인지 확인해요. 확인 뒤 Result JSON을 삭제하고 사라졌는지 확인해요. 파싱이나 ID 확인, 쓰기에 실패하면 token이 이미 만들어졌을 수 있으므로 보호 파일을 보존하고 재발급하지 않은 채 중단해요. 목적지 readback 뒤 원본 payload와 user/token 목록, 비어 있는 보호 디렉터리를 삭제하고 모두 사라졌는지 확인해요.
 
-PBS VM에서 `pve-node-3`로 옮기는 검증된 명령은 없습니다. 미리 정한 보호 전달 방식만 사용하고, `pve-node-3`에서 목적지 파일의 소유자·권한·비어 있지 않음을 확인합니다. 목적지 확인 뒤 PBS의 원본 payload를 삭제합니다. 전달 방식이 byte 내용과 목적지 권한을 보존하지 못하면 검토되지 않은 명령이나 터미널 붙여넣기로 대신하지 말고 중단합니다. 아래 로컬 설정 절차에서 token 파일을 다시 확인하고 probe `--check`를 실행합니다. token과 설정 파일은 root 소유 `0600`, 상위 디렉터리는 root 소유 `0700`이어야 합니다.
+PBS VM에서 `pve-node-3`로 옮기는 검증된 명령은 없어요. 미리 정한 보호 전달 방식만 사용하고 `pve-node-3`에서 목적지 파일의 소유자와 권한, 비어 있지 않음을 확인해요. 확인 뒤 PBS의 원본 payload를 삭제해요. byte와 목적지 권한을 보존하지 못하면 검토되지 않은 명령이나 터미널 붙여넣기로 대신하지 말고 중단해요. 아래 로컬 설정에서 token 파일을 다시 확인하고 probe `--check`를 실행해요. token과 설정 파일은 root 소유 `0600`, 상위 디렉터리는 root 소유 `0700`이어야 해요.
 
-`pve-node-3`를 잃었거나 일회용 secret을 다시 확보할 수 없으면 secret을 재출력하려 하지 않습니다. `user list-tokens`에서 기존 token ID를 확인하고 `user delete-token`으로 폐기한 뒤 `acl update ... --delete true`로 token ACL을 제거합니다. 새 180일 expiry를 계산하고 `user update capacity@pbs --expire "$token_expiry"`로 부모 user를 갱신한 뒤 새 token 이름이 비어 있는지 확인해 replacement를 한 번 발급합니다. user와 새 token 양쪽에 datastore 범위 역할을 다시 부여하고 유효 권한, 상태 조회 성공, 백업 파일 접근의 HTTP 403을 재검증합니다. 전용 user에 예상하지 못한 token이나 넓은 ACL이 없음을 확인한 뒤에만 재사용합니다. 보호 전달 경로가 준비되기 전에는 replacement를 발급하지 않습니다.
+`pve-node-3`를 잃었거나 일회용 secret을 다시 확보할 수 없으면 재출력하려 하지 않아요. `user list-tokens`에서 기존 token ID를 확인하고 `user delete-token`으로 폐기한 뒤 `acl update ... --delete true`로 token ACL을 제거해요. 새 180일 expiry를 계산하고 `user update capacity@pbs --expire "$token_expiry"`로 부모 user를 갱신한 뒤 충돌이 없는 새 이름으로 replacement를 한 번 발급해요. user와 새 token 양쪽에 datastore 범위 역할을 다시 부여하고 유효 권한과 상태 조회 성공, 백업 파일 접근의 HTTP 403을 재검증해요. 기존 user는 예상하지 못한 token이나 넓은 ACL이 없는지 확인한 뒤에만 재사용해요. 보호 전달 경로가 준비되기 전에는 replacement를 발급하지 않아요.
 
 ## 로컬 설정과 실행
 
-서버 이름은 예약된 `example.invalid` 하위 도메인, token·설정 파일은 root 소유 mode `0600`으로 둡니다. TLS 인증서 지문을 PBS 관리 콘솔에서 별도 신뢰 경로로 대조합니다. 예시 숫자는 설명을 위한 값이므로 실제 datastore 용량에 맞춰 임계치를 정하기 전에는 배포하지 않습니다.
+서버 이름은 예약된 `example.invalid` 하위 도메인이고 token과 설정 파일은 root 소유 mode `0600`으로 둬요. TLS 인증서 지문은 PBS 관리 콘솔에서 별도 신뢰 경로로 대조해요. 예시 숫자를 실제 datastore 용량에 맞게 정하기 전에는 배포하지 않아요.
 
 ```bash
 set -euo pipefail
@@ -252,7 +252,7 @@ python3 scripts/pbs-capacity-probe.py
 python3 scripts/pbs-capacity-probe.py --check-read-denied
 ```
 
-설정 JSON 예시는 다음과 같습니다. host, datastore, fingerprint와 임계치 숫자는 모두 예시이므로 실제 값을 독립적으로 확인하고 교체해야 합니다. `00` fingerprint는 절대 실제 서버 pin으로 사용하지 않습니다. token 값은 JSON이나 명령행 인자에 넣지 않습니다.
+다음 JSON의 host와 datastore, fingerprint, 임계치 숫자는 모두 예시예요. 실제 값을 독립적으로 확인하고 교체해요. `00` fingerprint는 실제 서버 pin으로 쓰지 않아요. token 값은 JSON이나 명령행 인자에 넣지 않아요.
 
 ```json
 {
@@ -267,13 +267,13 @@ python3 scripts/pbs-capacity-probe.py --check-read-denied
 }
 ```
 
-첫 번째 검사는 로컬 파일 권한과 형식을 확인하고, 두 번째는 실제 용량 상태를 조회하며, 세 번째는 백업 파일 읽기가 거부되는지 별도로 확인합니다. 조회 결과는 전체·사용·가용 바이트와 `OK`, `WARNING`, `CRITICAL` 중 하나를 JSON으로 내보냅니다. status 응답의 선택적 `backend-type`은 `filesystem`만 허용하며 필드가 없던 응답도 허용합니다. 다른 값이나 형식은 조회 오류로 처리합니다. 조회 오류는 `ERROR`로 기록됩니다.
+첫 번째 검사는 로컬 파일 권한과 형식, 두 번째는 실제 용량 상태, 세 번째는 백업 파일 읽기 거부를 확인해요. 조회 결과는 전체와 사용, 가용 바이트 및 `OK`, `WARNING`, `CRITICAL` 중 하나를 JSON으로 내보내요. status 응답의 선택적 `backend-type`은 `filesystem`만 허용하며 필드가 없던 응답도 허용해요. 다른 값이나 형식은 조회 오류로 처리하고 `ERROR`로 기록해요.
 
 ## pve-node-3 상태 전이 감시
 
-monitor는 root만 읽을 수 있는 상태 receipt를 사용해 중복 실행을 잠그고 각 상태 변화를 기록합니다. 최초 정상 응답은 조용한 baseline입니다. 이후 경고·긴급·조회 오류, 더 높은 심각도, 비정상에서 정상으로의 복귀를 알립니다. 같은 상태가 계속되면 메일을 반복하지 않습니다. 이메일 전송이 제출 전에 명확히 실패한 경우만 재시도 대상으로 남깁니다. SMTP 제출 후 수락 여부가 불명확하면 자동 재전송하지 말고 receipt와 발송 기록을 확인합니다.
+monitor는 root만 읽을 수 있는 상태 receipt로 중복 실행을 잠그고 상태 변화를 기록해요. 상태 기록이 없는 첫 관측이 정상이면 조용한 baseline으로 남겨요. 이후 경고와 긴급, 조회 오류, 더 높은 심각도, 비정상에서 정상으로의 복귀를 알려요. 같은 상태가 계속되면 메일을 반복하지 않아요. 제출 전 실패나 서버가 명확히 거절한 경우만 재시도해요. SMTP 제출 뒤 수락 여부가 불명확하면 자동 재전송하지 않아요. receipt와 발송 기록을 확인해요.
 
-메일은 기존 root 보호 SMTP 설정을 읽기만 하며 새 복사본을 만들지 않습니다. 활성화 전에 수신 주소와 임계치가 맞는지 확인합니다. SMTP의 성공 응답은 메일 서버가 수락했다는 뜻이며 최종 받은 편지함 도착을 보증하지 않습니다. 상태 파일을 지우면 알림 상태가 초기화되므로 삭제하지 않습니다.
+메일은 기존 root 보호 SMTP 설정을 읽기만 하고 복사본을 만들지 않아요. 활성화 전에 수신 주소와 임계치를 확인해요. SMTP 성공은 메일 서버의 수락이며 받은 편지함 도착을 보증하지 않아요. 상태 파일을 지우면 알림 상태가 초기화되므로 삭제하지 않아요.
 
 ```bash
 install -D -o root -g root -m 0755 scripts/pbs-capacity-probe.py \
@@ -292,6 +292,8 @@ systemctl enable --now pickle-pbs-capacity-monitor.timer
 systemctl list-timers pickle-pbs-capacity-monitor.timer
 ```
 
-서비스 journal과 receipt의 상태·이벤트·전송 결과를 확인합니다. 실패 후에는 timer를 중지하고 receipt를 보존해 원인을 확인합니다. 수동 실행도 알림을 만들 수 있습니다.
+서비스 journal과 receipt의 상태와 이벤트, 전송 결과를 확인해요. 실패하면 timer를 중지하고 receipt를 보존해 원인을 확인해요. 수동 실행도 알림을 만들 수 있어요.
 
-가용 바이트는 datastore 파일시스템의 보고값입니다. PBS 또는 TLS 조회 실패는 monitor가 정상 실행되고 메일 경로도 작동할 때 `ERROR` 상태로 기록·알림됩니다. pve-node-3 또는 SMTP 자체의 장애 감지는 이 monitor의 범위가 아닙니다. 배열 건강이나 실제 쓰기 시험, 최신 백업의 복원 가능성도 별도 점검 대상입니다.
+가용 바이트는 datastore 파일시스템의 보고값이에요. PBS나 TLS 조회 실패는 monitor와 메일 경로가 정상일 때 `ERROR`로 기록하고 알려요. pve-node-3나 SMTP 자체의 장애 감지는 이 monitor의 범위가 아니에요. 배열 건강이나 실제 쓰기 시험, 최신 백업의 복원 가능성은 별도 점검 대상이에요.
+
+최종 갱신: 2026-11-04
