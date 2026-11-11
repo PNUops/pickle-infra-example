@@ -1,15 +1,15 @@
 # 두 운영 노드의 SDN과 수동 gateway
 
-이 절차는 pve-node-2와 pve-node-3에 운영 guest L2와 gateway를 준비한다. 아직 실제 호스트에
-적용하지 않은 도구다. pve-node 서비스, Corosync의 campus 주소와 클러스터 신원은 변경하지 않는다.
-PVE가 생성하는 `/etc/network/interfaces.d/sdn`은 API가 관리하며 수동 편집하지 않는다.
+이 절차는 pve-node-2와 pve-node-3에 운영 guest L2와 gateway를 준비하는 예시예요.
+실제 대상의 적용 상태와 기존 설정을 먼저 확인해요. pve-node 서비스, Corosync의 campus 주소와 클러스터 신원은 변경하지 않아요.
+PVE가 생성하는 `/etc/network/interfaces.d/sdn`은 API가 관리하며 수동 편집하지 않아요.
 
 ## 구성과 소유권
 
-정본 입력은 `hosts/production/network.json`이다. 예시 운영망은 RFC 6598의
-`100.65.0.0/16`과 `100.66.0.0/16`을 사용해 기존 개발망 예시 `198.18.0.0/16`·
-`198.19.0.0/16`, BMC와 mesh 예시 주소를 구분한다. 실제 배포 전에는 이 예약 주소를
-그대로 사용하지 않고 모든 host와 tunnel route에 충돌하지 않는 주소 계획으로 교체한다.
+정본 입력은 `hosts/production/network.json`이에요. 예시 운영망은 RFC 6598의
+`100.65.0.0/16`과 `100.66.0.0/16`을 사용해 기존 개발망 예시 `198.18.0.0/16`과
+`198.19.0.0/16`, BMC와 mesh 예시 주소를 구분해요. 실제 배포 전에는 이 예약 주소를
+그대로 사용하지 않고 모든 host와 tunnel route에 충돌하지 않는 주소 계획으로 교체해요.
 
 | 항목 | 값 |
 |---|---|
@@ -21,266 +21,266 @@ PVE가 생성하는 `/etc/network/interfaces.d/sdn`은 API가 관리하며 수�
 | 초기 gateway | pve-node-2만 두 gateway IPv4와 campus SNAT, IPv4 forwarding 소유 |
 | Standby | pve-node-3는 gateway IPv4와 SNAT 규칙 없음, IPv4/IPv6 forwarding 0 |
 
-IPv6는 host의 `pinfra`와 `pguest`에서만 주소와 autoconf를 비활성화한다. `wt0`, `vmbr0`와
-호스트 전체 IPv6를 끄지 않는다. Guest IPv6 L2 자체와 host IPv6 관리면 보호는 구분한다.
-IP 할당은 플랫폼 DB와 cloud-init이 소유한다. 이 zone에는 DHCP와 SDN subnet/gateway를
-만들지 않으며, 모든 노드에 같은 gateway alias가 자동 생성되는 구성을 사용하지 않는다.
+IPv6는 host의 `pinfra`와 `pguest`에서만 주소와 autoconf를 비활성화해요. `wt0`, `vmbr0`와
+호스트 전체 IPv6를 끄지 않아요. Guest IPv6 L2 자체와 host IPv6 관리면 보호는 구분해요.
+IP 할당은 플랫폼 DB와 cloud-init이 소유해요. 이 zone에는 DHCP와 SDN subnet/gateway를
+만들지 않으며, 모든 노드에 같은 gateway alias가 자동 생성되는 구성을 사용하지 않아요.
 
 | 도구 | 실행 위치와 역할 |
 |---|---|
-| `scripts/apply-production-sdn.sh` | pve-node-2 root. PVE global SDN lock 아래 정확한 zone/VNet만 생성·삭제 |
+| `scripts/apply-production-sdn.sh` | pve-node-2 root. PVE global SDN lock 아래 정확한 zone/VNet만 생성과 삭제 |
 | `scripts/apply-production-network.sh` | 각 PVE root. node 준비, guard/gateway 적용과 rollback |
 | `scripts/verify-production-network.py` | 운영자 머신. native/mesh SSH와 CA 검증 HTTPS, BMC 확인 후 commit proof 생성 |
 
-실행은 기본적으로 사전 검사다. 변경은 `--apply`가 있어야 한다. `pve-node`이나 다른 cluster,
-불명확한 기존 리소스, 예상과 다른 NetBird flags/mark 형식을 만나면 중단한다.
+실행은 기본적으로 사전 검사예요. 변경은 `--apply`가 있어야 해요. `pve-node`나 다른 cluster,
+불명확한 기존 리소스, 예상과 다른 NetBird flags/mark 형식을 만나면 중단해요.
 
 ## 적용 순서
 
-1. 두 PVE가 online이고 guest가 비어 있으며 HA resource가 없어야 한다. 초기 변경은
-   dept-node qdevice가 투표하는 expected/total votes 3 상태에서만 시작한다. 설정 백업과
-   SSH fallback, CA와 BMC 복구 경로를 먼저 확인한다.
-2. 운영자 NetBird 세션과 두 host peer의 실제 연결을 확인한다. Cloud policy는 운영
-   두 peer 사이 UDP 4789만 추가하고 기존 관리 정책을 보존한다. 이 도구는 Cloud
-   계정이나 정책을 변경하지 않는다. Direct/relay 상태와 MTU 수용 여부는 실제 트래픽으로 확인한다.
-3. 각 노드에 root 소유 0700의 이 실행 전용 backup 디렉터리를 준비한다. 노드별로
-   아래 사전 검사를 하고 적용한다. MTU 변경은 native SSH 또는 현장 console에서 실행한다.
+1. 두 PVE가 online이고 guest가 비어 있으며 HA resource가 없어야 해요. 초기 변경은
+   dept-node qdevice가 투표하는 expected/total votes 3 상태에서만 시작해요. 설정 백업과
+   SSH fallback, CA와 BMC 복구 경로를 먼저 확인해요.
+2. 운영자 NetBird 세션과 두 host peer의 실제 연결을 확인해요. Cloud policy는 운영
+   두 peer 사이 UDP 4789만 추가하고 기존 관리 정책을 보존해요. 이 도구는 Cloud
+   계정이나 정책을 변경하지 않아요. Direct/relay 상태와 MTU 수용 여부는 실제 트래픽으로 확인해요.
+3. 각 노드에 root 소유 0700의 이 실행 전용 backup 디렉터리를 준비해요. 노드별로
+   아래 사전 검사를 하고 적용해요. MTU 변경은 native SSH 또는 현장 console에서 실행해요.
 
    ```bash
    bash scripts/apply-production-network.sh prepare --backup-dir /pickle/backup/production-network
    bash scripts/apply-production-network.sh prepare --backup-dir /pickle/backup/production-network --apply
    ```
 
-   복구 timer 기본값은 300초이며 `--rollback-seconds`로 60–900초 안에서 정한다.
+   복구 timer 기본값은 300초이며 `--rollback-seconds`로 60–900초 안에서 정해요.
    스크립트는 먼저 `/bin/bash` 경유 1초 시험 timer가 실제로 nonce proof를 쓰고
-   정상 종료하는지 확인한다. 그 뒤 실제 rollback timer를 arm하고 BMC guard를 설치한
-   다음 NetBird MTU를 변경한다. 재시작 직후 mark rule이 아직 비어 있으면 최대 15초 동안
+   정상 종료하는지 확인해요. 그 뒤 실제 rollback timer를 arm하고 BMC guard를 설치한
+   다음 NetBird MTU를 변경해요. 재시작 직후 mark rule이 아직 비어 있으면 최대 15초 동안
    0.25초 간격으로 기다리되, IPv4/IPv6에서 원래 확인한 tuple이 연속 두 번 같아야 준비로
-   판정한다. 다른 mark/mask나 잘못된 rule은 즉시 중단하며 attempts와 elapsed를 state에
-   남긴다. `/run`의 스크립트를 직접 실행하지 않는다.
-4. 두 node 준비가 성공하면 pve-node-2에서 SDN을 적용한다.
+   판정해요. 다른 mark/mask나 잘못된 rule은 즉시 중단하며 attempts와 elapsed를 state에
+   남겨요. `/run`의 스크립트를 직접 실행하지 않아요.
+4. 두 node 준비가 성공하면 pve-node-2에서 SDN을 적용해요.
 
    ```bash
    bash scripts/apply-production-sdn.sh
    bash scripts/apply-production-sdn.sh --apply
    ```
 
-   다른 pending 변경이나 global lock을 강제로 가져오지 않는다. Zone/VNet의 기존 값이
-   다르면 덮어쓰지 않는다. Parent UPID뿐 아니라 두 node의 새 `networking` reload UPID가
-   모두 OK여야 성공이다. 기존 running reload나 겹치는 reload가 있으면 소유권을 추정하지 않는다.
+   다른 pending 변경이나 global lock을 강제로 가져오지 않아요. Zone/VNet의 기존 값이
+   다르면 덮어쓰지 않아요. Parent UPID뿐 아니라 두 node의 새 `networking` reload UPID가
+   모두 OK여야 성공이에요. 기존 running reload나 겹치는 reload가 있으면 소유권을 추정하지 않아요.
    설치된 `pvesh`는 node reload 진행 문구와 package 조회 진단을 JSON task ID 앞의 stdout에
-   함께 쓸 수 있다. 스크립트는 마지막 nonempty 줄의 엄격한 parent UPID와 이후 task 상태만
-   성공 근거로 삼고, 그 앞의 vendor 출력은 형식을 추정하지 않고 stderr 진단으로 보존한다.
-   `pvesh set /cluster/sdn`은 설정을 commit한 뒤 node별 reload worker를 시작한다.
+   함께 쓸 수 있어요. 스크립트는 마지막 nonempty 줄의 엄격한 parent UPID와 이후 task 상태만
+   성공 근거로 삼고, 그 앞의 vendor 출력은 형식을 추정하지 않고 stderr 진단으로 보존해요.
+   `pvesh set /cluster/sdn`은 설정을 commit한 뒤 node별 reload worker를 시작해요.
    따라서 스크립트가 task ID 응답을 확인하지 못했다고 적용되지 않았다고 판단하거나
-   owner 기록을 지우지 않는다. 이 불확실 상태에서는 같은 apply를 반복하지 말고 owner
+   owner 기록을 지우지 않아요. 이 불확실 상태에서는 같은 apply를 반복하지 말고 owner
    기록, zone/VNet의 running 설정, 가장 최근 `reloadnetworkall` parent task와 두 node의
-   `srvreload:networking` child task를 함께 확인한다. 정확한 parent와 두 child가 모두
-   `stopped`/`OK`이고 running 설정이 입력과 일치할 때만 적용 완료로 판정한다.
+   `srvreload:networking` child task를 함께 확인해요. 정확한 parent와 두 child가 모두
+   `stopped`/`OK`이고 running 설정이 입력과 일치할 때만 적용 완료로 판정해요.
 
    task나 설정을 정확히 대응할 수 없으면 node rollback을 먼저 완료하고 owner 기록을
-   보존한 채 중단한다. 운영망을 회수하기로 결정한 경우 아래 `--rollback --apply` 절차로
-   running zone/VNet을 제거한다. pending 설정만 남았음이 확인된 경우에만 별도 SDN lock을
-   얻어 `/cluster/sdn/rollback`으로 pending 설정을 되돌린다. running 설정과 task 결과를
-   확인하기 전에는 owner 파일을 수동 삭제하거나 pending rollback을 실행하지 않는다.
-5. 두 node에서 `activate --apply`를 실행한다. Kernel의 VNI와 master, FDB peer, 실제
-   route의 `wt0`/source, 두 MTU를 확인한 뒤에만 L3를 활성화한다.
+   보존한 채 중단해요. 운영망을 회수하기로 결정한 경우 아래 `--rollback --apply` 절차로
+   running zone/VNet을 제거해요. pending 설정만 남았음이 확인된 경우에만 별도 SDN lock을
+   얻어 `/cluster/sdn/rollback`으로 pending 설정을 되돌려요. running 설정과 task 결과를
+   확인하기 전에는 owner 파일을 수동 삭제하거나 pending rollback을 실행하지 않아요.
+5. 두 node에서 `activate --apply`를 실행해요. Kernel의 VNI와 master, FDB peer, 실제
+   route의 `wt0`/source, 두 MTU를 확인한 뒤에만 L3를 활성화해요.
 
    ```bash
    bash scripts/apply-production-network.sh activate --apply
    ```
 
-   pve-node-2 BMC `nic1`의 host 신규 입력과 양방향 forwarding을 먼저 차단한다. pguest에서
-   두 host의 campus/mesh 주소로 가는 트래픽도 포트 일부만이 아니라 전체를 차단한다.
-   host gateway echo 진단은 별도 허용한다. IPv4 forwarding은 마지막에 켠다.
-6. 운영자 머신에서 보호 evidence 디렉터리(0700)와 기존 공개 cluster CA로 양 경로를 확인한다.
+   pve-node-2 BMC `nic1`의 host 신규 입력과 양방향 forwarding을 먼저 차단해요. pguest에서
+   두 host의 campus/mesh 주소로 가는 트래픽도 포트 일부만이 아니라 전체를 차단해요.
+   host gateway echo 진단은 별도 허용해요. IPv4 forwarding은 마지막에 켜요.
+6. 운영자 머신에서 보호 evidence 디렉터리(0700)와 기존 공개 cluster CA로 양 경로를 확인해요.
 
    ```bash
    python3 scripts/verify-production-network.py --ca-file /path/to/pve-root-ca.pem \
      --output-dir /path/to/private-evidence
    ```
 
-   Native SSH는 기존 `pve-node-2`/`pve-node-3` 별칭을 사용한다. Mesh SSH는 ProxyJump/ProxyCommand를
-   해제하고 native host key alias를 고정한다. 두 SSH 경로는 기존 multiplex socket을
-   재사용하지 않으며 모든 curl 검사는 proxy 환경변수를 무시한다. Native HTTPS는 반대 PVE에서 campus 경로로,
-   mesh HTTPS는 운영자 머신에서 직접 검증한다. BMC HTTPS는 pve-node-2에서 확인한다.
-7. 각 `*-commit-proof.json`을 해당 host root 전용 경로에 전달한 뒤 180초 이내에 commit한다.
+   Native SSH는 기존 `pve-node-2`/`pve-node-3` 별칭을 사용해요. Mesh SSH는 ProxyJump/ProxyCommand를
+   해제하고 native host key alias를 고정해요. 두 SSH 경로는 기존 multiplex socket을
+   재사용하지 않으며 모든 curl 검사는 proxy 환경변수를 무시해요. Native HTTPS는 반대 PVE에서 campus 경로로,
+   mesh HTTPS는 운영자 머신에서 직접 검증해요. BMC HTTPS는 pve-node-2에서 확인해요.
+7. 각 `*-commit-proof.json`을 해당 host root 전용 경로에 전달한 뒤 180초 이내에 commit해요.
 
    ```bash
    bash scripts/apply-production-network.sh commit --proof /root/node-commit-proof.json --apply
    ```
 
-   Commit은 guard fingerprint와 현재 주소·route·MTU·hook, forwarding 및 관리 경로를
-   읽기 전용으로 확인한 뒤 timer만 취소한다. IPv4/IPv6 bridge netfilter가 모두 켜져 있는지,
-   guest가 있으면 PVE firewall enable과 두 family의 guest chain도 검사한다.
-   Proof 뒤에 네트워크를 다시 적용하지 않는다.
-   Guest 정책과 성능 검증은 이 관리 경로 commit과 별도로 남는다.
+   Commit은 guard fingerprint와 현재 주소와 route, MTU, hook, forwarding 및 관리 경로를
+   읽기 전용으로 확인한 뒤 timer만 취소해요. IPv4/IPv6 bridge netfilter가 모두 켜져 있는지,
+   guest가 있으면 PVE firewall enable과 두 family의 guest chain도 검사해요.
+   Proof 뒤에 네트워크를 다시 적용하지 않아요.
+   Guest 정책과 성능 검증은 이 관리 경로 commit과 별도로 남아요.
 
 ## 방화벽 경계
 
 ### 임시 edge ingress (선택 설정)
 
-`interim_ingress`는 `source`와 `destination` 두 IPv4 필드만 받는다. 이 예시의
+`interim_ingress`는 `source`와 `destination` 두 IPv4 필드만 받아요. 이 예시의
 source `192.0.2.10`은 edge 호스트 주소, destination `100.65.1.10`은
-`service_sources.proxy` 주소다. 실제 환경에서는 확인한 edge 출구 주소와
-proxy의 `pinfra` 주소를 사용한다. 포트는 TCP 24080과 24443으로 고정된다.
+`service_sources.proxy` 주소예요. 실제 환경에서는 확인한 edge 출구 주소와
+proxy의 `pinfra` 주소를 사용해요. 포트는 TCP 24080과 24443으로 고정돼요.
 
 활성 gateway owner에서만 uplink의 정확한 source, 자기 campus 목적지와 포트를
-proxy의 동일 포트로 DNAT한다. Standby는 `PKL-PROD-DNAT` 체인과 hook을
+proxy의 동일 포트로 DNAT해요. Standby는 `PKL-PROD-DNAT` 체인과 hook을
 소유하되 `RETURN`만 두며, 두 노드는 로컬 campus의 두 포트를 INPUT에서
-DROP한다. FORWARD의 신규 연결 예외는 conntrack 원본 목적지와 포트까지
-확인하고 `RETURN`하여 PVE guest firewall 판단을 계속 받는다. Proxy guest
-firewall과 listener는 별도로 준비해야 한다. IPv6 DNAT은 생성하지 않는다.
-설정을 제거했는데 소유 DNAT 체인이나 hook이 남으면 현재 상태 검증이 실패한다.
+DROP해요. FORWARD의 신규 연결 예외는 conntrack 원본 목적지와 포트까지
+확인하고 `RETURN`하여 PVE guest firewall 판단을 계속 받아요. Proxy guest
+firewall과 listener는 별도로 준비해야 해요. IPv6 DNAT은 생성하지 않아요.
+설정을 제거했는데 소유 DNAT 체인이나 hook이 남으면 현재 상태 검증이 실패해요.
 
 ### 공개 SSH 중계 (선택 설정)
 
 `/etc/pickle/production-network.json`의 `public_ssh_transit`는 `source`,
-`destination`, `port` 세 필드를 받는다. `source`는 확인한 edge 출발지의
+`destination`, `port` 세 필드를 받아요. `source`는 확인한 edge 출발지의
 정규화된 단일 IPv4이며 guest 대역과 node campus/mesh/BMC 주소 밖에 있어야
-한다. `destination`은 `service_sources.sshgw`와 같은 `pinfra` 호스트
-주소다. `port`는 private SSH 중계 경로의 TCP 2224다. 예시 형식은
-`{"source":"192.0.2.10","destination":"100.65.1.30","port":2224}`다.
-이 항목이 없으면 SSH 중계 예외를 만들지 않는다.
+해요. `destination`은 `service_sources.sshgw`와 같은 `pinfra` 호스트
+주소예요. `port`는 private SSH 중계 경로의 TCP 2224예요. 예시 형식은
+`{"source":"192.0.2.10","destination":"100.65.1.30","port":2224}`예요.
+이 항목이 없으면 SSH 중계 예외를 만들지 않아요.
 
 활성 gateway owner는 정확한 source와 자기 campus 목적지의 TCP 2224만
-`PKL-PROD-DNAT`에서 SSH gateway의 같은 포트로 전달한다. Host INPUT은
-원래 campus 목적지의 이 포트를 DROP한다. `PKL-PROD-FWD`와 priority
+`PKL-PROD-DNAT`에서 SSH gateway의 같은 포트로 전달해요. Host INPUT은
+원래 campus 목적지의 이 포트를 DROP해요. `PKL-PROD-FWD`와 priority
 -20 `inet pickle_production_guard`는 source, guest 목적지, TCP 2224,
-conntrack 원본 campus 목적지·포트가 모두 맞는 새 연결에만 `RETURN`을
-렌더한다. Standby에는 campus TCP 2224 INPUT DROP과 비어 있는 소유 DNAT
-체인을 렌더하고 FORWARD 예외는 만들지 않는다. DNAT 체인의 hook은 유지되지만
-안에는 마지막 RETURN만 있으며 주소나 포트를 전달하지 않는다.
-IPv6, NetBird mark, 일반 guest 포트와 기존 relay 경로는 유지한다.
+conntrack 원본 campus 목적지와 포트가 모두 맞는 새 연결에만 `RETURN`을
+렌더해요. Standby에는 campus TCP 2224 INPUT DROP과 비어 있는 소유 DNAT
+체인을 렌더하고 FORWARD 예외는 만들지 않아요. DNAT 체인의 hook은 유지되지만
+안에는 마지막 RETURN만 있으며 주소나 포트를 전달하지 않아요.
+IPv6, NetBird mark, 일반 guest 포트와 기존 relay 경로는 유지해요.
 
-이 설정은 host 방화벽 소유 범위만 다룬다. edge private receiver,
+이 설정은 host 방화벽 소유 범위만 다뤄요. edge private receiver,
 SSH gateway listener/input 규칙, 회신 route, 사용자 SSH host key와
-공개 relay 백엔드는 각기 별도 소유자다. 실제 전환 전 두 guest 준비 상태와
+공개 relay 백엔드는 각기 별도 소유자예요. 실제 전환 전 두 guest 준비 상태와
 단일 writer를 확인하고, 생성된 legacy/nft 규칙과 PVE guest firewall의
-최종 판단을 읽는다. 준비 파일을 설치해도 이 항목만으로 외부 SSH 경로가
-변하거나 운영 서비스가 시작되지는 않는다.
+최종 판단을 읽어요. 준비 파일을 설치해도 이 항목만으로 외부 SSH 경로가
+변하거나 운영 서비스가 시작되지는 않아요.
 Private receiver와 PROXY-required listener의 unit 생성, 파일 소유권 및 조건부
-원복은 [SSH 중계 런북](ssh-transit.md)에 있다.
+원복은 [SSH 중계 런북](ssh-transit.md)에 있어요.
 
 ### Relay transit (선택 설정)
 
 `/etc/pickle/production-network.json`의 선택 항목 `relay_transit`는
-`{"source":"<릴레이 WG IPv4>","api_destination":"<pinfra API IPv4>"}` 두 필드만 받는다.
-`source`는 `service_sources.relay`와 정확히 같고 guest·infra·node 관리 주소 밖의
-정규화된 단일 IPv4여야 한다. `api_destination`은 `service_sources.api`와 정확히
-같은 `pinfra` 호스트 주소여야 한다. 두 값이 다르거나 필드가 추가되면 적용 전에
-중단한다. 항목이 없으면 기존 firewall plan은 변하지 않는다.
+`{"source":"<릴레이 WG IPv4>","api_destination":"<pinfra API IPv4>"}` 두 필드만 받아요.
+`source`는 `service_sources.relay`와 정확히 같고 guest와 infra, node 관리 주소 밖의
+정규화된 단일 IPv4여야 해요. `api_destination`은 `service_sources.api`와 정확히
+같은 `pinfra` 호스트 주소여야 해요. 두 값이 다르거나 필드가 추가되면 적용 전에
+중단해요. 항목이 없으면 기존 firewall plan은 변하지 않아요.
 
-활성 gateway owner만 uplink에서 해당 `source`가 보낸 새 TCP·UDP 연결을
+활성 gateway owner만 uplink에서 해당 `source`가 보낸 새 TCP와 UDP 연결을
 `pguest` 목적지에 `RETURN`하고, 같은 출발지에서 API 목적지 TCP 8080으로 향하는
-새 연결을 따로 `RETURN`한다. TCP·UDP guest 목적지 포트 22는 일반 허용보다 먼저
-DROP한다. `RETURN`은 PVE의 VM별 NIC 방화벽을 우회하지 않으므로, 실제 backend
-포트의 허용은 VM 정책과 릴레이의 매핑·출발지 정책이 각각 담당한다. Standby는
-이 신규 연결 예외를 만들지 않는다. IPv6, DNAT, SNAT, NetBird mark는 이 항목으로
-바뀌지 않는다.
+새 연결을 따로 `RETURN`해요. TCP와 UDP guest 목적지 포트 22는 일반 허용보다 먼저
+DROP해요. `RETURN`은 PVE의 VM별 NIC 방화벽을 우회하지 않으므로, 실제 backend
+포트의 허용은 VM 정책과 릴레이의 매핑과 출발지 정책이 각각 담당해요. Standby는
+이 신규 연결 예외를 만들지 않아요. IPv6, DNAT, SNAT, NetBird mark는 이 항목으로
+바뀌지 않아요.
 
 이 예외는 기존 `PKL-PROD-FWD`와 priority -20의 `inet pickle_production_guard`
-모두에 동일한 계획으로 반영된다. 별도 runtime 규칙을 한 체인에만 덧붙이면 다음
-`reconcile`이 지우거나 다른 guard의 DROP에 걸린다. 변경 전에는 원래
+모두에 동일한 계획으로 반영돼요. 별도 runtime 규칙을 한 체인에만 덧붙이면 다음
+`reconcile`이 지우거나 다른 guard의 DROP에 걸려요. 변경 전에는 원래
 runtime/config/state와 gateway owner를 보호하고, 변경 뒤에는 두 hook의 규칙 순서와
-VM별 방화벽을 검증한다. Relay에서 guest로 가는 경로와 회신 route는 각 호스트의
-별도 네트워크 설정도 맞아야 하므로 이 선택 항목만으로 공개 연결 성공을 판정하지 않는다.
+VM별 방화벽을 검증해요. Relay에서 guest로 가는 경로와 회신 route는 각 호스트의
+별도 네트워크 설정도 맞아야 하므로 이 선택 항목만으로 공개 연결 성공을 판정하지 않아요.
 
-VM별 IN/OUT 정책은 기존 `pve-firewall` backend와 플랫폼 API가 소유한다. 이 도구는
-per-VM allowlist를 만들거나 PVE/NetBird firewall을 비활성화하지 않는다. 새
-`proxmox-firewall` backend로 전환하지도 않는다.
+VM별 IN/OUT 정책은 기존 `pve-firewall` backend와 플랫폼 API가 소유해요. 이 도구는
+per-VM allowlist를 만들거나 PVE/NetBird firewall을 비활성화하지 않아요. 새
+`proxmox-firewall` backend로 전환하지도 않아요.
 
-- Legacy chain은 `PKL-PROD-*`만 소유한다. Hook과 해당 chain만 원자적으로 갱신하며
-  다른 chain이나 전체 table을 flush하지 않는다. Guest 허용 경로는 `RETURN`으로
-  나가므로 per-VM PVE 판정을 건너뛰는 전역 ACCEPT를 추가하지 않는다.
+- Legacy chain은 `PKL-PROD-*`만 소유해요. Hook과 해당 chain만 원자적으로 갱신하며
+  다른 chain이나 전체 table을 flush하지 않아요. Guest 허용 경로는 `RETURN`으로
+  나가므로 per-VM PVE 판정을 건너뛰는 전역 ACCEPT를 추가하지 않아요.
 - IPv4 raw `PKL-PROD-RAW`는 기존 VXLAN 수신 guard 뒤, 마지막 `RETURN` 앞에서
-  `-i fwbr+ -j CT --zone 1`을 적용한다. `fwbr+`는 PVE가 VM 방화벽에 연결하는
-  bridge 쪽 인터페이스만 가리키며 guest 주소나 host IP로 범위를 정하지 않는다.
+  `-i fwbr+ -j CT --zone 1`을 적용해요. `fwbr+`는 PVE가 VM 방화벽에 연결하는
+  bridge 쪽 인터페이스만 가리키며 guest 주소나 host IP로 범위를 정하지 않아요.
   `fwbr+` 양방향 패킷에 같은 conntrack zone을 지정하며, guest source 조건으로 한쪽
-  방향을 제외하지 않는다.
-  Gateway owner와 standby에 동일하게 설치해 수동 owner 전환 뒤에도 유지한다. IPv6
-  raw에는 넣지 않으며 다른 필터의 `ACCEPT` 또는 SNAT 범위를 넓히지 않는다.
+  방향을 제외하지 않아요.
+  Gateway owner와 standby에 동일하게 설치해 수동 owner 전환 뒤에도 유지해요. IPv6
+  raw에는 넣지 않으며 다른 필터의 `ACCEPT` 또는 SNAT 범위를 넓히지 않아요.
   설치 전에는 raw hook과 다른 chain에 같은 `fwbr+` 트래픽의 zone을 지정하는 별도
-  규칙이 없는지 읽기 전용으로 확인한다. 이미 guest가 있는 노드에서 초기 `prepare`를
+  규칙이 없는지 읽기 전용으로 확인해요. 이미 guest가 있는 노드에서 초기 `prepare`를
   다시 실행하지 않고, 설치된 runtime의 동일한 생성기를 갱신한 뒤 `reconcile` 경로로
-  소유 chain을 갱신한다. 이전 상태로 되돌릴 때는 `PKL-PROD-RAW`의 정확한
-  `-i fwbr+ -j CT --zone 1` 규칙만 제거하고 구 runtime을 복원한다. 전체 raw table이나
-  conntrack 상태를 비우지 않는다.
-- 별도 `inet pickle_production_guard`의 INPUT/FORWARD hook은 priority -20이다.
-  NetBird가 legacy rule을 앞에 재삽입해도 BMC와 host 관리면의 거부가 먼저 적용된다.
+  소유 chain을 갱신해요. 이전 상태로 되돌릴 때는 `PKL-PROD-RAW`의 정확한
+  `-i fwbr+ -j CT --zone 1` 규칙만 제거하고 구 runtime을 복원해요. 전체 raw table이나
+  conntrack 상태를 비우지 않아요.
+- 별도 `inet pickle_production_guard`의 INPUT/FORWARD hook은 priority -20이에요.
+  NetBird가 legacy rule을 앞에 재삽입해도 BMC와 host 관리면의 거부가 먼저 적용돼요.
 - `bridge pickle_production_l2`는 확인한 `vxlan_pinfra`/`vxlan_pguest` ingress에서만
-  mark를 처리한다. 설치된 NetBird의 setter/accept value와 full mask, PVE reserved mask를
-  읽어 일치·비중첩을 확인한다. PVE bits는 보존하며 다른 non-PVE mark는 제거하지 않고
-  drop한다. NetBird가 알 수 없는 mark 형식으로 바뀌면 guest 경로는 fail-closed이며
-  재검증 전에는 정상으로 판정하지 않는다.
-- 두 VNet은 IPv4/IPv6/ARP 이외의 EtherType을 거부한다. VLAN/QinQ trunk는 지원하지 않는다.
-  VLAN-aware=false만으로 tagged frame의 firewall 우회가 차단된다고 가정하지 않는다.
+  mark를 처리해요. 설치된 NetBird의 setter/accept value와 full mask, PVE reserved mask를
+  읽어 일치와 비중첩을 확인해요. PVE bits는 보존하며 다른 non-PVE mark는 제거하지 않고
+  drop해요. NetBird가 알 수 없는 mark 형식으로 바뀌면 guest 경로는 fail-closed이며
+  재검증 전에는 정상으로 판정하지 않아요.
+- 두 VNet은 IPv4/IPv6/ARP 이외의 EtherType을 거부해요. VLAN/QinQ trunk는 지원하지 않아요.
+  VLAN-aware=false만으로 tagged frame의 firewall 우회가 차단된다고 가정하지 않아요.
 
-NetBird 재시작 후에는 아래 운영 중 `reconcile --apply` 경로와 운영자 관리 경로 검증을 다시 한다.
-독립 nft guard는 legacy hook 순서 변경 중에도 유지된다. `status`는 mark/L2/priority guard
-counter를 함께 출력한다. 같은 node와 다른 node의 실제 guest로 새 IN 거부, 명시적 허용,
+NetBird 재시작 후에는 아래 운영 중 `reconcile --apply` 경로와 운영자 관리 경로 검증을 다시 해요.
+독립 nft guard는 legacy hook 순서 변경 중에도 유지돼요. `status`는 mark/L2/priority guard
+counter를 함께 출력해요. 같은 node와 다른 node의 실제 guest로 새 IN 거부, 명시적 허용,
 OUT과 반환, IP/MAC/ARP 위조, IPv6 link-local, tagged frame을 검사하고 counter의 전후를
-기록한다. 순서를 바꾼 규칙이나 가짜 mark를 주입하는 시험은 소유한 격리 guest 경로에만 한다.
+기록해요. 순서를 바꾼 규칙이나 가짜 mark를 주입하는 시험은 소유한 격리 guest 경로에만 해요.
 
 ## 운영 중 재적용과 guest 수명주기
 
 운영 중 소유 규칙만 다시 적용할 때는 `systemctl restart example-production-network.service`나
-`systemctl stop example-production-network.service`를 사용하지 않는다. 이 unit은
-`pve-guests.service`의 `Requires`·`After` 대상이다. Unit 재시작은 guest service의
-`stopall`·`startall`을 동반할 수 있고, `onboot=0`으로 수동 시작한 guest는
-`startall` 뒤에도 중지된 채 남을 수 있다. 이 의존성은 부팅 시 네트워크 guard가
-준비되기 전에 guest를 시작하지 않기 위한 것이므로 제거하지 않는다. VNet의
-if-up hook이 요청하는 service 재시작에도 같은 guest 영향이 있을 수 있다.
+`systemctl stop example-production-network.service`를 사용하지 않아요. 이 unit은
+`pve-guests.service`의 `Requires`와 `After` 대상이에요. Unit 재시작은 guest service의
+`stopall`과 `startall`을 동반할 수 있고, `onboot=0`으로 수동 시작한 guest는
+`startall` 뒤에도 중지된 채 남을 수 있어요. 이 의존성은 부팅 시 네트워크 guard가
+준비되기 전에 guest를 시작하지 않기 위한 것이므로 제거하지 않아요. VNet의
+if-up hook이 요청하는 service 재시작에도 같은 guest 영향이 있을 수 있어요.
 
 재적용 전에는 설치된 unit의 의존성과 현재 gateway owner, committed state의
-`pending=false`, config·owner 및 관리 네트워크 파일의 hash, 각 guest의 실행·
-`onboot` 상태와 관리 SSH·HTTPS 경로를 읽고 기록한다. 예상과 다르거나 다른
-네트워크 변경이 진행 중이면 중단한다. 일치할 때 설치된 wrapper를 직접 실행한다.
-아래 경로는 기본 설치 위치다. drop-in이 `ExecStart`를 다른 runtime과 config로 바꿔 둔
+`pending=false`, config와 owner 및 관리 네트워크 파일의 hash, 각 guest의 실행과
+`onboot` 상태와 관리 SSH와 HTTPS 경로를 읽고 기록해요. 예상과 다르거나 다른
+네트워크 변경이 진행 중이면 중단해요. 일치할 때 설치된 wrapper를 직접 실행해요.
+아래 경로는 기본 설치 위치예요. drop-in이 `ExecStart`를 다른 runtime과 config로 바꿔 둔
 node가 있으므로, 먼저 `systemctl cat example-production-network.service`의 마지막
-`ExecStart`를 읽고 같은 wrapper와 `--config`로 실행한다. 다른 사본을 쓰면 committed
-state의 config와 달라 `installed configuration changed outside this operation`으로 멈춘다.
-`--apply` 없이 같은 명령을 실행하면 쓰기 없이 config와 state의 일치만 확인한다.
+`ExecStart`를 읽고 같은 wrapper와 `--config`로 실행해요. 다른 사본을 쓰면 committed
+state의 config와 달라 `installed configuration changed outside this operation`으로 멈춰요.
+`--apply` 없이 같은 명령을 실행하면 쓰기 없이 config와 state의 일치만 확인해요.
 
 ```bash
 bash /usr/local/libexec/example-production-network/apply-production-network.sh \
   reconcile --config /etc/pickle/production-network.json --apply
 ```
 
-이 명령은 unit의 active 상태를 바꾸지 않고 현재 owner·baseline·guard를 검사해
-소유 규칙을 재생성한다. 이후 `status`와 관리 경로, guest 정책·회신 경로를 다시
-확인한다. 부팅 전용 `--startup-wait-seconds`는 수동 재적용에 넣지 않는다.
+이 명령은 unit의 active 상태를 바꾸지 않고 현재 owner와 baseline, guard를 검사해
+소유 규칙을 재생성해요. 이후 `status`와 관리 경로, guest 정책과 회신 경로를 다시
+확인해요. 부팅 전용 `--startup-wait-seconds`는 수동 재적용에 넣지 않아요.
 의도적으로 service를 stop/restart하거나 host를 재부팅할 때는 guest 중단 시간,
-`onboot=0`을 포함한 guest별 재시작 순서, API·proxy 등 수동 service 복구,
-관리 경로와 사용자 트래픽 검증, 실패 시 원복 절차를 먼저 확정한다.
+`onboot=0`을 포함한 guest별 재시작 순서, API와 proxy 등 수동 service 복구,
+관리 경로와 사용자 트래픽 검증, 실패 시 원복 절차를 먼저 확정해요.
 
 ## 부팅과 재적용
 
 Node 입력은 `/etc/pickle/production-network.json`, 변경 상태는 root 전용
-`/var/lib/example-production-network/state.json`에 남는다. Runtime은
-`/usr/local/libexec/example-production-network/`에 설치한다. `example-production-network.service`는
-network-online, NetBird, pve-cluster와 pve-firewall 뒤에 실행하고 guest 자동 시작은 이 service 뒤에 둔다.
-VNet의 if-up hook은 같은 service를 비동기로 재시작한다. 생성된 SDN interface 파일에
-host IP를 덧붙이는 방식을 쓰지 않는다.
+`/var/lib/example-production-network/state.json`에 남아요. Runtime은
+`/usr/local/libexec/example-production-network/`에 설치해요. `example-production-network.service`는
+network-online, NetBird, pve-cluster와 pve-firewall 뒤에 실행하고 guest 자동 시작은 이 service 뒤에 둬요.
+VNet의 if-up hook은 같은 service를 비동기로 재시작해요. 생성된 SDN interface 파일에
+host IP를 덧붙이는 방식을 쓰지 않아요.
 
 부팅 unit의 reconcile은 최대 120초 동안 quorum과 mesh link/route/FDB, NetBird mark와
-필요한 legacy PVE firewall chain이 준비되기를 기다린다. 기다리는 동안에는 rule, 주소,
-sysctl과 state를 쓰지 않는다. 예상 cluster 신원·구성·owner·기존 link/route/mark layout이
-다르거나 명령 자체가 실패하면 기다리지 않고 즉시 중단한다. 준비 판정 뒤 실제 쓰기 직전에
-같은 검사를 다시 한다. 180초 unit timeout은 적용 작업을 위한 여유를 남긴다.
+필요한 legacy PVE firewall chain이 준비되기를 기다려요. 기다리는 동안에는 rule, 주소,
+sysctl과 state를 쓰지 않아요. 예상 cluster 신원과 구성, owner, 기존 link/route/mark layout이
+다르거나 명령 자체가 실패하면 기다리지 않고 즉시 중단해요. 준비 판정 뒤 실제 쓰기 직전에
+같은 검사를 다시 해요. 180초 unit timeout은 적용 작업을 위한 여유를 남겨요.
 
-설치된 PVE의 `/cluster/status`는 부팅 초기에 local node 행만 반환하거나 cluster 행·이름과
-다른 expected node 행을 아직 내놓지 않을 수 있다. 이 metadata 부재는 local Corosync/native
-파일 hash, committed state와 owner가 모두 그대로인 boot bounded wait 안에서만 재시도한다.
-값이 있는 다른 cluster 이름, 알 수 없거나 중복된 node 이름은 즉시 fatal로 판정한다.
+설치된 PVE의 `/cluster/status`는 부팅 초기에 local node 행만 반환하거나 cluster 행과 이름과
+다른 expected node 행을 아직 내놓지 않을 수 있어요. 이 metadata 부재는 local Corosync/native
+파일 hash, committed state와 owner가 모두 그대로인 boot bounded wait 안에서만 재시도해요.
+값이 있는 다른 cluster 이름, 알 수 없거나 중복된 node 이름은 즉시 fatal로 판정해요.
 
 Network unit의 첫 실행이 실패하면 `pve-guests.service`의 dependency job도 실패하고,
-network unit의 뒤늦은 재시작 성공이 그 job을 다시 실행하지 않는다. Vendor unit은
-`RefuseManualStart=true`이므로 `systemctl start pve-guests`를 복구 절차로 사용하지 않는다.
+network unit의 뒤늦은 재시작 성공이 그 job을 다시 실행하지 않아요. Vendor unit은
+`RefuseManualStart=true`이므로 `systemctl start pve-guests`를 복구 절차로 사용하지 않아요.
 
-Bounded wait가 끝나거나 fatal 검사가 실패하면 guest 자동 시작은 중단된 채로 둔다. 이후
-network가 정상이어도 자동으로 guest를 시작하지 않는다. 운영자가 원래 owner를 fence하고
-복구 실행 주체가 하나임을 확인한 뒤 다음 명시 경로를 사용한다.
+Bounded wait가 끝나거나 fatal 검사가 실패하면 guest 자동 시작은 중단된 채로 둬요. 이후
+network가 정상이어도 자동으로 guest를 시작하지 않아요. 운영자가 원래 owner를 fence하고
+복구 실행 주체가 하나임을 확인한 뒤 다음 명시 경로를 사용해요.
 
 ```bash
 bash /usr/local/libexec/example-production-network/apply-production-network.sh \
@@ -289,69 +289,71 @@ bash /usr/local/libexec/example-production-network/apply-production-network.sh \
 
 이 경로는 committed active state(`pending=false`), 현재 owner와 baseline hash, quorum,
 mesh/mark, PVE firewall, guard와 관리 HTTPS를 같은 lock 안에서 다시 확인한 뒤 vendor delay
-helper와 `pvesh --nooutput create /nodes/localhost/startall`을 실행한다. Boot reconcile과 if-up
-hook은 이 경로를 호출하지 않는다. PVE firewall을 중지하거나 bridge netfilter를 끈 상태에서는
-guest 정책을 검증했다고 볼 수 없으며 신규 guest 시작과 운영 검증을 중단한다.
-Delay helper는 최대 120초, startall은 최대 600초 기다린다. Startall을 호출하기 직전에
-state에 `STARTING`을 기록하고 성공하면 `COMPLETED`로 바꾼다. Timeout이나 오류 뒤에는 일부
-guest가 이미 시작됐을 수 있으므로 `UNKNOWN`을 남기고 자동 재시도를 거부한다. PVE task와
-각 VM 상태를 확인해 결과를 판정하기 전에는 state를 지우거나 명령을 다시 실행하지 않는다.
+helper와 `pvesh --nooutput create /nodes/localhost/startall`을 실행해요. Boot reconcile과 if-up
+hook은 이 경로를 호출하지 않아요. PVE firewall을 중지하거나 bridge netfilter를 끈 상태에서는
+guest 정책을 검증했다고 볼 수 없으며 신규 guest 시작과 운영 검증을 중단해요.
+Delay helper는 최대 120초, startall은 최대 600초 기다려요. Startall을 호출하기 직전에
+state에 `STARTING`을 기록하고 성공하면 `COMPLETED`로 바꿔요. Timeout이나 오류 뒤에는 일부
+guest가 이미 시작됐을 수 있으므로 `UNKNOWN`을 남기고 자동 재시도를 거부해요. PVE task와
+각 VM 상태를 확인해 결과를 판정하기 전에는 state를 지우거나 명령을 다시 실행하지 않아요.
 
-Gateway owner 기록은 `/etc/pve/priv/example-production-network-owner.json`이다.
-일반 부팅은 이 기록과 현재 quorum을 확인하고 해당 owner만 주소와 SNAT를 갖는다.
-Standby에서는 IPv6 link-local도 host 관리 경로로 노출되지 않는다. 이 기록은 자동
-장애 감지나 fencing, conntrack 복제를 구현하지 않는다.
+Gateway owner 기록은 `/etc/pve/priv/example-production-network-owner.json`이에요.
+일반 부팅은 이 기록과 현재 quorum을 확인하고 해당 owner만 주소와 SNAT를 가져요.
+Standby에서는 IPv6 link-local도 host 관리 경로로 노출되지 않아요. 이 기록은 자동
+장애 감지나 fencing, conntrack 복제를 구현하지 않아요.
 
 ## PVE 방화벽 API getter 진단
 
 PVE 9.2.11의 `pvesh get /cluster/firewall/options`가 `unknown schema type`으로
-실패하더라도 이를 전체 PVE API 장애나 방화벽 정책 적용 성공으로 해석하지 않는다.
+실패하더라도 이를 전체 PVE API 장애나 방화벽 정책 적용 성공으로 해석하지 않아요.
 이 조합에서는 `pve-manager 9.2.11`, `pve-firewall 6.0.5`,
 `libpve-common-perl 9.2.1`의 CLI schema compiler가 `get_options`의
-parameters schema에 `properties`가 없는 경우를 처리하지 못한 것으로 확인됐다.
-Node options GET은 정상이다.
+parameters schema에 `properties`가 없는 경우를 처리하지 못한 것으로 확인됐어요.
+Node options GET은 정상이에요.
 
-Node options의 `nftables`는 optional boolean이며 schema default는 `0`이다. 따라서 키 부재만
-legacy backend의 default 0으로 허용한다. 명시적 null, true, 문자열과 다른 값은 거부한다.
-`pve-firewall`과 `proxmox-firewall` service가 둘 다 active인 것은 backend 판정의 증거가 아니다.
+Node options의 `nftables`는 optional boolean이며 schema default는 `0`이에요. 따라서 키 부재만
+legacy backend의 default 0으로 허용해요. 명시적 null, true, 문자열과 다른 값은 거부해요.
+`pve-firewall`과 `proxmox-firewall` service가 둘 다 active인 것은 backend 판정의 증거가 아니에요.
 
-root가 직접 읽기 전용으로 다음 getter를 실행해 실제 옵션 읽기 경로를 확인할 수 있다.
+root가 직접 읽기 전용으로 다음 getter를 실행해 실제 옵션 읽기 경로를 확인할 수 있어요.
 
 ```bash
 perl -MPVE::API2::Firewall::Cluster -MPVE::RPCEnvironment -MJSON \
   -e 'PVE::RPCEnvironment->setup_default_cli_env(); print encode_json(PVE::API2::Firewall::Cluster->get_options({}));'
 ```
 
-이 Perl 명령은 CLI 경로만 분리해 진단한다. HTTPS API 호출, VM firewall policy
-write/live 차단 또는 정책 집행을 증명하지 않는다. 일반 API 오류를 무시하는 범용
-fallback을 추가하지 않는다. `pve-firewall status`가 disabled/running이면 정책
-집행 완료로 표시하지 않는다. vendor 파일이나 설정은 변경하지 않는다.
+이 Perl 명령은 CLI 경로만 분리해 진단해요. HTTPS API 호출, VM firewall policy
+write/live 차단 또는 정책 집행을 증명하지 않아요. 일반 API 오류를 무시하는 범용
+fallback을 추가하지 않아요. `pve-firewall status`가 disabled/running이면 정책
+집행 완료로 표시하지 않아요. vendor 파일이나 설정은 변경하지 않아요.
 
 ## Rollback과 수동 gateway 전환
 
-확정 전에는 timer 또는 같은 operation ID의 `rollback --apply`가 node 변경을 되돌린다.
-먼저 routing과 두 gateway 주소를 내리고, guard가 남아 있는 동안 NetBird MTU를 복원한다.
-Forwarding 0을 다시 확인한 뒤 owned rule/table만 회수한다. Native 설정과 Corosync hash,
-HTTPS 및 BMC를 다시 확인한다. Runtime 파일만 정리하고 baseline/rollback 기록은 보존한다.
-수동 rollback은 이 확인이 모두 성공한 뒤 owned rollback timer만 정리한다. 확인이 실패하면
-timer를 보존하고, timer가 실행한 service 안에서도 자기 service는 중지하지 않는다.
-Guest가 생긴 경우 bridge netfilter를 임의로 끄지 않는다.
+확정 전에는 timer 또는 같은 operation ID의 `rollback --apply`가 node 변경을 되돌려요.
+먼저 routing과 두 gateway 주소를 내리고, guard가 남아 있는 동안 NetBird MTU를 복원해요.
+Forwarding 0을 다시 확인한 뒤 owned rule/table만 회수해요. Native 설정과 Corosync hash,
+HTTPS 및 BMC를 다시 확인해요. Runtime 파일만 정리하고 baseline/rollback 기록은 보존해요.
+수동 rollback은 이 확인이 모두 성공한 뒤 owned rollback timer만 정리해요. 확인이 실패하면
+timer를 보존하고, timer가 실행한 service 안에서도 자기 service는 중지하지 않아요.
+Guest가 생긴 경우 bridge netfilter를 임의로 끄지 않아요.
 
 Node rollback 뒤 두 PVE가 online/quorate이고 guest가 없는 상태에서만 다음으로
-owned zone/VNet을 회수한다. Witness가 일시적으로 없어도 두 PVE의 정상 quorum은 필요하다.
+owned zone/VNet을 회수해요. Witness가 일시적으로 없어도 두 PVE의 정상 quorum은 필요해요.
 
 ```bash
 bash scripts/apply-production-sdn.sh --rollback --apply
 ```
 
-이미 commit한 운영망은 초기 timer로 되돌리지 않는다. 수동 전환은 기존 gateway를
-먼저 fence하고 단일 owner를 증명한 뒤 별도 유지보수로 수행한다. SSH가 살아 있으면
+이미 commit한 운영망은 초기 timer로 되돌리지 않아요. 수동 전환은 기존 gateway를
+먼저 fence하고 단일 owner를 증명한 뒤 별도 유지보수로 수행해요. SSH가 살아 있으면
 기존 owner service와 if-up 재기동을 mask하고 forwarding, gateway 주소와 SNAT를
-내린다. 응답이 없으면 ping 실패만으로 fence됐다고 판단하지 않고 전원 차단 등 독립
-근거가 필요하다. 정상 quorum에서 owner 기록을 원자적으로 바꾸고 대체 node의
-runtime을 재시작한 뒤 gratuitous ARP, 외부 새 연결과 반환을 확인한다.
-원래 node를 다시 켤 때는 owner 기록을 먼저 확인하고 standby로 복귀시킨다.
+내려요. 응답이 없으면 ping 실패만으로 fence됐다고 판단하지 않고 전원 차단 등 독립
+근거가 필요해요. 정상 quorum에서 owner 기록을 원자적으로 바꾸고 대체 node의
+runtime을 재시작한 뒤 gratuitous ARP, 외부 새 연결과 반환을 확인해요.
+원래 node를 다시 켤 때는 owner 기록을 먼저 확인하고 standby로 복귀시켜요.
 
-Source NAT 주소와 conntrack 상태가 바뀌므로 기존 세션은 보존하지 않는다. 이 절차는
-core LXC/data를 복원하거나 공개 중계 endpoint를 자동 변경하지 않는다. pve-node 중계의
-전환과 서비스 writer 복구는 해당 서비스의 별도 검증 절차다.
+Source NAT 주소와 conntrack 상태가 바뀌므로 기존 세션은 보존하지 않아요. 이 절차는
+core LXC/data를 복원하거나 공개 중계 endpoint를 자동 변경하지 않아요. pve-node 중계의
+전환과 서비스 writer 복구는 해당 서비스의 별도 검증 절차예요.
+
+최종 갱신: 2026-11-08
