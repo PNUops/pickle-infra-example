@@ -82,6 +82,11 @@ ssh gpu-node-root docker run --rm --gpus all \
 - **엔진 기동 시 "Unknown SF transformation"**: 이 GPU의 FP8 MoE 경로는 유닛이 담고 있는
   `VLLM_USE_DEEP_GEMM=0` 설정이 필요해요. 관련 오류가 보이면 해당 env 줄과 실제 적용값을 확인하고
   누락된 값을 복구해요.
+- **운영 중 EngineCore가 죽고 유닛이 스스로 다시 뜨는 경우**: 요청이 적을 때도 생겨요. 직전에
+  `cuDNN fp8 GEMM tactic failed` 경고가 자주 보여요(flashinfer `bmm_fp8`의 cuDNN 9.20 경로, SM12x). 유닛의
+  `VLLM_DISABLED_KERNELS=FlashInferFP8ScaledMMLinearKernel`이 이 경로를 빼고 CUTLASS FP8을 쓰게 해요. 적용 뒤
+  기동 로그에 `Selected CutlassFP8ScaledMMLinearKernel`이 있고 `Tuning fp8_gemm`과 `tactic failed`가 없는지
+  확인해요. 그 뒤에도 같은 증상이면 다른 원인이므로 오류 위치를 기록해요.
 - **프로세스는 살아 있는데 서빙이 멈춘 경우**: `systemctl restart pickle-vllm`으로 재시작해요.
   해당 자체 서빙 요청이 잠시 실패할 수 있으므로 실제 응답이 복구됐는지 확인해요.
 

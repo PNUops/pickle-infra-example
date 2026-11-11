@@ -110,6 +110,12 @@ API, DB, 게이트웨이와 nginx 설정도 바꾸지 않았습니다.
 96파일, 웹루트 전체는 약 102파일입니다. 공개 index SHA와 새 chunk의 200, 직전 index chunk의 200을 확인했습니다. API, DB, 게이트웨이와 nginx 설정은 바꾸지
 않았습니다.
 
+추론 예산 안내 hotfix는 2026-11-12에 태그 `2026.11.12`로 운영 반영했습니다. 같은 기본 빌드로 만들었고 83파일 중 8파일이
+달라졌습니다. 게이트웨이는 같은 날부터 자체 서빙 `reasoning_effort`를 생각 토큰 예산(low 1,024, medium 4,096, high 8,192)으로
+받습니다. 직전 웹루트는 `<웹 루트>.before-<날짜>-reasoning-guide`에 보존했습니다. 11-11 반영 때 macOS `tar`가 붙인 메타데이터
+파일(`._*`)이 웹루트에 함께 들어갔다가 지워졌습니다. 개발 머신에서 archive를 만들 때는 `COPYFILE_DISABLE=1 tar --no-xattrs`를
+쓰고, 풀어 놓은 트리에 `._*`가 없는지 확인한 뒤 복사합니다.
+
 이전 판의 고정 경로도 남아 있어요. 2026-10-29에 Flyway V143을 적용했으므로 이전 API JAR 단독 재기동은 금지이며,
 데이터까지 되돌리려면 V142 전 복구점에서 새 DB를 복원하는 별도 운영자 판단이 필요해요. 운영 API의 준비 대상 명령은
 `/usr/local/libexec/pickle-api-start.py /opt/pickle/api/production-current.jar prod`이며,
@@ -141,7 +147,9 @@ artifact SHA를 읽기 전용으로 대조할 수 있어요. 서비스 재시작
   맞춰 바꾸지 않으므로, 되돌리면 사용 가이드의 추론 강도 설명이 사실과 달라집니다. 가이드 문구 수정이나 공지를 함께 정합니다.
 - API 되돌림: V143을 적용했으므로 이전 JAR 단독 기동은 금지입니다. 되돌리려면 V142 전 복구점에서 새 DB를 복원해
   전환하는 별도 운영자 판단이 필요하고, 그때만 이전 JAR와 이전 console을 함께 되돌립니다.
-- console 되돌림(자체 서빙 가이드 hotfix): `<웹 루트>.before-<날짜>-selfhost-guide`에 직전 운영판 94파일을 보존했습니다.
+- console 되돌림(추론 예산 안내 hotfix): `<웹 루트>.before-<날짜>-reasoning-guide`와 현재 index를 배포 기록의 SHA와 대조하고
+  `mv --exchange -T`로 맞바꿉니다. 되돌린 판은 자체 서빙 추론이 닫혀 있다고 설명하므로 게이트웨이 추론 설정도 함께 볼지 정합니다.
+- console 되돌림(자체 서빙 가이드 hotfix, 위 추론 예산 안내 되돌림 뒤에만): `<웹 루트>.before-<날짜>-selfhost-guide`에 직전 운영판 94파일을 보존했습니다.
   되돌리기 전 현재와 보존본 index가 배포 기록의 SHA와 같은지, 같은 파일시스템의 실제 디렉터리인지 확인합니다.
   `mv --exchange -T <웹 루트>.before-<날짜>-selfhost-guide <웹 루트>`로 맞바꾸고 두 index가 반대로 놓였는지 대조합니다.
   교환 뒤 보존 경로에 남는 것은 깨끗한 hotfix 빌드가 아니라 직전 판 위에 새 빌드를 덮어쓴 트리이므로, 다시 hotfix 판으로
