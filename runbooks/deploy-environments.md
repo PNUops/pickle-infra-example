@@ -114,7 +114,8 @@ API, DB, 게이트웨이와 nginx 설정도 바꾸지 않았습니다.
 달라졌습니다. 게이트웨이는 같은 날부터 자체 서빙 `reasoning_effort`를 생각 토큰 예산(low 1,024, medium 4,096, high 8,192)으로
 받습니다. 직전 웹루트는 `<웹 루트>.before-<날짜>-reasoning-guide`에 보존했습니다. 11-11 반영 때 macOS `tar`가 붙인 메타데이터
 파일(`._*`)이 웹루트에 함께 들어갔다가 지워졌습니다. 개발 머신에서 archive를 만들 때는 `COPYFILE_DISABLE=1 tar --no-xattrs`를
-쓰고, 풀어 놓은 트리에 `._*`가 없는지 확인한 뒤 복사합니다.
+쓰고, 풀어 놓은 트리에 `._*`가 없는지 확인한 뒤 복사합니다. 같은 날 그 절의 문장을 해요체로 바꾼 후속 hotfix(태그
+`2026.11.12b`)를 같은 방식으로 반영했고 직전 웹루트는 `<웹 루트>.before-<날짜>-reasoning-guide-tone`에 보존했습니다.
 
 이전 판의 고정 경로도 남아 있어요. 2026-10-29에 Flyway V143을 적용했으므로 이전 API JAR 단독 재기동은 금지이며,
 데이터까지 되돌리려면 V142 전 복구점에서 새 DB를 복원하는 별도 운영자 판단이 필요해요. 운영 API의 준비 대상 명령은
@@ -147,7 +148,9 @@ artifact SHA를 읽기 전용으로 대조할 수 있어요. 서비스 재시작
   맞춰 바꾸지 않으므로, 되돌리면 사용 가이드의 추론 강도 설명이 사실과 달라집니다. 가이드 문구 수정이나 공지를 함께 정합니다.
 - API 되돌림: V143을 적용했으므로 이전 JAR 단독 기동은 금지입니다. 되돌리려면 V142 전 복구점에서 새 DB를 복원해
   전환하는 별도 운영자 판단이 필요하고, 그때만 이전 JAR와 이전 console을 함께 되돌립니다.
-- console 되돌림(추론 예산 안내 hotfix): `<웹 루트>.before-<날짜>-reasoning-guide`와 현재 index를 배포 기록의 SHA와 대조하고
+- console 되돌림(추론 안내 문체 hotfix): `<웹 루트>.before-<날짜>-reasoning-guide-tone`과 현재 index를 배포 기록의 SHA와
+  대조하고 `mv --exchange -T`로 맞바꿉니다. 문구 문체만 다르므로 게이트웨이 설정은 그대로 둡니다.
+- console 되돌림(추론 예산 안내 hotfix, 위 문체 hotfix 되돌림 뒤에만): `<웹 루트>.before-<날짜>-reasoning-guide`와 현재 index를 배포 기록의 SHA와 대조하고
   `mv --exchange -T`로 맞바꿉니다. 되돌린 판은 자체 서빙 추론이 닫혀 있다고 설명하므로 게이트웨이 추론 설정도 함께 볼지 정합니다.
 - console 되돌림(자체 서빙 가이드 hotfix, 위 추론 예산 안내 되돌림 뒤에만): `<웹 루트>.before-<날짜>-selfhost-guide`에 직전 운영판 94파일을 보존했습니다.
   되돌리기 전 현재와 보존본 index가 배포 기록의 SHA와 같은지, 같은 파일시스템의 실제 디렉터리인지 확인합니다.
@@ -381,7 +384,7 @@ job timeout은 3분이며 runner 배정과 environment 승인 대기 시간은 �
 키 발급, GitHub 설정과 실제 workflow 실행 결과는 별도로 확인해야 해요.
 
 `config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-10-29부터
-0.113/V145 판이고(console은 2026-10-30에 두 번 더, 2026-11-11에 hotfix 배포, 게이트웨이는 2026-11-09 릴리스), 산출물은
+0.113/V145 판이고(console은 2026-10-30에 두 번 더, 2026-11-11과 2026-11-12에 hotfix 배포, 게이트웨이는 2026-11-09 릴리스), 산출물은
 고정 artifact 수동 배포로 올렸습니다. pin은 빌드한 commit이자 릴리스 태그가 가리키는 commit이며, 게이트웨이의
 `legacy_exec_path`와 `legacy_sha256`은 drop-in이 실행하는 고정 바이너리 경로와 그 SHA-256입니다. 운영 호스트에는
 이 manifest를 읽는 배포 도구가 없어, console pin 갱신은 실행 중인 source를 기록할 뿐입니다. 같은 파일과 `config/deploy-backup-reader.json`의
