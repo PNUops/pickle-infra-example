@@ -1,44 +1,44 @@
 # 런북: GPU 패스스루 (Proxmox 노드의 GPU를 VM에 통째로 넘기기)
 
-GPU가 꽂힌 Proxmox 노드에서 카드 한 장을 VM 한 대에 패스스루하는 절차다. 호스트가 카드를
+GPU가 꽂힌 Proxmox 노드에서 카드 한 장을 VM 한 대에 패스스루하는 절차예요. 호스트가 카드를
 잡지 않게 하는 부팅 시 `vfio-pci` 바인딩은 [proxmox-node-intake.md](proxmox-node-intake.md)
-§4c가 갖고, 이 문서는 그 위에서 시작한다. 2026-09-08 `pve-node-3`(RTX 5090)에서 처음 걸어 본
-결과로 쓴 것이고, 다른 카드나 다른 노드에서는 표시한 값을 다시 잰다.
+§4c가 갖고, 이 문서는 그 위에서 시작해요. 2026-09-08 `pve-node-3`(RTX 5090)에서 처음 걸어 본
+결과로 쓴 것이고, 다른 카드나 다른 노드에서는 표시한 값을 다시 재요.
 
-세 가지가 전 구간에 걸린다.
+세 가지가 전 구간에 걸려요.
 
-- **실행 중인 VM에는 붙이지도 떼지도 못한다.** Proxmox의 `hotplug` 집합에 PCI가 없다.
+- **실행 중인 VM에는 붙이지도 떼지도 못해요.** Proxmox의 `hotplug` 집합에 PCI가 없어요.
   실행 중 VM에 `hostpci`를 쓰면 오류 없이 `[PENDING]`에 남고, **VM을 끄는 순간 설정에
-  확정되어** 다음 기동에 적용된다. 게스트 안에서 재부팅해도 적용되지 않는다(QEMU 리셋일 뿐
-  프로세스 재시작이 아니다). 붙이는 것도 떼는 것도 그 VM의 종료와 기동이다.
-- **VM을 기동할 때마다 호스트가 카드에 FLR을 건다**(`vfio-pci … resetting / reset done`,
+  확정되어** 다음 기동에 적용돼요. 게스트 안에서 재부팅해도 적용되지 않아요(QEMU 리셋일 뿐
+  프로세스 재시작이 아니에요). 붙이는 것도 떼는 것도 그 VM의 종료와 기동이에요.
+- **VM을 기동할 때마다 호스트가 카드에 FLR을 걸어요**(`vfio-pci … resetting / reset done`,
   종료 때도 한 번). 리셋 시점에 카드를 무엇이 잡고 있는가에 민감한 카드(§4b)라면 그 조건이
-  기동마다 걸린다.
-- **API 토큰은 Resource Mapping으로만 `hostpci`를 쓴다.** raw BDF(`host=0000:43:00`)는
-  `root@pam` 실사용자 전용이고 root 토큰도 거부된다(`only root can set 'hostpci0' config
-  for non-mapped devices`, HTTP **500**). 플랫폼은 매핑 이름을 저장하고 BDF는 저장하지 않는다.
+  기동마다 걸려요.
+- **API 토큰은 Resource Mapping으로만 `hostpci`를 써요.** raw BDF(`host=0000:43:00`)는
+  `root@pam` 실사용자 전용이고 root 토큰도 거부돼요(`only root can set 'hostpci0' config
+  for non-mapped devices`, HTTP **500**). 플랫폼은 매핑 이름을 저장하고 BDF는 저장하지 않아요.
 
 ## 1. 매핑 만들기 (root, 노드마다 한 번)
 
 ```bash
-# 카드의 id와 subsystem-id, IOMMU 그룹을 읽는다
+# 카드의 id와 subsystem-id, IOMMU 그룹 조회
 lspci -nn -s 43:00.0                       # [10de:2b85]
 lspci -vvnns 43:00.0 | grep Subsystem      # [1569:f318]
-ls /sys/kernel/iommu_groups/13/devices/    # 43:00.0 과 43:00.1 만 있어야 한다
+ls /sys/kernel/iommu_groups/13/devices/    # 43:00.0 과 43:00.1 만 있어야 해요
 
 pvesh create /cluster/mapping/pci --id rtx5090 \
   --description "pve-node-3 RTX 5090 43:00.0+.1" \
   --map node=pve-node-3,path=0000:43:00,id=10de:2b85,iommugroup=13,subsystem-id=1569:f318
-pvesh get /cluster/mapping/pci --check-node pve-node-3 --output-format json   # "checks":[] 이어야 한다
+pvesh get /cluster/mapping/pci --check-node pve-node-3 --output-format json   # "checks":[] 이어야 해요
 ```
 
-`path`에 기능 번호를 빼면(`0000:43:00`) VGA와 오디오 두 기능이 함께 넘어간다. `--check-node`의
+`path`에 기능 번호를 빼면(`0000:43:00`) VGA와 오디오 두 기능이 함께 넘어가요. `--check-node`의
 `checks`가 비어 있지 않으면 `id`, `iommugroup`, `subsystem-id` 중 하나가 sysfs와 다르다는
-뜻이고, 그 문구를 그대로 기록한다. 매핑은 `/etc/pve/mapping/pci.cfg`에 남는다.
+뜻이고, 그 문구를 그대로 기록해요. 매핑은 `/etc/pve/mapping/pci.cfg`에 남아요.
 
 ## 2. 토큰에 줄 최소 권한 (실측 2026-09-08)
 
-플랫폼 역할(`PickleProvisioner`, 15권한)에 더할 것은 둘이고 그 이상은 필요 없다.
+플랫폼 역할(`PickleProvisioner`, 15권한)에 더할 것은 둘이고 그 이상은 필요 없어요.
 
 | 무엇 | 어디에 | 없으면 |
 |---|---|---|
@@ -51,24 +51,24 @@ pveum role add PickleMappingUse --privs Mapping.Use
 pveum acl modify /mapping/pci/rtx5090 --users pickle@pve --roles PickleMappingUse
 ```
 
-- `Mapping.Audit`은 필요 없다. `Mapping.Use`만으로 `GET /cluster/mapping/pci`와 개별 매핑
-  조회가 200으로 전체 내용을 준다.
-- 권한이 없을 때 **목록 조회는 200에 빈 배열**이고 개별 조회만 403이다. 목록만 보고 「매핑이
-  없다」로 읽지 않는다.
-- `GET /nodes/<n>/hardware/pci`는 `/`에 `Sys.Audit`을 요구해 이 역할로는 403이다. 플랫폼은
-  장치를 스스로 찾지 못하고 운영자가 이름 붙인 매핑만 쓴다.
-- `delete=hostpci0`도 같은 두 권한을 본다(옛 값도 검사). 붙일 수 있는 토큰은 뗄 수 있다.
-- `bios=ovmf`는 `VM.Config.Options`(보유), `efidisk0`는 `VM.Config.Disk`(보유)로 된다.
+- `Mapping.Audit`은 필요 없어요. `Mapping.Use`만으로 `GET /cluster/mapping/pci`와 개별 매핑
+  조회가 200으로 전체 내용을 줘요.
+- 권한이 없을 때 **목록 조회는 200에 빈 배열**이고 개별 조회만 403이에요. 목록만 보고 「매핑이
+  없어요」로 읽지 않아요.
+- `GET /nodes/<n>/hardware/pci`는 `/`에 `Sys.Audit`을 요구해 이 역할로는 403이에요. 플랫폼은
+  장치를 스스로 찾지 못하고 운영자가 이름 붙인 매핑만 써요.
+- `delete=hostpci0`도 같은 두 권한을 봐요(옛 값도 검사). 붙일 수 있는 토큰은 뗄 수 있어요.
+- `bios=ovmf`는 `VM.Config.Options`(보유), `efidisk0`는 `VM.Config.Disk`(보유)로 돼요.
 
 ## 3. VM 모양과 붙이기
 
-플랫폼 템플릿은 `qm create` 기본값(i440fx, SeaBIOS, EFI 디스크 없음)이다. 그 모양에서:
+이 절차가 기준으로 삼은 템플릿은 `qm create` 기본값(i440fx, SeaBIOS, EFI 디스크 없음)이에요. 그 모양에서:
 
 ```bash
-qm shutdown <vmid> --timeout 120            # 정지 상태에서만 쓴다
+qm shutdown <vmid> --timeout 120            # 구성 변경 전에 정지
 qm set <vmid> --hostpci0 mapping=rtx5090,rombar=0
 qm config <vmid> --current | grep hostpci   # 현재 설정에 있고
-qm pending <vmid> | grep hostpci            # cur 이어야 한다 (new 면 아직 pending)
+qm pending <vmid> | grep hostpci            # cur 이어야 해요 (new 면 아직 pending)
 qm start <vmid>
 ```
 
@@ -91,8 +91,8 @@ suspend 재개 때만. 소스 `PVE/QemuServer/Helpers.pm`). 게스트 메모리�
 설정 메모리). 밸룬은 듣지 않는다.
 
 토큰으로 하면 같은 일이 `PUT /nodes/<n>/qemu/<vmid>/config`에 `hostpci0=mapping=rtx5090,rombar=0`
-이고, 응답 200은 「썼다」이지 「붙었다」가 아니다. 붙었는지는 `GET …/config?current=1`에
-`hostpci0`가 있고 `GET …/pending`에 없는 것으로 본다.
+이고, 응답 200은 설정을 썼다는 뜻이며 실제 연결 완료와는 달라요. 붙었는지는 `GET …/config?current=1`에
+`hostpci0`가 있고 `GET …/pending`에 없는 것으로 봐요.
 
 ## 4. 떼기와 인계
 
@@ -103,9 +103,9 @@ qm set <B> --hostpci0 mapping=rtx5090,rombar=0 && qm start <B>     # B 에 붙�
 
 한 매핑을 두 VM 설정에 동시에 적어 둘 수는 있고, 카드를 쥔 VM이 있을 때 다른 VM을 기동하면
 qemu-server가 `PCI device '0000:43:00.0' already in use by VMID '90001'`(exit 255)로 **카드를
-건드리지 않고** 기동을 거부한다(예약 파일 `/var/run/qemu-server/pci-id-reservations`). 그래서
+건드리지 않고** 기동을 거부해요(예약 파일 `/var/run/qemu-server/pci-id-reservations`). 그래서
 인계 절차는 「A 종료 → B 기동」이면 되고, A의 `hostpci0`를 지우는 것은 다음에 A를 켤 때 GPU
-없이 올리기 위해서다. 2026-09-08 실측으로 인계 10회는 한 번에 약 19초(종료 5초, 기동에서
+없이 올리기 위해서예요. 2026-09-08 실측으로 인계 10회는 한 번에 약 19초(종료 5초, 기동에서
 agent 응답까지 14초)였고, 게스트 재부팅 3회·종료와 기동 3회·`qm reboot` 3회·강제 종료 3회,
 그리고 100% 부하(354 W)에서의 강제 종료 뒤에도 카드는 정상이었다. 게스트 안 재부팅은 호스트
 쪽 리셋을 일으키지 않고(예약 PID 유지), 종료와 기동은 각각 한 번씩 리셋한다.
@@ -121,23 +121,23 @@ cat /var/run/qemu-server/pci-id-reservations            # 어느 VMID 가 쥐고
 dmesg -T | grep -iE 'vfio|43:00|Xid|reset' | tail
 ```
 
-잃었으면 rescan에도 리셋에도 시간을 쓰지 않는다(§4b). **복구는 전원 사이클이다**(S5. 전원 버튼
+잃었으면 rescan에도 리셋에도 시간을 쓰지 않아요(§4b). **복구는 전원 사이클이에요**(S5. 전원 버튼
 또는 BMC의 Power Off와 Power On). vfio 상태의 웜 리부트는 2026-09-08 실측 3회가 무사했고, 그
 모양에서 잃는 날이 오면 그때 볼 손잡이가 `options vfio-pci disable_idle_d3=1`이다(§4c). **FLR이
-`giving up`으로 끝난 뒤에는 그 카드를 건드리는 어떤 것도 하지 않는다.** 2026-09-08에는 그 카드를
+`giving up`으로 끝난 뒤에는 그 카드를 건드리는 어떤 것도 하지 않아요.** 2026-09-08에는 그 카드를
 여는 `qm start`가, 2026-09-09에는 sysfs `reset` 쓰기(커널 기본 순서라 실패한 FLR부터 다시 한다.
 `reset_method`에 `bus`만 쓰는 것은 `Invalid argument`로 거부됐다)가 각각 호스트를 멈춰 여러 CPU가
 soft lockup에 들고 ssh가 배너 교환에서 끊기고 원격 `poweroff`조차 들어가지 않았다. 카드가 `lspci`에
 남아 있고 vendor id `0001`, device id `ffff`로 읽히며 루트 포트 링크가 2.5GT/s x16(정상 32GT/s)으로
 남은 모양에서도 그랬다. D3cold, remove와 rescan, 루트 포트 버스 리셋 직접 쓰기는 시도하지 않았고
-시도하지 않는다. 한 번 시도가 전원 사이클 한 번이기 때문이다. 슬롯 전원 제어는 이 보드에 없다
+시도하지 않아요. 한 번 시도가 전원 사이클 한 번이기 때문이에요. 슬롯 전원 제어는 이 보드에 없어요
 (`SltCap: PwrCtrl- HotPlug-`). `vendor_id`가 `10de`가 아니면(`0001`, `ffff`) 바로 사람을 부르고 BMC로
-전원을 돌린다.
+전원을 껐다 켜요.
 
 ## 6. 게스트 안의 GPU 사용률 읽기
 
-호스트 `nvidia-smi`는 카드가 vfio에 있는 동안 드라이버와 통신하지 못한다. 읽는 길은 guest
-agent이고 플랫폼 역할이 이미 가진 `VM.GuestAgent.Unrestricted`로 된다.
+호스트 `nvidia-smi`는 카드가 vfio에 있는 동안 드라이버와 통신하지 못해요. 읽는 길은 guest
+agent이고 플랫폼 역할이 이미 가진 `VM.GuestAgent.Unrestricted`로 돼요.
 
 ```bash
 qm guest exec <vmid> -- nvidia-smi --query-gpu=utilization.gpu,memory.used,power.draw,pstate --format=csv,noheader
@@ -147,13 +147,13 @@ qm guest exec <vmid> -- nvidia-smi --query-gpu=utilization.gpu,memory.used,power
 
 API 왕복은 약 200 ms, CLI는 perl 기동 때문에 600~870 ms다. agent가 꺼져 있으면 API는
 HTTP 500 `QEMU guest agent is not running`이고, 바이너리가 없으면 exit code가 아니라 오류
-응답이다. `utilization.gpu`는 짧은 부하에서 전력보다 늦게 반응하므로 전력과 pstate를 함께
-읽는다. GeForce 패스스루 게스트에서는 프로세스별 사용량(`--query-compute-apps`)이 비어 있다.
+응답이에요. `utilization.gpu`는 짧은 부하에서 전력보다 늦게 반응하므로 전력과 pstate를 함께
+읽어요. GeForce 패스스루 게스트에서는 프로세스별 사용량(`--query-compute-apps`)이 비어 있어요.
 
-## 7. 개발·시험용 게스트를 띄울 때 (플랫폼 노드가 아닐 때)
+## 7. 개발과 시험용 게스트를 띄울 때 (플랫폼 노드가 아닐 때)
 
-노드에 게스트 브리지가 없으면 비영속 NAT 브리지로 충분하다. `/etc/network/interfaces`에
-쓰지 않으므로 재부팅에 사라진다.
+노드에 게스트 브리지가 없으면 비영속 NAT 브리지로 충분해요. `/etc/network/interfaces`에
+쓰지 않으므로 재부팅에 사라져요.
 
 ```bash
 ip link add vmbr9 type bridge && ip addr add 203.0.113.225/27 dev vmbr9 && ip link set vmbr9 up
@@ -162,24 +162,24 @@ iptables -t nat -A POSTROUTING -s 203.0.113.224/27 -o vmbr0 -j MASQUERADE
 ```
 
 VMID는 플랫폼 대역(100–999 LXC, 1000–9999 템플릿, 100000– 사용자 VM) 밖의 90000번대를
-쓰고, 끝나면 `qm destroy <vmid> --purge`, 위 세 줄의 역순(`iptables -t nat -D …`,
-`sysctl -w net.ipv4.ip_forward=0`, `ip link del vmbr9`), 시험용 사용자·역할(`pveum user delete`,
-`pveum role delete`), 매핑(`pvesh delete /cluster/mapping/pci/<name>`)까지 지운다. 게스트
-접속은 노드 안에서만 하고 개발 머신의 `~/.ssh`에 아무것도 남기지 않는다.
+쓰고, 이번 시험에서 직접 만든 대상만 정리해요. 끝나면 `qm destroy <vmid> --purge`, 위 세 줄의 역순(`iptables -t nat -D …`,
+`sysctl -w net.ipv4.ip_forward=0`, `ip link del vmbr9`), 시험용 사용자와 역할(`pveum user delete`,
+`pveum role delete`), 매핑(`pvesh delete /cluster/mapping/pci/<name>`)까지 지워요. 게스트
+접속은 노드 안에서만 하고 개발 머신의 `~/.ssh`에 아무것도 남기지 않아요.
 
-**게스트 이미지는 카드를 붙이기 전에 `nouveau`를 blacklist하고 드라이버를 깐다.** 2026-09-09 실측:
+**게스트 이미지는 카드를 붙이기 전에 `nouveau`를 blacklist하고 드라이버를 설치해요.** 2026-09-09 실측:
 Ubuntu 26.04 cloud image(커널 7.0.0-30)는 nouveau를 자동 적재하고 GB202를 인식하지만 GSP 펌웨어가
 이미지에 없어 초기화에 실패한다(`gsp: Failed to load required firmware`). `linux-firmware`를 깔면 그
-자리에서 잡는다. 「이미지에 nouveau가 없다」와 「펌웨어가 없다」는 둘 다 우연한 안전이고 사용자의
-패키지 설치 한 번에 사라진다. 카드를 잃은
-유일한 상태가 「nouveau가 잡은 채 리셋」이고 기동마다 리셋이 있기 때문이다. **2026-09-08에 게스트
+자리에서 잡는다. 「이미지에 nouveau가 없어요」와 「펌웨어가 없어요」는 둘 다 우연한 안전이고 사용자의
+패키지 설치 한 번에 사라져요. 당시 카드를 잃은
+상태가 「nouveau가 잡은 채 리셋」이고 기동마다 리셋이 있기 때문이에요. **2026-09-08에 게스트
 안에서 재현됐다**: HWE 커널 7.0.0-31의 nouveau(GSP 570.144)가 카드를 잡은 게스트를 `qm shutdown`
 하자 호스트 FLR이 실패하고(`not ready 65535ms after FLR; giving up`, vendor id `0001`), 다음
 `qm start`가 걸리며 호스트 ssh가 끊겼다. 복구는 S5(전원 버튼)였다. Ubuntu 24.04의 기본 cloud
 커널 6.8은 nouveau가 이 칩을 몰라(`unknown chipset`) 우연히 안전했을 뿐이고, HWE 커널 7.0에서는
-잡았다(실측). Rocky의 전체 커널처럼 nouveau가 이 칩을 아는 다른 이미지도 같을 것으로 보지만 재지 않았다. Ubuntu 24.04
+잡았다(실측). Rocky의 전체 커널처럼 nouveau가 이 칩을 아는 다른 이미지도 같을 것으로 보지만 재지는 않았어요. Ubuntu 24.04
 cloud image 기준으로 NVIDIA CUDA 저장소(`cuda-keyring_1.1-1_all.deb`, `repos/ubuntu2404`)의
 `nvidia-open`(2026-09-08 시점 610.57.04)과 `cuda-toolkit-13-3`, `linux-headers-$(uname -r)`,
-그리고 `qemu-guest-agent`(cloud image에 없다)를 깐다.
+그리고 `qemu-guest-agent`(cloud image에 없어요)를 설치해요.
 
-최종 갱신: 2026-09-08
+최종 갱신: 2026-11-08
