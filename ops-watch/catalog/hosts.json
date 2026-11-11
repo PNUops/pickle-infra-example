@@ -1,0 +1,10 @@
+{
+  "judge_host": "aws",
+  "hosts": {
+    "aws": {"label": "AWS 감시 서버", "campus": false, "hostname": "relay-host"},
+    "pve-node": {"label": "pve-node 공개 진입 서버", "campus": true, "hostname": "pve-node"},
+    "pve-node-2": {"label": "pve-node-2 운영 서버", "campus": true, "hostname": "pve-node-2"},
+    "pve-node-3": {"label": "pve-node-3 백업 감시 서버", "campus": true, "hostname": "pve-node-3"},
+    "gpu-node": {"label": "gpu-node 모델 서버", "campus": true, "hostname": "gpu-node"}
+  }
+}

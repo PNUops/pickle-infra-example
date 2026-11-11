@@ -1,0 +1,12 @@
+{
+  "host": "pve-node-2",
+  "catalog": "/usr/local/lib/pickle-ops-watch/catalog",
+  "state_dir": "/var/lib/pickle-ops-watch-agent",
+  "push": {
+    "mode": "ssh",
+    "destination": "opswatch@JUDGE_ADDRESS",
+    "port": 22,
+    "key_file": "/etc/pickle-ops-watch/secrets/push.key",
+    "known_hosts": "/etc/pickle-ops-watch/judge_known_hosts"
+  }
+}

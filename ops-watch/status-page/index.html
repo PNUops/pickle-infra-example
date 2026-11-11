@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Pickle 상태</title>
+<style>
+:root {
+  --bg: #f7f7f8; --card: #ffffff; --text: #1c1c1f; --muted: #6b6b76; --line: #e4e4e8;
+  --ok: #30a46c; --warn: #f5a524; --fail: #e5484d; --unknown: #8b8d98; --none: #e4e4e8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111113; --card: #1a1a1d; --text: #ededef; --muted: #a0a0ab; --line: #2e2e33;
+    --none: #2e2e33;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+main { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
+header h1 { margin: 0 0 4px; font-size: 22px; }
+header p { margin: 0; color: var(--muted); font-size: 13px; }
+.banner { margin: 20px 0; padding: 14px 16px; border-radius: 10px; background: var(--card);
+  border: 1px solid var(--line); border-left: 6px solid var(--ok); font-weight: 600; }
+.banner.fail { border-left-color: var(--fail); }
+.banner.warn { border-left-color: var(--warn); }
+.banner.unknown { border-left-color: var(--unknown); }
+section { margin-top: 24px; }
+section h2 { font-size: 15px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.row { padding: 12px 16px; border-top: 1px solid var(--line); }
+.row:first-child { border-top: 0; }
+.head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.name small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+.state { flex: none; font-size: 13px; font-weight: 600; }
+.state.OK { color: var(--ok); } .state.WARN { color: #b7791f; } .state.FAIL { color: var(--fail); }
+.state.UNKNOWN { color: var(--unknown); }
+.bars { display: flex; gap: 2px; margin-top: 8px; height: 22px; }
+.bars span { flex: 1; border-radius: 2px; background: var(--none); min-width: 0; }
+.bars .ok { background: var(--ok); } .bars .warn { background: var(--warn); } .bars .fail { background: var(--fail); }
+.scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-top: 4px; }
+.incident { padding: 10px 16px; border-top: 1px solid var(--line); font-size: 14px; }
+.incident:first-child { border-top: 0; }
+.incident .when { color: var(--muted); font-size: 13px; }
+.empty { padding: 14px 16px; color: var(--muted); }
+footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
+.narrow { display: none; }
+@media (max-width: 520px) {
+  .bars { gap: 1px; } .bars span:nth-child(-n+60) { display: none; }
+  .wide { display: none; } .narrow { display: inline; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Pickle 상태</h1>
+    <p id="updated">상태를 불러오는 중이에요.</p>
+  </header>
+  <div id="banner" class="banner unknown">상태를 불러오는 중이에요.</div>
+  <div id="groups"></div>
+  <section>
+    <h2>최근 14일 사건</h2>
+    <div class="card" id="incidents"><div class="empty">불러오는 중이에요.</div></div>
+  </section>
+  <footer>운영자용 상태 페이지예요. 1분마다 갱신돼요. 자세한 원인은 운영 채널에서 확인해 주세요.</footer>
+</main>
+<script>
+(function () {
+  'use strict';
+  var WORDS = { OK: '정상', WARN: '주의', FAIL: '장애', UNKNOWN: '확인 불가' };
+  var KIND = { FAIL: '장애', WARN: '주의' };
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function kst(epoch) {
+    var d = new Date((epoch + 9 * 3600) * 1000);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes());
+  }
+  function minutes(seconds) {
+    var m = Math.max(0, Math.round(seconds / 60));
+    if (m < 60) return m + '분';
+    var h = Math.floor(m / 60);
+    return h + '시간' + (m % 60 ? ' ' + (m % 60) + '분' : '');
+  }
+
+  function render(data, now) {
+    var age = now - data.generated_at;
+    document.getElementById('updated').textContent =
+      '마지막 갱신 ' + kst(data.generated_at) + ' KST' + (age > 300 ? ' (갱신이 ' + minutes(age) + ' 멈춰 있어요)' : '');
+    var worst = 'OK';
+    var rank = { OK: 0, UNKNOWN: 1, WARN: 2, FAIL: 3 };
+    var groups = document.getElementById('groups');
+    groups.textContent = '';
+    data.groups.forEach(function (group) {
+      var section = el('section');
+      section.appendChild(el('h2', null, group.name));
+      var card = el('div', 'card');
+      group.items.forEach(function (item) {
+        if (item.user_facing && rank[item.state] > rank[worst]) worst = item.state;
+        var row = el('div', 'row');
+        var head = el('div', 'head');
+        var name = el('div', 'name', item.label);
+        if (item.note) name.appendChild(el('small', null, item.note));
+        head.appendChild(name);
+        var stateText = WORDS[item.state] || item.state;
+        if (item.since) stateText += ' · ' + minutes(now - item.since) + '째';
+        head.appendChild(el('div', 'state ' + item.state, stateText));
+        row.appendChild(head);
+        var bars = el('div', 'bars');
+        item.days.forEach(function (day) {
+          var cls = '';
+          var title = '기록 없음';
+          if (day && day.up !== null) {
+            cls = day.down_minutes > 0 ? 'fail' : (day.warn_minutes > 0 ? 'warn' : 'ok');
+            title = '가동률 ' + (day.up * 100).toFixed(2) + '%' +
+              (day.down_minutes ? ', 장애 ' + day.down_minutes + '분' : '') +
+              (day.warn_minutes ? ', 주의 ' + day.warn_minutes + '분' : '');
+          }
+          var bar = el('span', cls);
+          bar.title = title;
+          bars.appendChild(bar);
+        });
+        row.appendChild(bars);
+        card.appendChild(row);
+      });
+      section.appendChild(card);
+      var scale = el('div', 'scale');
+      var start = el('span');
+      start.appendChild(el('span', 'wide', data.days + '일 전'));
+      start.appendChild(el('span', 'narrow', Math.min(30, data.days) + '일 전'));
+      scale.appendChild(start);
+      scale.appendChild(el('span', null, '오늘'));
+      section.appendChild(scale);
+      groups.appendChild(section);
+    });
+    var banner = document.getElementById('banner');
+    var text = { OK: '사용자 서비스가 모두 정상이에요.', WARN: '일부 사용자 서비스에 주의가 필요해요.',
+                 FAIL: '사용자 서비스 일부에 장애가 있어요.', UNKNOWN: '일부 사용자 서비스 상태를 확인하지 못하고 있어요.' };
+    banner.className = 'banner ' + worst.toLowerCase();
+    banner.textContent = text[worst];
+    if (!data.campus_results) {
+      banner.textContent += ' 교내 감시 결과가 들어오지 않아 내부 항목은 확인 불가로 표시돼요.';
+    }
+    var list = document.getElementById('incidents');
+    list.textContent = '';
+    if (!data.incidents.length) list.appendChild(el('div', 'empty', '최근 14일 동안 사건이 없어요.'));
+    data.incidents.forEach(function (incident) {
+      var row = el('div', 'incident');
+      row.appendChild(el('div', null, (KIND[incident.kind] || incident.kind) + ' · ' + incident.label + ' · ' + incident.category));
+      var when = kst(incident.started) + ' ~ ' + (incident.ended ? kst(incident.ended) + ' (' + minutes(incident.ended - incident.started) + ')' : '진행 중');
+      row.appendChild(el('div', 'when', when));
+      list.appendChild(row);
+    });
+  }
+
+  function load() {
+    fetch('status.json', { cache: 'no-store' })
+      .then(function (response) { if (!response.ok) throw new Error(); return response.json(); })
+      .then(function (data) { render(data, Date.now() / 1000); })
+      .catch(function () {
+        var banner = document.getElementById('banner');
+        banner.className = 'banner unknown';
+        banner.textContent = '상태 정보를 불러오지 못했어요.';
+      });
+  }
+  load();
+  setInterval(load, 60000);
+})();
+</script>
+</body>
+</html>

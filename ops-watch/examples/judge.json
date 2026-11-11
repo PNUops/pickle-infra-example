@@ -1,0 +1,9 @@
+{
+  "catalog": "/usr/local/lib/pickle-ops-watch/catalog",
+  "state_dir": "/var/lib/pickle-ops-watch",
+  "www_dir": "/var/www/pickle-status",
+  "webhook_file": "/etc/pickle-ops-watch/secrets/webhook",
+  "host_label": "AWS 판정 서버",
+  "send": false,
+  "tag": null
+}

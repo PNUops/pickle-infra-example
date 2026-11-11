@@ -1,0 +1,100 @@
+[
+  {
+    "id": "core-backup",
+    "host": "pve-node-3",
+    "check": "core_backup",
+    "every": 300,
+    "group": "backup",
+    "target": "운영 코어 컨테이너 일일 백업",
+    "what": "매일 새벽 백업이 암호화된 상태로 백업 서버에 모두 들어왔는지 확인해요.",
+    "impact": "서비스는 그대로 돌지만, 장애가 나면 하루 전 상태로 되돌리지 못할 수 있어요.",
+    "page_label": "코어 일일 백업",
+    "args": {
+      "node": "pve-node-3",
+      "storage": "pbs-example-core-read",
+      "ctids": [
+        200,
+        201,
+        202,
+        203,
+        204
+      ],
+      "fingerprint": "aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa:aa",
+      "protected": {
+        "200": "pbs-example-core-read:backup/ct/200/2026-09-27T12:43:02Z",
+        "201": "pbs-example-core-read:backup/ct/201/2026-09-27T11:55:44Z",
+        "202": "pbs-example-core-read:backup/ct/202/2026-09-27T12:46:30Z",
+        "204": "pbs-example-core-read:backup/ct/204/2026-09-27T12:50:42Z"
+      },
+      "window": "03:17",
+      "deadline": "04:30",
+      "timeout": 40
+    }
+  },
+  {
+    "id": "pbs-capacity",
+    "host": "pve-node-3",
+    "check": "pbs_capacity",
+    "every": 300,
+    "group": "backup",
+    "target": "백업 보관소 용량",
+    "what": "백업 서버의 남은 저장 공간을 확인해요.",
+    "impact": "공간이 바닥나면 새 백업이 저장되지 않아요.",
+    "page_label": "백업 보관소 용량",
+    "args": {
+      "config": "/etc/pickle-pbs-capacity/config.json",
+      "warn_avail_gb": 100,
+      "fail_avail_gb": 50,
+      "timeout": 10
+    }
+  },
+  {
+    "id": "db-backup",
+    "host": "pve-node-3",
+    "check": "db_backup",
+    "every": 60,
+    "group": "backup",
+    "target": "운영 데이터베이스 5분 백업",
+    "what": "검증을 마친 최신 DB 복구 지점이 백업 서버에 있고 충분히 최근인지 확인해요.",
+    "impact": "서비스는 그대로 돌지만, 장애가 나면 최근 데이터를 잃을 수 있어요.",
+    "page_label": "데이터베이스 백업",
+    "args": {
+      "config": "/root/pickle-pbs-selected-example/production.json",
+      "warn_age": 600,
+      "fail_age": 900,
+      "timeout": 20
+    }
+  },
+  {
+    "id": "staging-access-policy",
+    "host": "pve-node-3",
+    "check": "http",
+    "every": 300,
+    "group": "nonprod",
+    "user_facing": false,
+    "target": "스테이징 접근 제한 (staging.example.com)",
+    "what": "허용되지 않은 위치에서 스테이징에 들어가면 403으로 막히는지 확인해요.",
+    "impact": "막혀야 할 곳에서 스테이징이 열려 있거나 진입 서버가 응답하지 않는 상태예요.",
+    "page_label": "스테이징 접근 제한",
+    "args": {
+      "url": "https://staging.example.com/__ingress_probe",
+      "connect_address": "198.18.122.161",
+      "status": 403,
+      "timeout": 15
+    }
+  },
+  {
+    "id": "pve-node-3-host",
+    "host": "pve-node-3",
+    "check": "host",
+    "every": 60,
+    "group": "internal",
+    "target": "pve-node-3 백업 감시 서버",
+    "what": "서버 자원 상태와 클러스터 참여 상태를 확인해요.",
+    "impact": "백업 감시와 클러스터 정족수 유지가 흔들릴 수 있어요.",
+    "page_label": "백업 감시 서버",
+    "args": {
+      "cluster": true
+    }
+  }
+]

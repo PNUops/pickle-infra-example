@@ -1,0 +1,22 @@
+[Unit]
+Description=Run this host's ops-watch checks and push the results to the judge
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+# Checks read Proxmox state (pct, lvs, pvecm) and PBS, so the agent runs as
+# root; it writes only its own state directory.
+ExecStart=/usr/bin/python3 -I -B /usr/local/lib/pickle-ops-watch/bin/ops-watch agent --config /etc/pickle-ops-watch/agent.json
+StateDirectory=pickle-ops-watch-agent
+StateDirectoryMode=0700
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+TimeoutStartSec=58
+MemoryMax=128M
+CPUQuota=20%
+TasksMax=32

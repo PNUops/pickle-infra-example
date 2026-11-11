@@ -1,0 +1,58 @@
+[
+  {
+    "id": "gpu-node-vllm-service",
+    "host": "gpu-node",
+    "check": "systemd_unit",
+    "every": 60,
+    "group": "nonprod",
+    "user_facing": false,
+    "target": "gpu-node 모델 서버 서빙 서비스 (운영 미사용)",
+    "what": "모델 서빙 서비스가 실행 중인지 확인해요.",
+    "impact": "pickle-general은 지금 OpenRouter로 가서 사용자 영향은 없어요.",
+    "page_label": "자체 모델 서빙",
+    "args": {
+      "units": [
+        "pickle-vllm.service"
+      ]
+    }
+  },
+  {
+    "id": "gpu-node-gpu",
+    "host": "gpu-node",
+    "check": "gpu",
+    "every": 60,
+    "group": "nonprod",
+    "user_facing": false,
+    "target": "gpu-node 모델 서버 GPU (운영 미사용)",
+    "what": "GPU 온도와 사용률을 확인해요.",
+    "impact": "pickle-general은 지금 OpenRouter로 가서 사용자 영향은 없어요.",
+    "page_label": "자체 모델 GPU",
+    "args": {
+      "max_temp_c": 90,
+      "timeout": 10
+    }
+  },
+  {
+    "id": "gpu-node-generation",
+    "host": "gpu-node",
+    "check": "llm_generation",
+    "every": 900,
+    "group": "nonprod",
+    "user_facing": false,
+    "target": "gpu-node 모델 서버 응답 생성 (운영 미사용)",
+    "what": "모델이 짧은 요청에 실제로 답을 만들어 내는지 확인해요.",
+    "impact": "pickle-general은 지금 OpenRouter로 가서 사용자 영향은 없어요.",
+    "page_label": "자체 모델 응답",
+    "args": {
+      "url": "http://198.18.122.164:8000/v1/chat/completions",
+      "model": "qwen3.6-35b-a3b-nvfp4",
+      "key_file": "/etc/pickle-ops-watch/secrets/dgx-local.key",
+      "allow_local_http": true,
+      "disable_thinking": true,
+      "min_interval": 900,
+      "max_output_tokens": 8,
+      "daily_budget": 120,
+      "timeout": 30
+    }
+  }
+]

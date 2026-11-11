@@ -1,0 +1,402 @@
+[
+  {
+    "id": "prod-edge-ct",
+    "host": "pve-node-2",
+    "check": "container",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "운영 TLS 진입점과 프록시 제어기",
+    "what": "컨테이너 실행과 nginx, 프록시 에이전트 서비스 상태",
+    "impact": "사이트와 LLM API, 가상머신 웹 주소에 접속하지 못하고 새 도메인 연결이 반영되지 않아요.",
+    "page_label": "운영 진입점",
+    "args": {
+      "ct": 200,
+      "units": [
+        "nginx.service",
+        "pickle-proxy-agent.service"
+      ]
+    }
+  },
+  {
+    "id": "prod-api-ct",
+    "host": "pve-node-2",
+    "check": "container",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "운영 API와 콘솔",
+    "what": "컨테이너 실행과 API, 콘솔 웹 서버 상태",
+    "impact": "콘솔에 로그인하거나 가상머신을 만들고 관리하지 못해요.",
+    "page_label": "운영 API",
+    "args": {
+      "ct": 201,
+      "units": [
+        "pickle-api.service",
+        "nginx.service"
+      ]
+    }
+  },
+  {
+    "id": "prod-ssh-ct",
+    "host": "pve-node-2",
+    "check": "container",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "SSH 게이트웨이와 웹 터미널",
+    "what": "컨테이너 실행과 SSH 진입, 웹 터미널 서비스 상태",
+    "impact": "SSH와 웹 터미널로 가상머신에 접속하지 못해요.",
+    "page_label": "SSH 접속",
+    "args": {
+      "ct": 202,
+      "units": [
+        "sshpiperd.service",
+        "pickle-ssh-transit-front.service",
+        "sshgw-terminal-bridge.service"
+      ]
+    }
+  },
+  {
+    "id": "prod-llm-ct",
+    "host": "pve-node-2",
+    "check": "container",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "운영 LLM 게이트웨이",
+    "what": "컨테이너 실행과 LLM 게이트웨이 서비스 상태",
+    "impact": "LLM API 요청이 모두 실패해요.",
+    "page_label": "LLM API",
+    "args": {
+      "ct": 203,
+      "units": [
+        "llm-gateway-production.service"
+      ]
+    }
+  },
+  {
+    "id": "prod-db-ct",
+    "host": "pve-node-2",
+    "check": "container",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "운영 데이터베이스",
+    "what": "컨테이너 실행과 PostgreSQL 서비스 상태",
+    "impact": "콘솔과 LLM API를 포함한 거의 모든 기능이 멈춰요.",
+    "page_label": "데이터베이스",
+    "args": {
+      "ct": 204,
+      "units": [
+        "postgresql@18-main.service"
+      ]
+    }
+  },
+  {
+    "id": "prod-ct-disk",
+    "host": "pve-node-2",
+    "check": "container_disk",
+    "every": 300,
+    "group": "internal",
+    "target": "운영 컨테이너 디스크",
+    "what": "운영 컨테이너 다섯 대의 시스템 디스크 사용률",
+    "impact": "디스크가 가득 차면 해당 서비스가 기록을 남기지 못하고 멈춰요.",
+    "page_label": "운영 디스크",
+    "args": {
+      "cts": [
+        200,
+        201,
+        202,
+        203,
+        204
+      ],
+      "warn_pct": 80,
+      "fail_pct": 90
+    }
+  },
+  {
+    "id": "prod-ct-mtu",
+    "host": "pve-node-2",
+    "check": "container_mtu",
+    "every": 300,
+    "group": "internal",
+    "target": "운영 컨테이너 네트워크",
+    "what": "컨테이너와 호스트 사이 MTU 설정 일치",
+    "impact": "큰 요청이나 응답이 중간에 사라져 일부 페이지와 API 호출이 멈춘 듯 보여요.",
+    "page_label": "운영 네트워크",
+    "args": {
+      "cts": [
+        200,
+        201,
+        202,
+        203,
+        204
+      ]
+    }
+  },
+  {
+    "id": "prod-db-read",
+    "host": "pve-node-2",
+    "check": "sql",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "운영 데이터베이스 접속",
+    "what": "SELECT 1 응답",
+    "impact": "콘솔과 LLM API를 포함한 거의 모든 기능이 멈춰요.",
+    "page_label": "데이터베이스",
+    "args": {
+      "ct": 204,
+      "database": "pickle_prod",
+      "query": "read"
+    }
+  },
+  {
+    "id": "prod-db-migrations",
+    "host": "pve-node-2",
+    "check": "sql",
+    "every": 300,
+    "group": "internal",
+    "target": "운영 데이터베이스 스키마",
+    "what": "실패한 Flyway 마이그레이션 수",
+    "impact": "배포가 중간에 멈춘 상태라 API가 다시 시작되지 못할 수 있어요.",
+    "page_label": "데이터베이스",
+    "args": {
+      "ct": 204,
+      "database": "pickle_prod",
+      "query": "migrations"
+    }
+  },
+  {
+    "id": "prod-jobrunr-worker",
+    "host": "pve-node-2",
+    "check": "sql",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "백그라운드 작업 실행기",
+    "what": "JobRunr 서버 하트비트",
+    "impact": "가상머신 생성과 삭제, 도메인 연결, 알림 메일 같은 예약 작업이 진행되지 않아요.",
+    "page_label": "예약 작업",
+    "args": {
+      "ct": 204,
+      "database": "pickle_prod",
+      "query": "jobrunr_heartbeat",
+      "heartbeat_s": 90,
+      "max_workers": 1
+    },
+    "fail_after": 2
+  },
+  {
+    "id": "prod-recurring-jobs",
+    "host": "pve-node-2",
+    "check": "sql",
+    "every": 120,
+    "group": "internal",
+    "user_facing": true,
+    "target": "예약 작업",
+    "what": "반복 작업별 마지막 성공 시각",
+    "impact": "멈춘 작업에 따라 가상머신 상태, 도메인 연결, 알림, LLM 사용량 집계가 늦어져요.",
+    "page_label": "예약 작업",
+    "args": {
+      "ct": 204,
+      "database": "pickle_prod",
+      "query": "recurring_jobs",
+      "cadence": {
+        "vm-network-path-reconcile": 15,
+        "vm-status-poller": 30,
+        "domain-verification": 60,
+        "gpu-allocation-scheduler": 60,
+        "gpu-operation-recovery": 60,
+        "gpu-lease": 60,
+        "llm-openrouter-account-poll-dispatcher": 60,
+        "notification-dispatcher": 60,
+        "request-recipient-materializer": 60,
+        "route-reconcile": 120,
+        "relay-contact-monitor": 120,
+        "gpu-utilization-collection": 300,
+        "llm-key-daily-quota": 300,
+        "llm-usage-rollup": 300,
+        "llm-openrouter-provisioner": 300,
+        "deletion-sweeper": 300,
+        "gpu-attachment-drift": 600,
+        "stale-task-recovery": 600,
+        "drift-reconciler": 600,
+        "domain-reservation-sweeper": 3600,
+        "gpu-utilization-review": 3600,
+        "llm-openrouter-catalogue-refresh": 3600,
+        "vm-expiry": 3600,
+        "inference-observation-retention": 3600,
+        "domain-renewal-sweeper": 86400,
+        "llm-body-retention-sweeper": 86400,
+        "llm-usage-retention-sweeper": 86400,
+        "notification-retention-sweeper": 86400
+      },
+      "min_limit": 300
+    }
+  },
+  {
+    "id": "prod-failed-jobs",
+    "host": "pve-node-2",
+    "check": "sql",
+    "every": 300,
+    "group": "internal",
+    "target": "백그라운드 작업",
+    "what": "재시도까지 실패한 작업 수",
+    "impact": "실패한 작업에 따라 요청한 작업 하나가 끝나지 않았을 수 있어요.",
+    "page_label": "예약 작업",
+    "args": {
+      "ct": 204,
+      "database": "pickle_prod",
+      "query": "failed_jobs",
+      "window_min": 15
+    }
+  },
+  {
+    "id": "prod-llm-failures",
+    "host": "pve-node-2",
+    "check": "sql",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "LLM 요청 처리",
+    "what": "최근 10분 LLM 요청 실패와 시간 초과 비율",
+    "impact": "LLM API 요청 일부가 실패하거나 응답이 오지 않아요.",
+    "page_label": "LLM API",
+    "args": {
+      "ct": 204,
+      "database": "pickle_prod",
+      "query": "llm_failure_rate",
+      "window_min": 10,
+      "fail_ratio": 0.2,
+      "min_requests": 10
+    }
+  },
+  {
+    "id": "prod-contacts",
+    "host": "pve-node-2",
+    "check": "sql",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "내부 구성 요소 연결",
+    "what": "LLM 게이트웨이, 중계 서버, 프록시 에이전트 연락 상태",
+    "impact": "끊긴 구성 요소에 따라 LLM 키 변경, 포트 포워딩, 도메인 연결이 반영되지 않아요.",
+    "page_label": "내부 연결",
+    "args": {
+      "ct": 204,
+      "database": "pickle_prod",
+      "query": "contacts",
+      "gateway_max_age_s": 180,
+      "route_pending_min": 15
+    },
+    "fail_after": 2
+  },
+  {
+    "id": "prod-mail-backlog",
+    "host": "pve-node-2",
+    "check": "sql",
+    "every": 120,
+    "group": "internal",
+    "user_facing": true,
+    "target": "알림 메일 발송",
+    "what": "발송 대기 중인 메일 수와 가장 오래된 대기 시간",
+    "impact": "가입 인증, 승인 결과 같은 알림 메일이 늦게 도착해요.",
+    "page_label": "알림 메일",
+    "args": {
+      "ct": 204,
+      "database": "pickle_prod",
+      "query": "mail_backlog",
+      "warn_min": 15,
+      "fail_min": 60
+    }
+  },
+  {
+    "id": "prod-openrouter",
+    "host": "pve-node-2",
+    "check": "sql",
+    "every": 300,
+    "group": "internal",
+    "target": "OpenRouter 계정",
+    "what": "비즈니스 계정 잔액과 잔액 정보 갱신 시각",
+    "impact": "잔액이 바닥나면 상용 모델을 쓰는 LLM 요청이 실패해요.",
+    "page_label": "LLM 잔액",
+    "args": {
+      "ct": 204,
+      "database": "pickle_prod",
+      "query": "openrouter",
+      "balance_warn_usd": 20,
+      "stale_min": 30
+    }
+  },
+  {
+    "id": "prod-nginx-config",
+    "host": "pve-node-2",
+    "check": "nginx_config",
+    "every": 300,
+    "group": "internal",
+    "target": "운영 nginx 설정",
+    "what": "nginx -t 설정 검사",
+    "impact": "지금은 영향이 없지만 다음 인증서 갱신이나 도메인 반영 때 nginx가 설정을 다시 읽지 못해요.",
+    "page_label": "운영 진입점",
+    "args": {
+      "ct": 200
+    }
+  },
+  {
+    "id": "prod-certs",
+    "host": "pve-node-2",
+    "check": "cert_files",
+    "every": 3600,
+    "group": "internal",
+    "user_facing": true,
+    "target": "운영 공개 인증서",
+    "what": "Let's Encrypt 인증서 세 종의 남은 유효기간",
+    "impact": "인증서가 만료되면 브라우저와 LLM 클라이언트가 접속을 거부해요.",
+    "page_label": "인증서",
+    "args": {
+      "ct": 200,
+      "paths": [
+        "/etc/letsencrypt/live/pickle.pusan.ac.kr/fullchain.pem",
+        "/etc/letsencrypt/live/llm.pcl.kr/fullchain.pem",
+        "/etc/letsencrypt/live/pusan.dev/fullchain.pem"
+      ],
+      "warn_days": 20,
+      "fail_days": 7
+    }
+  },
+  {
+    "id": "pve-node-2-host",
+    "host": "pve-node-2",
+    "check": "host",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "운영 서버 호스트",
+    "what": "thin pool과 시스템 디스크 사용률, 클러스터 정족수, 시계 오차",
+    "impact": "저장 공간이 차면 모든 컨테이너와 가상머신이 읽기 전용이 되고, 정족수를 잃으면 가상머신 생성과 설정 변경이 막혀요.",
+    "page_label": "운영 서버",
+    "args": {
+      "thin_pools": [
+        "pve/data"
+      ],
+      "cluster": true
+    },
+    "fail_after": 2
+  },
+  {
+    "id": "prod-backup-pin",
+    "host": "pve-node-2",
+    "check": "backup_pin",
+    "every": 900,
+    "group": "backup",
+    "target": "코어 백업 사전 확인",
+    "what": "다음 코어 백업이 확인 스크립트를 통과할지",
+    "impact": "지금은 영향이 없지만 다음 새벽 코어 백업이 거부돼 복구 지점이 하루 비어요.",
+    "page_label": "코어 백업",
+    "args": {
+      "job": "example-core-daily"
+    }
+  }
+]

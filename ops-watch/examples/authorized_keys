@@ -1,0 +1,7 @@
+# /home/opswatch/.ssh/authorized_keys on the judge host. One key per campus
+# host; the forced command fixes the host name, so a key can only write its own
+# host's results. `restrict` disables forwarding, PTY and agent access.
+restrict,command="/usr/bin/python3 -I -B /usr/local/lib/pickle-ops-watch/bin/ops-watch ingest --host pve-node --catalog /usr/local/lib/pickle-ops-watch/catalog --state-dir /var/lib/pickle-ops-watch" ssh-ed25519 AAAA... ops-watch push pve-node
+restrict,command="/usr/bin/python3 -I -B /usr/local/lib/pickle-ops-watch/bin/ops-watch ingest --host pve-node-2 --catalog /usr/local/lib/pickle-ops-watch/catalog --state-dir /var/lib/pickle-ops-watch" ssh-ed25519 AAAA... ops-watch push pve-node-2
+restrict,command="/usr/bin/python3 -I -B /usr/local/lib/pickle-ops-watch/bin/ops-watch ingest --host pve-node-3 --catalog /usr/local/lib/pickle-ops-watch/catalog --state-dir /var/lib/pickle-ops-watch" ssh-ed25519 AAAA... ops-watch push pve-node-3
+restrict,command="/usr/bin/python3 -I -B /usr/local/lib/pickle-ops-watch/bin/ops-watch ingest --host gpu-node --catalog /usr/local/lib/pickle-ops-watch/catalog --state-dir /var/lib/pickle-ops-watch" ssh-ed25519 AAAA... ops-watch push gpu-node

@@ -1,0 +1,93 @@
+[
+  {
+    "id": "edge-ct",
+    "host": "pve-node",
+    "check": "container",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "공개 진입 nginx",
+    "what": "컨테이너 실행과 nginx 서비스 상태",
+    "impact": "사이트와 LLM API, 가상머신 웹 주소에 외부에서 접속하지 못해요.",
+    "page_label": "공개 진입점",
+    "args": {
+      "ct": 100,
+      "units": [
+        "nginx.service"
+      ]
+    }
+  },
+  {
+    "id": "ssh-relay-ct",
+    "host": "pve-node",
+    "check": "container",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "SSH 중계",
+    "what": "컨테이너 실행과 SSH 중계 소켓 상태",
+    "impact": "외부에서 SSH로 가상머신에 접속하지 못해요.",
+    "page_label": "SSH 접속",
+    "args": {
+      "ct": 102,
+      "units": [
+        "pickle-ssh-transit.socket"
+      ]
+    }
+  },
+  {
+    "id": "ssh-relay-wg",
+    "host": "pve-node",
+    "check": "wireguard",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "SSH 중계 터널",
+    "what": "WireGuard 터널 최근 핸드셰이크",
+    "impact": "외부에서 SSH로 가상머신에 접속하지 못해요.",
+    "page_label": "SSH 접속",
+    "args": {
+      "iface": "wg0",
+      "in_container": 102
+    },
+    "fail_after": 2
+  },
+  {
+    "id": "edge-link",
+    "host": "pve-node",
+    "check": "internal_link",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "공개 진입점에서 운영 서버로 가는 연결",
+    "what": "운영 서버 TLS 진입점까지 TCP 연결",
+    "impact": "사이트와 LLM API, 가상머신 웹 주소에 외부에서 접속하지 못해요.",
+    "page_label": "공개 진입점",
+    "args": {
+      "ct": 100,
+      "address": "198.18.122.168",
+      "port": 24443,
+      "timeout": 5
+    },
+    "fail_after": 2
+  },
+  {
+    "id": "pve-node-host",
+    "host": "pve-node",
+    "check": "host",
+    "every": 60,
+    "group": "internal",
+    "user_facing": true,
+    "target": "공개 진입 서버 호스트",
+    "what": "thin pool과 시스템 디스크 사용률, 시계 오차",
+    "impact": "저장 공간이 차면 공개 진입점 컨테이너가 읽기 전용이 돼 외부 접속이 끊길 수 있어요.",
+    "page_label": "공개 진입 서버",
+    "args": {
+      "thin_pools": [
+        "pve/data"
+      ],
+      "cluster": false
+    },
+    "fail_after": 2
+  }
+]

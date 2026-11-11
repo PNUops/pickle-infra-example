@@ -1,0 +1,28 @@
+[Unit]
+Description=Judge ops-watch results, send Discord alerts and write the status page
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=opswatch
+Group=opswatch
+UMask=0027
+ExecStart=/usr/bin/python3 -I -B /usr/local/lib/pickle-ops-watch/bin/ops-watch judge --config /etc/pickle-ops-watch/judge.json
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+StateDirectory=pickle-ops-watch
+StateDirectoryMode=0700
+ReadWritePaths=/var/www/pickle-status
+TimeoutStartSec=90
+# This host also relays user SSH; the judge must never compete with it.
+MemoryMax=64M
+CPUQuota=10%
+TasksMax=16

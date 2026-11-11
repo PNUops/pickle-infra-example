@@ -1,0 +1,11 @@
+[Unit]
+Description=Run ops-watch checks every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+RandomizedDelaySec=5
+Persistent=false
+
+[Install]
+WantedBy=timers.target

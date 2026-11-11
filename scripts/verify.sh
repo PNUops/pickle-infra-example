@@ -45,6 +45,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_check_ci_ssh.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_dev_deploy_receiver.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_verify_production_backup.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/tests/test_signup_mailbox.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B ops-watch/tests/test_core.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B ops-watch/tests/test_agent.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B ops-watch/tests/test_checks_external.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B ops-watch/tests/test_checks_platform.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B ops-watch/tests/test_checks_backup.py
 
 smoke_readiness="HH=\$(pct exec \"\$CTID\" -- curl -sS -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health/readiness)"
 grep -Fq "$smoke_readiness" scripts/smoke-account-ops.sh || {

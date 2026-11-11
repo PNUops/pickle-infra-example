@@ -1,0 +1,10 @@
+[Unit]
+Description=Judge ops-watch results every minute, after the agents have pushed
+
+[Timer]
+OnCalendar=*-*-* *:*:30
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

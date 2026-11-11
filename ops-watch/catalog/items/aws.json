@@ -1,0 +1,124 @@
+[
+  {
+    "id": "console-web", "host": "aws", "check": "http", "every": 60, "fail_after": 2, "group": "user",
+    "target": "운영 콘솔 (pickle.pusan.ac.kr)",
+    "what": "학교 밖에서 콘솔 첫 화면을 받아 앱 뼈대가 들어 있는지 확인해요.",
+    "impact": "사용자가 콘솔에 접속하지 못해요.",
+    "page_label": "콘솔 웹사이트",
+    "args": {"url": "https://pickle.pusan.ac.kr/", "expect": {"kind": "html", "value": "id=\"root\""}}
+  },
+  {
+    "id": "console-api", "host": "aws", "check": "http", "every": 60, "fail_after": 2, "group": "user",
+    "target": "운영 API (pickle.pusan.ac.kr/api)",
+    "what": "학교 밖에서 서비스 상태 API를 불러 점검 모드가 아닌지 확인해요.",
+    "impact": "콘솔에서 로그인하거나 서버를 관리하지 못해요.",
+    "page_label": "콘솔 API",
+    "args": {"url": "https://pickle.pusan.ac.kr/api/v1/meta/status", "expect": {"kind": "json", "fields": {"maintenance": false}}}
+  },
+  {
+    "id": "llm-generation", "host": "aws", "check": "llm_generation", "every": 300, "fail_after": 2, "group": "user",
+    "target": "LLM API 답변 생성 (llm.pcl.kr)",
+    "what": "학교 밖에서 정해진 답이 있는 질문을 보내 모델이 올바르게 답하는지 확인해요.",
+    "impact": "학생 코드에서 LLM API를 불러도 답변을 받지 못해요.",
+    "page_label": "LLM API",
+    "args": {"url": "https://llm.pcl.kr/v1/chat/completions", "model": "pickle-general",
+             "key_file": "/etc/pickle-ops-watch/secrets/public-generation.key",
+             "max_output_tokens": 128, "daily_budget": 312, "min_interval": 300, "timeout": 30}
+  },
+  {
+    "id": "user-ssh", "host": "aws", "check": "ssh_banner", "every": 60, "group": "user",
+    "target": "사용자 SSH 접속 (ssh.pcl.kr)",
+    "what": "학교 밖에서 SSH 접속 주소로 연결해 SSH 서버 응답이 오는지 확인해요.",
+    "impact": "사용자가 SSH로 자기 서버에 접속하지 못해요.",
+    "page_label": "SSH 접속",
+    "args": {"host": "ssh.pcl.kr", "port": 22, "timeout": 10}
+  },
+  {
+    "id": "tls-console", "host": "aws", "check": "tls", "every": 60, "group": "user",
+    "target": "콘솔 인증서 (pickle.pusan.ac.kr)",
+    "what": "콘솔 주소의 인증서가 유효한지와 만료까지 남은 날을 확인해요.",
+    "impact": "인증서가 만료되면 브라우저가 콘솔 접속을 막아요.",
+    "page_label": "콘솔 인증서",
+    "args": {"host": "pickle.pusan.ac.kr", "warn_days": 20, "fail_days": 7}
+  },
+  {
+    "id": "tls-llm", "host": "aws", "check": "tls", "every": 60, "group": "user",
+    "target": "LLM API 인증서 (llm.pcl.kr)",
+    "what": "LLM API 주소의 인증서가 유효한지와 만료까지 남은 날을 확인해요.",
+    "impact": "인증서가 만료되면 학생 코드의 LLM API 호출이 실패해요.",
+    "page_label": "LLM API 인증서",
+    "args": {"host": "llm.pcl.kr", "warn_days": 20, "fail_days": 7}
+  },
+  {
+    "id": "dns-console", "host": "aws", "check": "dns", "every": 60, "group": "internal",
+    "target": "콘솔 도메인 (pickle.pusan.ac.kr)",
+    "what": "학교 밖 DNS에서 콘솔 도메인이 학교 공인 주소를 가리키는지 확인해요.",
+    "impact": "도메인이 잘못되면 사용자가 콘솔에 접속하지 못해요.",
+    "page_label": "콘솔 도메인",
+    "args": {"name": "pickle.pusan.ac.kr", "expected": ["203.0.113.10"]}
+  },
+  {
+    "id": "dns-llm", "host": "aws", "check": "dns", "every": 60, "group": "internal",
+    "target": "LLM API 도메인 (llm.pcl.kr)",
+    "what": "학교 밖 DNS에서 LLM API 도메인이 학교 공인 주소를 가리키는지 확인해요.",
+    "impact": "도메인이 잘못되면 학생 코드가 LLM API에 접속하지 못해요.",
+    "page_label": "LLM API 도메인",
+    "args": {"name": "llm.pcl.kr", "expected": ["203.0.113.10"]}
+  },
+  {
+    "id": "dns-ssh", "host": "aws", "check": "dns", "every": 60, "group": "internal",
+    "target": "SSH 접속 도메인 (ssh.pcl.kr)",
+    "what": "학교 밖 DNS에서 SSH 접속 도메인이 중계 서버 주소를 가리키는지 확인해요.",
+    "impact": "도메인이 잘못되면 사용자가 SSH로 접속하지 못해요.",
+    "page_label": "SSH 접속 도메인",
+    "args": {"name": "ssh.pcl.kr", "expected": ["198.51.100.10"]}
+  },
+  {
+    "id": "relay-services", "host": "aws", "check": "systemd_unit", "every": 60, "group": "internal",
+    "target": "SSH 중계 서비스 (ssh.pcl.kr)",
+    "what": "SSH 중계와 포트포워딩을 맡는 서비스가 실행 중인지 확인해요.",
+    "impact": "멈추면 사용자가 SSH 접속이나 포트포워딩을 쓰지 못해요.",
+    "page_label": "SSH 중계 서비스",
+    "args": {"units": ["haproxy.service", "relay-agent.service", "wg-quick@wg0.service"]}
+  },
+  {
+    "id": "relay-tunnel", "host": "aws", "check": "wireguard", "every": 60, "group": "internal",
+    "target": "SSH 중계 터널 (ssh.pcl.kr ↔ 학교)",
+    "what": "중계 서버와 학교 사이 터널에서 최근 3분 안에 연결 기록이 있는지 확인해요.",
+    "impact": "터널이 끊기면 SSH 접속과 포트포워딩이 학교 서버까지 닿지 못해요.",
+    "page_label": "SSH 중계 터널",
+    "args": {"iface": "wg0", "max_age": 180}
+  },
+  {
+    "id": "staging-web", "host": "aws", "check": "http", "every": 60, "group": "nonprod", "user_facing": false,
+    "target": "스테이징 (staging.example.com)",
+    "what": "학교 밖에서 스테이징 진입점이 준비 완료 응답을 주는지 확인해요.",
+    "impact": "사용자 영향은 없고 배포 전 검증 환경을 쓰지 못해요.",
+    "page_label": "스테이징",
+    "args": {"url": "https://staging.example.com/__ingress_probe", "expect": {"kind": "text", "value": "candidate-ready"}}
+  },
+  {
+    "id": "tls-staging", "host": "aws", "check": "tls", "every": 60, "group": "nonprod", "user_facing": false,
+    "target": "스테이징 인증서 (staging.example.com)",
+    "what": "스테이징 주소의 인증서가 유효한지와 만료까지 남은 날을 확인해요.",
+    "impact": "사용자 영향은 없고 만료되면 스테이징 검증이 막혀요.",
+    "page_label": "스테이징 인증서",
+    "args": {"host": "staging.example.com", "warn_days": 20, "fail_days": 7}
+  },
+  {
+    "id": "dev-console-web", "host": "aws", "check": "http", "every": 60, "group": "nonprod", "user_facing": false,
+    "target": "개발 콘솔 (pickle.pnuops.com)",
+    "what": "학교 밖에서 개발 콘솔 첫 화면을 받아 앱 뼈대가 들어 있는지 확인해요.",
+    "impact": "사용자 영향은 없고 개발 환경 확인이 막혀요.",
+    "page_label": "개발 콘솔",
+    "args": {"url": "https://pickle.pnuops.com/", "expect": {"kind": "html", "value": "id=\"root\""}}
+  },
+  {
+    "id": "tls-dev-console", "host": "aws", "check": "tls", "every": 60, "group": "nonprod", "user_facing": false,
+    "target": "개발 콘솔 인증서 (pickle.pnuops.com)",
+    "what": "개발 콘솔 주소의 인증서가 유효한지와 만료까지 남은 날을 확인해요.",
+    "impact": "사용자 영향은 없고 만료되면 개발 환경 접속이 막혀요.",
+    "page_label": "개발 콘솔 인증서",
+    "args": {"host": "pickle.pnuops.com", "warn_days": 20, "fail_days": 7}
+  }
+]

@@ -1,0 +1,11 @@
+{
+  "host": "aws",
+  "catalog": "/usr/local/lib/pickle-ops-watch/catalog",
+  "state_dir": "/var/lib/pickle-ops-watch-agent",
+  "push": {
+    "mode": "command",
+    "argv": ["/usr/sbin/runuser", "-u", "opswatch", "--", "/usr/bin/python3", "-I", "-B",
+             "/usr/local/lib/pickle-ops-watch/bin/ops-watch", "ingest", "--host", "aws",
+             "--catalog", "/usr/local/lib/pickle-ops-watch/catalog", "--state-dir", "/var/lib/pickle-ops-watch"]
+  }
+}
