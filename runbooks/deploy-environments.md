@@ -56,7 +56,33 @@ Console artifact에 운영 주소가 포함되면 배포를 거부해요. `pickl
 현재 운영 API unit은 고정 `production-example/pickle-api.jar`를, gateway unit은 drop-in
 `40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-29 API·console·게이트웨이 수동
 배포, 게이트웨이 env에 `LLMGW_UPSTREAM_OPENROUTER_REASONING=effort` 한 줄 추가). console은 2026-10-30에 네 번 더
-배포했습니다.
+배포했고 2026-11-11에 자체 서빙 가이드 hotfix를 배포했습니다. 게이트웨이는 2026-11-09에 새 고정 바이너리로 바꿨고, drop-in
+파일 이름은 그대로 두고 `ExecStart`와 주석 한 줄만 바꿨습니다.
+
+### 2026-11-09 게이트웨이 릴리스
+
+같은 날 공개 자체 서빙 모델의 카탈로그 행을 외부 API에서 자체 서빙 업스트림으로 되돌린 뒤, 게이트웨이 컨테이너를 한 번
+재시작해 새 바이너리와 env를 함께 올렸습니다(진행 중 요청 0).
+
+- 바이너리: llm-gateway `main` 병합 commit을 go1.27.3 linux/amd64 `CGO_ENABLED=0 -trimpath -ldflags='-s -w'`로 깨끗한
+  체크아웃에서 빌드했습니다(`vcs.modified=false`). 새 고정 경로에 root 0755로 두고 실행 파일 SHA를 빌드 SHA와 대조했습니다.
+- env 차이는 정확히 -1/+5입니다. `LLMGW_UPSTREAM_OPENROUTER_API_KEY` 줄(사업 계정 런타임 키)을 지웠고, OpenRouter의
+  `_BASE_URL`과 `_REASONING=effort`는 유료 경로가 쓰므로 남겼습니다. 더한 줄은 `LLMGW_UPSTREAM_DGX_MESSAGES=open`,
+  `_MESSAGES_MAX_INPUT_TOKENS=65536`, `_MESSAGES_MAX_CONCURRENT=4`, `_MESSAGES_QUEUE_WAIT=60s`,
+  `_MESSAGES_CHAT_INPUT_TOKENS=32768`입니다. `LLMGW_UPSTREAM_DGX_REASONING` 줄은 없으므로 자체 서빙 추론은 닫힌 상태이고,
+  바이너리에 들어 있는 예산 모드는 켜지 않았습니다. env 정본은 운영자 볼트이며 같은 날 같은 SHA로 갱신했습니다.
+- 재시작 뒤 확인: 실행 파일 SHA, 프로세스 environ의 OpenRouter API 키 0개와 `DGX_MESSAGES=open` 1개, `/healthz` generation,
+  `/metrics`의 Messages 슬롯 한도 4, journal ERROR 0, API의 마지막 연락과 감시 키의 자체 서빙 응답.
+- 현장 사본: env와 drop-in의 `.before-<날짜>`. 카탈로그 행 사본과 적용 스크립트 사본은 운영 호스트의 백업 폴더에 있습니다.
+- 게이트웨이 되돌림: 이전 바이너리는 새 env로 기동하지 못합니다. 바이너리만 바꾸지 말고 두 `.before-<날짜>`를 원래 이름으로
+  함께 복사한 뒤 `systemctl daemon-reload`, restart 합니다. 실행 파일과 env SHA가 배포 전 기록과 같은지 확인하고 볼트 env도
+  이전 판으로 맞춥니다.
+- 카탈로그를 외부 API로 되돌릴 때: 지금 env에는 OpenRouter API 키 줄이 없으므로 외부 API 행을 먼저 적용하면 해당 모델 요청이
+  모두 업스트림 인증 실패가 됩니다. env에 `LLMGW_UPSTREAM_OPENROUTER_API_KEY` 줄을 복원하고 게이트웨이를 재시작한 **뒤에**
+  외부 API 행을 다시 적용합니다. 그 런타임 키가 벤더에서 꺼졌다면 새 키가 먼저 필요합니다.
+- 실행하면서 확인한 명령 차이: 자체 서빙 vLLM은 localhost가 아니라 서빙 장비의 캠퍼스 주소에 바인드하며 `/health`는 키 없이
+  200, `/v1/models`는 서빙 API 키가 필요합니다. 운영 게이트웨이 컨테이너에는 `curl`이 없어 관리 주소를 컨테이너 안에서
+  `wget -qO-`로 읽습니다. 사용량 이벤트를 시간으로 거를 때 `llm_usage_events`에는 `created_at`이 없으므로 `requested_at`을 씁니다.
 
 CLI 연결 안내 후속은 2026-10-30 09:45 KST에 태그 `2026.10.30c`로 운영 반영했습니다. 빌드 artifact는 83파일이고
 이미 열린 탭의 지연 로딩을 위한 기존 assets 네 개를 별도 SHA 검산 뒤 보존했으므로 당시 웹루트 manifest는 87파일이었습니다.
@@ -65,8 +91,8 @@ CLI 연결 안내 후속은 2026-10-30 09:45 KST에 태그 `2026.10.30c`로 운�
 검수했습니다.
 API, DB, 게이트웨이와 nginx 설정은 이 후속에서 바꾸지 않았습니다.
 
-영상 안내 정리 후속은 2026-10-30 11:25 KST에 태그 `2026.10.30d`로 운영 반영했습니다. 현재 빌드 artifact는 83파일이며,
-직전 웹루트의 `assets/` 중 새 빌드에 없는 11파일(9,437,568바이트)을 보존하므로 현재 웹루트 manifest는 94파일입니다.
+영상 안내 정리 후속은 2026-10-30 11:25 KST에 태그 `2026.10.30d`로 운영 반영했습니다. 당시 빌드 artifact는 83파일이며,
+직전 웹루트의 `assets/` 중 새 빌드에 없는 11파일(9,437,568바이트)을 보존하므로 당시 웹루트 manifest는 94파일이었습니다.
 두 판에 공통인 assets의 SHA가 같고 보존 목록은 기존 assets와 새 빌드 경로의 차집합과 일치하는지 검산했습니다. 이전 영상과
 자막도 열린 탭이 참조할 수 있으므로 보존했습니다. 새 빌드 83파일과 이전 판에서 보존한 11파일의 출처를 구분하고 각 파일의
 경로, 크기와 SHA를 검산한 뒤 정적 웹루트를 원자 교체했습니다. 교체 후 94파일 검산도 통과했습니다.
@@ -74,6 +100,15 @@ API, DB, 게이트웨이와 nginx 설정은 이 후속에서 바꾸지 않았습
 새 영상과 포스터 및 한국어 자막 반영도 검수했습니다. 기존 촬영 원본을 바꾸지
 않고 오프라인으로 재편집한 정적 자료 갱신이며, 새 키 발급이나 LLM 추론 요청, 메일 발송은 하지 않았습니다.
 API, DB, 게이트웨이와 nginx 설정도 바꾸지 않았습니다.
+
+자체 서빙 가이드 hotfix는 2026-11-11에 태그 `2026.11.11`로 운영 반영했습니다. hotfix 브랜치를 `main`에 바로 병합한 commit에서
+빌드했고 `develop` 역병합은 아직 하지 않았습니다. 가이드의 컨텍스트 길이, 자체 서빙 모델의 Messages와 Claude Code 연결
+(`CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536`, `ENABLE_TOOL_SEARCH=false`), 자체 서빙 제약, `reasoning_effort`가 유료 모델 전용이라는
+설명을 실제 게이트웨이 설정에 맞췄습니다. 빌드는 VITE 변수 없는 기본 `npm ci && npm run build`입니다. 직전 운영 소스를 같은
+방식으로 빌드하면 운영 83파일이 바이트 단위로 같았으므로 기본 빌드가 곧 운영 빌드입니다. 새 빌드는 83파일 중 8파일이 달라졌습니다.
+이번에는 원자 교체가 아니라 직전 웹루트를 `cp -a`로 보존한 뒤 새 빌드를 그 위에 복사했고, 기존 assets를 지우지 않아 `assets/`는
+96파일입니다. 공개 index SHA와 새 chunk의 200, 직전 index chunk의 200을 확인했습니다. API, DB, 게이트웨이와 nginx 설정은 바꾸지
+않았습니다.
 
 이전 판의 고정 경로도 남아 있어요. 2026-10-29에 Flyway V143을 적용했으므로 이전 API JAR 단독 재기동은 금지이며,
 데이터까지 되돌리려면 V142 전 복구점에서 새 DB를 복원하는 별도 운영자 판단이 필요해요. 운영 API의 준비 대상 명령은
@@ -105,7 +140,13 @@ artifact SHA를 읽기 전용으로 대조할 수 있어요. 서비스 재시작
   맞춰 바꾸지 않으므로, 되돌리면 사용 가이드의 추론 강도 설명이 사실과 달라집니다. 가이드 문구 수정이나 공지를 함께 정합니다.
 - API 되돌림: V143을 적용했으므로 이전 JAR 단독 기동은 금지입니다. 되돌리려면 V142 전 복구점에서 새 DB를 복원해
   전환하는 별도 운영자 판단이 필요하고, 그때만 이전 JAR와 이전 console을 함께 되돌립니다.
-- console 되돌림(영상 안내 정리 후속): `<웹 루트>.before-<날짜>-video-clarity`에 직전 운영판 87파일을 보존했습니다.
+- console 되돌림(자체 서빙 가이드 hotfix): `<웹 루트>.before-<날짜>-selfhost-guide`에 직전 운영판 94파일을 보존했습니다.
+  되돌리기 전 현재와 보존본 index가 배포 기록의 SHA와 같은지, 같은 파일시스템의 실제 디렉터리인지 확인합니다.
+  `mv --exchange -T <웹 루트>.before-<날짜>-selfhost-guide <웹 루트>`로 맞바꾸고 두 index가 반대로 놓였는지 대조합니다.
+  되돌린 가이드는 지금 게이트웨이 설정과 다른 설명을 담고 있으므로 가이드 문구를 어떻게 할지 함께 정합니다. API나 DB,
+  게이트웨이를 재시작하지 않습니다.
+- console 되돌림(영상 안내 정리 후속): 자체 서빙 가이드 hotfix가 적용됐다면 위 절차로 먼저 되돌린 뒤에만 진행합니다.
+  `<웹 루트>.before-<날짜>-video-clarity`에 직전 운영판 87파일을 보존했습니다.
   기존 복구 경로를 덮어쓰거나 symlink를 따라가지 않습니다. 되돌리기 전 현재와 보존본 index가 배포 기록의 교환 전 SHA와 같은지,
   같은 파일시스템의 실제 디렉터리인지 확인합니다. `mv --exchange -T <웹 루트>.before-<날짜>-video-clarity <웹 루트>`로 맞바꾸고 두 index가
   반대로 놓였는지 대조합니다. 되돌린 웹루트는 87파일이고 보존 경로에는 94파일이 남습니다. 다시 후속 판으로 전환할 때도
@@ -329,7 +370,9 @@ job timeout은 3분이며 runner 배정과 environment 승인 대기 시간은 �
 키 발급, GitHub 설정과 실제 workflow 실행 결과는 별도로 확인해야 해요.
 
 `config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-10-29부터
-0.113/V145 판이고(console은 2026-10-30에 두 번 더 배포), 산출물은 고정 artifact 수동 배포로 올렸습니다. 운영 호스트에는
+0.113/V145 판이고(console은 2026-10-30에 두 번 더, 2026-11-11에 hotfix 배포, 게이트웨이는 2026-11-09 릴리스), 산출물은
+고정 artifact 수동 배포로 올렸습니다. pin은 빌드한 commit이자 릴리스 태그가 가리키는 commit이며, 게이트웨이의
+`legacy_exec_path`와 `legacy_sha256`은 drop-in이 실행하는 고정 바이너리 경로와 그 SHA-256입니다. 운영 호스트에는
 이 manifest를 읽는 배포 도구가 없어, console pin 갱신은 실행 중인 source를 기록할 뿐입니다. 같은 파일과 `config/deploy-backup-reader.json`의
 `expected_schema_version`은 2026-10-30에 백업 reader 호스트의 설정과 함께 145로 맞췄습니다. 별도
 `config/deploy-target-prod-release-candidate.json`은 그 전의 미활성 0.100/V140 미집행 후보이며
