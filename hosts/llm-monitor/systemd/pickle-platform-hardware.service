@@ -1,0 +1,26 @@
+[Unit]
+Description=Report automatically observed platform hardware
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/pickle-platform-hardware/reporter.json
+ConditionPathExists=/etc/pickle-platform-hardware/api-token
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+LoadCredential=api-token:/etc/pickle-platform-hardware/api-token
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+StateDirectory=pickle-platform-hardware
+StateDirectoryMode=0700
+TimeoutStartSec=25
+MemoryMax=128M
+TasksMax=16
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/pickle/platform-hardware-report.py report --config /etc/pickle-platform-hardware/reporter.json --state-dir /var/lib/pickle-platform-hardware

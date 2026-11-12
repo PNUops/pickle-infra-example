@@ -323,6 +323,7 @@ CT mask와 QEMU hook의 영속화와 실패 경계는 [CPU 격리 런북](runboo
 |---|---|
 | `llm-health-monitor.md` | 자체 서빙 실제 생성과 host/query 분리 감시, 무통지 초기 배치와 원복 |
 | `llm-health-external.md` | 외부 HTTPS/TLS 감시, 전용 진단 키 검증과 제한된 SSH 결과 수집 |
+| `platform-hardware.md` | CPU·RAM·GPU 자동 관측, 선택적인 고정 reader 확장과 독립 oneshot의 적용·복구 |
 
 ## 플랫폼 DNS 점검
 
@@ -526,7 +527,16 @@ custody와 GitHub secret 등록은 별도 절차이며 이 TLS 백업을 설정�
 공개 HTTPS/TLS 감시와 고정 SSH reader/importer의 배치 및 전용 진단 키 검증은
 [외부 감시와 결과 수집 런북](runbooks/llm-health-external.md)에 있어요.
 
-최종 갱신: 2026-11-03
+## 플랫폼 하드웨어 관측
+
+`hardware_observation.py`는 CPU 모델과 코어, 스레드, RAM과 GPU를 실제 장비에서 읽어요.
+고정 용량을 기본값으로 쓰지 않으며 읽을 수 없는 GPU 메모리는 null로 유지해요.
+`platform-hardware-report.py`의 독립 oneshot이 고정 reader의 별도 `read-hardware-v1` 명령으로
+완전한 최신 장비 목록을 모아 전용 HTTPS API에 전송해요.
+기존 health 응답과 timer, 생성 점검과 통지의 결과는 유지해요.
+소스와 예시 설정을 제공하며 운영 설치는 [하드웨어 관측 런북](runbooks/platform-hardware.md)을 따라요.
+
+최종 갱신: 2026-11-13
 
 ## 전체 아키텍처
 

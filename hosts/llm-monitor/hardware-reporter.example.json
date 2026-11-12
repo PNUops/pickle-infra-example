@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "enabled": false,
+  "source_id": "00000000-0000-4000-8000-000000000201",
+  "expected_hostname": "health-collector",
+  "api_url": "https://api.example.invalid/internal/platform-hardware-observations",
+  "credential_file": "/run/credentials/pickle-platform-hardware.service/api-token",
+  "assets": [
+    { "id": "compute-a", "ssh": { "address": "198.18.0.11", "port": 22, "user": "observer", "identity_file": "/etc/pickle-platform-hardware/ssh/compute-a", "known_hosts_file": "/etc/pickle-platform-hardware/ssh/compute-a-known-hosts" } },
+    { "id": "compute-b", "ssh": { "address": "198.18.0.12", "port": 22, "user": "observer", "identity_file": "/etc/pickle-llm-health/ssh/gateway", "known_hosts_file": "/etc/pickle-llm-health/ssh/gateway-known-hosts" } },
+    { "id": "compute-c", "local": true },
+    { "id": "inference-a", "ssh": { "address": "198.18.0.14", "port": 22, "user": "observer", "identity_file": "/etc/pickle-llm-health/ssh/model-host", "known_hosts_file": "/etc/pickle-llm-health/ssh/model-host-known-hosts" } },
+    { "id": "backup-a", "ssh": { "address": "198.18.0.15", "port": 22, "user": "observer", "identity_file": "/etc/pickle-platform-hardware/ssh/backup-a", "known_hosts_file": "/etc/pickle-platform-hardware/ssh/backup-a-known-hosts" } }
+  ]
+}
