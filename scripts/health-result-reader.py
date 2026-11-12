@@ -13,7 +13,6 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
 from llm_health import HealthError, MAX_JSON, NAME, STATES, epoch, read_json
 from health_result_transport import bounded_process, inspect_bundle, invalid_policy, sanitize_policy, sanitize_report
-from hardware_observation import observe, unavailable
 
 PROTOCOL = 'read-health-v1'
 HARDWARE_PROTOCOL = 'read-hardware-v1'
@@ -98,16 +97,19 @@ def collect(config: dict, *, now: float | None = None, reader=read_json,
     return result
 
 
-def collect_hardware(config: dict, *, now: float | None = None, observer=observe) -> dict:
+def collect_hardware(config: dict, *, now: float | None = None, observer=None) -> dict:
     now = epoch(time.time() if now is None else now)
     if (config.get('allow_hardware') is not True
             or config.get('role') not in ('model-host', 'gateway-host', 'collector-host', 'hardware-host')
             or config.get('expected_hostname') != socket.gethostname()):
         raise HealthError('HARDWARE_READER_DENIED')
     try:
+        if observer is None:
+            from hardware_observation import observe
+            observer = observe
         return observer(now=now)
     except Exception:
-        return unavailable(now)
+        return {'version': 1, 'observed_at': now, 'status': 'UNAVAILABLE'}
 
 
 def main() -> int:

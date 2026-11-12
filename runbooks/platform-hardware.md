@@ -60,6 +60,8 @@ SSH agent와 forwarding, PTY, 임의 명령, proxy와 jump 설정을 사용하�
    `expected_hostname`을 실제 hostname과 대조하고 `allow_hardware: true`로 바꿔요.
    기존 모델과 gateway profile도 같은 옵션만 추가해요. health importer 설정은 바꾸지 않아요.
 5. 수집 호스트에서 pin과 고정 경로로 `read-hardware-v1`이 되는지 확인해요.
+   정상 종료 여부와 함께 `status: OBSERVED`와 실제 자산 필드를 확인해요.
+   library 누락 등으로 `UNAVAILABLE`이면 기존 health 명령은 유지하고 API에는 보내지 않아요.
    임의 명령과 forwarding, PTY가 거절되는지도 확인해요.
    기존 `read-health-v1`의 결과와 시간 제한은 유지되는지 대조해요.
    연결 실패를 해결하려고 SSH 인증이나 방화벽을 완화하지 않아요.

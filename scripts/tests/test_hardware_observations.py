@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
@@ -188,6 +189,31 @@ class HardwareTests(unittest.TestCase):
                     patch('sys.stdout', new=io.StringIO()):
                 self.assertEqual(reader.main(), expected)
                 self.assertEqual(selected.call_count, int(expected == 0))
+
+    def test_legacy_cli_needs_no_optional_hardware_library(self):
+        clone = self.root / 'legacy-install'
+        (clone / 'lib').mkdir(parents=True)
+        script = clone / 'health-result-reader.py'
+        shutil.copyfile(ROOT / 'health-result-reader.py', script)
+        for name in ('llm_health.py', 'health_result_transport.py'):
+            shutil.copyfile(ROOT / 'lib' / name, clone / 'lib' / name)
+        config = clone / 'reader.json'
+        self.write(config, json.dumps({'role': 'collector-host',
+            'expected_hostname': socket.gethostname(), 'allow_hardware': True}))
+        command = [sys.executable, '-I', '-S', '-B', str(script)]
+        help_result = subprocess.run([*command, '--help'], capture_output=True, text=True, timeout=5)
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        environment = dict(os.environ, SSH_ORIGINAL_COMMAND='read-health-v1')
+        health = subprocess.run([*command, '--config', str(config)], env=environment,
+            capture_output=True, text=True, timeout=5)
+        self.assertEqual(health.returncode, 0, health.stderr)
+        self.assertIn('collector-heartbeat', json.loads(health.stdout)['reports'])
+        environment['SSH_ORIGINAL_COMMAND'] = 'read-hardware-v1'
+        observed = subprocess.run([*command, '--config', str(config)], env=environment,
+            capture_output=True, text=True, timeout=5)
+        self.assertEqual(observed.returncode, 0, observed.stderr)
+        self.assertEqual(json.loads(observed.stdout)['status'], 'UNAVAILABLE')
+        self.assertEqual(observed.stderr, '')
 
     def poster_config(self):
         return {'schemaVersion': 1, 'enabled': True,
