@@ -77,6 +77,9 @@ runbooks/         운영 절차                                    // 이 예시
 | 검증 | `verify.sh`, `sanitization-check.sh`, `hook-verify.sh`, `verify-production-network.py` |
 | 스모크 | `smoke-provisioning.sh`, `smoke-llm-key-lifecycle.sh`, `smoke-http-publish.sh`, `smoke-ssh-gateway.sh`, `smoke-web-terminal.sh`, `smoke-account-ops.sh`, `smoke-dashboards-notify.sh`, `smoke-prod.sh`, `smoke-signup.sh` |
 
+`deploy-proxy-agent.sh`의 상태 확인에는 앱 컨테이너의 curl 7.55.0 이상이 필요해요.
+인증 헤더는 표준 입력(`-H @-`)으로 전달해요.
+
 `deploy-api.sh`, `deploy-console.sh`, `deploy-llm-gateway.sh`는
 `<check|apply> <dev|prod> <commit> <artifact> <sha256>`을 받아 환경 배포 도구에 전달해요.
 기본 호출과 CTID와 hostname, 체크아웃 override는 빌드나 대상 조회 전에 거부해요.
