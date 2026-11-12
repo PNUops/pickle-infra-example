@@ -63,7 +63,8 @@ Console artifact에 운영 주소가 포함되면 배포를 거부해요. `pickl
 ### 2026-11-12 릴리스
 
 배치(batches)와 동영상 생성(videos) 기능 권한, 사용자 알림 설정을 담은 릴리스입니다. 순서는 게이트웨이 → API → console입니다.
-console은 새 API 경로(`/api/v1/me/notification-preferences`)를 부르고, 이전 API는 batches와 videos 권한 승인을 거부하기 때문입니다.
+새 API가 부여한 batches와 videos는 이전 게이트웨이가 처리하지 못하므로 게이트웨이가 먼저입니다. console은 새 API 경로
+(`/api/v1/me/notification-preferences`)를 부르고 이전 API는 batches와 videos 권한 승인을 거부하므로 console은 API 뒤입니다.
 공개 차단(fence)은 걸지 않았습니다.
 
 - 게이트웨이: `main` 병합 commit을 go1.27.3 linux/amd64 `CGO_ENABLED=0 -trimpath`(ldflags 없음)로 깨끗한 체크아웃에서
@@ -77,6 +78,18 @@ console은 새 API 경로(`/api/v1/me/notification-preferences`)를 부르고, �
   권한 없는 기능의 403 `endpoint_not_allowed`, 금액 한도 소진 뒤 429 `credit_exhausted`, 폐기 뒤 401 `api_key_revoked`를
   확인했습니다. 비동기 객체 기록은 접수 시 OWNED, 업스트림 거절 시 RELEASED였습니다.
 - 현장 사본: API unit, console 웹 루트, 게이트웨이 drop-in, 백업 reader 설정의 `.before-<날짜>`.
+- 되돌림은 배포의 역순(console → API → 게이트웨이)입니다. API는 fix-forward가 원칙입니다.
+  - console: `<웹 루트>.before-<날짜>-release`와 현재 index를 배포 기록의 SHA와 대조하고 `mv --exchange -T`로 맞바꿉니다.
+  - API: V146은 테이블 둘을 더하고 메일 발송 기록의 결과 CHECK에 SKIPPED를 더할 뿐이라 이전 JAR도 기동합니다. 그래도 먼저
+    고쳐서 다시 배포하는 쪽을 택하고, 꼭 되돌려야 하면 console을 먼저 되돌린 뒤 `pickle-api.service.before-<날짜>`를 원래 이름으로
+    복사하고 `systemctl daemon-reload`, restart 합니다. 정지 전에 JobRunr 진행 작업, 웹 터미널과 SSH 연결, 게이트웨이 진행
+    요청이 모두 0인지 확인합니다. 이미 승인된 batches와 videos 권한은 DB에 남고, 이전 API도 그 값을 snapshot에 실어 보내므로
+    게이트웨이를 되돌리기 전까지 그 키들의 batches와 videos 호출은 계속 동작합니다. 이전 API에서는 그 키의 허용 목록을 통째로
+    다시 저장하는 수정(단건 교체, 일괄 변경)이 거부되고, 사용량 이벤트의 `object`로 하는 소유 기록 복구도 하지 않습니다.
+    V146은 DB에 남으므로 백업 reader의 `expected_schema_version` 146도 그대로 둡니다.
+  - 게이트웨이: drop-in의 `.before-<날짜>`를 원래 이름으로 복사하고 `systemctl daemon-reload`, restart 합니다. 실행 파일 SHA가
+    배포 전 기록과 같은지 확인합니다. env는 그대로입니다. 되돌린 게이트웨이는 batches와 videos 경로를 열지 않으므로 그 권한을
+    받은 키의 호출이 거절됩니다.
 
 ### 2026-11-09 게이트웨이 릴리스
 
@@ -93,7 +106,7 @@ console은 새 API 경로(`/api/v1/me/notification-preferences`)를 부르고, �
 - 재시작 뒤 확인: 실행 파일 SHA, 프로세스 environ의 OpenRouter API 키 0개와 `DGX_MESSAGES=open` 1개, `/healthz` generation,
   `/metrics`의 Messages 슬롯 한도 4, journal ERROR 0, API의 마지막 연락과 감시 키의 자체 서빙 응답.
 - 현장 사본: env와 drop-in의 `.before-<날짜>`. 카탈로그 행 사본과 적용 스크립트 사본은 운영 호스트의 백업 폴더에 있습니다.
-- 게이트웨이 되돌림(2026-11-12 게이트웨이 되돌림 뒤에만): 이전 바이너리는 새 env로 기동하지 못합니다. 바이너리만 바꾸지 말고 두 `.before-<날짜>`를 원래 이름으로
+- 게이트웨이 되돌림(「2026-11-12 릴리스」의 게이트웨이 되돌림 뒤에만): 이전 바이너리는 새 env로 기동하지 못합니다. 바이너리만 바꾸지 말고 두 `.before-<날짜>`를 원래 이름으로
   함께 복사한 뒤 `systemctl daemon-reload`, restart 합니다. 실행 파일과 env SHA가 배포 전 기록과 같은지 확인하고 볼트 env도
   이전 판으로 맞춥니다.
 - 카탈로그를 외부 API로 되돌릴 때: 지금 env에는 OpenRouter API 키 줄이 없으므로 외부 API 행을 먼저 적용하면 해당 모델 요청이
@@ -165,18 +178,9 @@ artifact SHA를 읽기 전용으로 대조할 수 있어요. 서비스 재시작
   두 `.before-<날짜>`를 원래 이름으로 복사하고 `systemctl daemon-reload`, restart. 실행 바이너리가
   이전 판이고 env에 `_REASONING` 줄이 없는지 확인합니다. 이전 게이트웨이는 추론 강도(`reasoning_effort`)를 업스트림에
   맞춰 바꾸지 않으므로, 되돌리면 사용 가이드의 추론 강도 설명이 사실과 달라집니다. 가이드 문구 수정이나 공지를 함께 정합니다.
-- API 되돌림: V143을 적용했으므로 이전 JAR 단독 기동은 금지입니다. 되돌리려면 V142 전 복구점에서 새 DB를 복원해
+- API 되돌림(「2026-11-12 릴리스」의 API 되돌림 뒤에만): V143을 적용했으므로 이전 JAR 단독 기동은 금지입니다. 되돌리려면 V142 전 복구점에서 새 DB를 복원해
   전환하는 별도 운영자 판단이 필요하고, 그때만 이전 JAR와 이전 console을 함께 되돌립니다.
-- 2026-11-12 릴리스 되돌림은 배포의 역순(console → API → 게이트웨이)입니다. API는 fix-forward가 원칙입니다.
-  - console: `<웹 루트>.before-<날짜>-release`와 현재 index를 배포 기록의 SHA와 대조하고 `mv --exchange -T`로 맞바꿉니다.
-  - API: V146은 테이블 둘을 더하고 메일 발송 기록의 결과 CHECK에 SKIPPED를 더할 뿐이라 이전 JAR도 기동합니다. 그래도 먼저
-    고쳐서 다시 배포하는 쪽을 택하고, 꼭 되돌려야 하면 console을 먼저 되돌린 뒤 `pickle-api.service.before-<날짜>`를 원래 이름으로
-    복사하고 `systemctl daemon-reload`, restart 합니다. 이미 승인된 batches와 videos 권한은 DB에 남습니다. V146은 DB에 남으므로
-    백업 reader의 `expected_schema_version` 146도 그대로 둡니다.
-  - 게이트웨이: drop-in의 `.before-<날짜>`를 원래 이름으로 복사하고 `systemctl daemon-reload`, restart 합니다. 실행 파일 SHA가
-    배포 전 기록과 같은지 확인합니다. env는 그대로입니다. 되돌린 게이트웨이는 batches와 videos 경로를 열지 않으므로 그 권한을
-    받은 키의 호출이 거절됩니다.
-- console 되돌림(추론 안내 문체 hotfix, 위 2026-11-12 console 되돌림 뒤에만): `<웹 루트>.before-<날짜>-reasoning-guide-tone`과 현재 index를 배포 기록의 SHA와
+- console 되돌림(추론 안내 문체 hotfix, 「2026-11-12 릴리스」의 console 되돌림 뒤에만): `<웹 루트>.before-<날짜>-reasoning-guide-tone`과 현재 index를 배포 기록의 SHA와
   대조하고 `mv --exchange -T`로 맞바꿉니다. 문구 문체만 다르므로 게이트웨이 설정은 그대로 둡니다.
 - console 되돌림(추론 예산 안내 hotfix, 위 문체 hotfix 되돌림 뒤에만): `<웹 루트>.before-<날짜>-reasoning-guide`와 현재 index를 배포 기록의 SHA와 대조하고
   `mv --exchange -T`로 맞바꿉니다. 되돌린 판은 자체 서빙 추론이 닫혀 있다고 설명하므로 게이트웨이 추론 설정도 함께 볼지 정합니다.
@@ -218,6 +222,8 @@ artifact SHA를 읽기 전용으로 대조할 수 있어요. 서비스 재시작
   `install -o root -g root -m 0600`으로 원본을 다시 설치하고 SHA를 대조하지만, 운영 DB가 V145이므로 이전 값은
   검증을 거부하게 됩니다. 이전 값으로 되돌리는 것은 정상 상태 복구가 아니라 검증 기준을 과거 스키마로 바꾸는 일이므로,
   운영 DB가 새 스키마인 동안은 새 값을 유지하고 DB 복원 같은 환경 판단과 함께 고릅니다.
+  2026-11-12에 같은 방식으로 145에서 146으로 바꿨습니다(원본은 `.before-<날짜>`). 운영 DB가 V146인 동안은 146을 유지하며,
+  이전 값으로 되돌리면 검증을 거부하게 됩니다.
 
 ## 제한된 실연동 개발 후보
 
