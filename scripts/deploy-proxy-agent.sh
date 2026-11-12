@@ -68,7 +68,7 @@ healthy=0; code=""
 for _ in $(seq 1 "$HEALTH_TICKS"); do
   sleep 2
   # shellcheck disable=SC2016
-  code=$(pct exec 101 -- sh -c 'U=$(grep "^PICKLE_PROXY_AGENT_URL=" /etc/pickle/api.env | cut -d= -f2); T=$(grep "^PICKLE_PROXY_AGENT_TOKEN=" /etc/pickle/api.env | cut -d= -f2); curl -s -o /dev/null -w "%{http_code}" --max-time 5 -H "Authorization: Bearer $T" "$U/status"' 2>/dev/null || true)
+  code=$(pct exec 101 -- sh -c 'U=$(grep "^PICKLE_PROXY_AGENT_URL=" /etc/pickle/api.env | cut -d= -f2); T=$(grep "^PICKLE_PROXY_AGENT_TOKEN=" /etc/pickle/api.env | cut -d= -f2); printf "Authorization: Bearer %s\n" "$T" | curl -s -o /dev/null -w "%{http_code}" --max-time 5 -H @- "$U/status"' 2>/dev/null || true)
   if [ "$code" = 200 ]; then healthy=1; break; fi
 done
 
