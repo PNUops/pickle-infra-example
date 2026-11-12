@@ -1,0 +1,5 @@
+{
+  "role": "hardware-host",
+  "expected_hostname": "hardware-node",
+  "allow_hardware": false
+}

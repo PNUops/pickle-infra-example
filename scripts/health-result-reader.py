@@ -15,6 +15,7 @@ from llm_health import HealthError, MAX_JSON, NAME, STATES, epoch, read_json
 from health_result_transport import bounded_process, inspect_bundle, invalid_policy, sanitize_policy, sanitize_report
 
 PROTOCOL = 'read-health-v1'
+HARDWARE_PROTOCOL = 'read-hardware-v1'
 PATHS = {
     'model-host': {'host-query': '/var/lib/pickle-llm-host-query/result.json',
                    'local-generation': '/var/lib/pickle-llm-local-generation/result.json'},
@@ -96,6 +97,21 @@ def collect(config: dict, *, now: float | None = None, reader=read_json,
     return result
 
 
+def collect_hardware(config: dict, *, now: float | None = None, observer=None) -> dict:
+    now = epoch(time.time() if now is None else now)
+    if (config.get('allow_hardware') is not True
+            or config.get('role') not in ('model-host', 'gateway-host', 'collector-host', 'hardware-host')
+            or config.get('expected_hostname') != socket.gethostname()):
+        raise HealthError('HARDWARE_READER_DENIED')
+    try:
+        if observer is None:
+            from hardware_observation import observe
+            observer = observe
+        return observer(now=now)
+    except Exception:
+        return {'version': 1, 'observed_at': now, 'status': 'UNAVAILABLE'}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
@@ -106,9 +122,14 @@ def main() -> int:
         if args.local_child:
             if os.geteuid() != 0 or config.get('role') != 'gateway-container':
                 raise HealthError('READER_CHILD_DENIED')
-        elif os.environ.get('SSH_ORIGINAL_COMMAND') != PROTOCOL:
+            value = collect(config)
+        elif os.environ.get('SSH_ORIGINAL_COMMAND') == HARDWARE_PROTOCOL:
+            value = collect_hardware(config)
+        elif os.environ.get('SSH_ORIGINAL_COMMAND') == PROTOCOL:
+            value = collect(config)
+        else:
             raise HealthError('READER_COMMAND_DENIED')
-        result = json.dumps(collect(config), allow_nan=False, sort_keys=True)
+        result = json.dumps(value, allow_nan=False, sort_keys=True)
         if len(result.encode()) > MAX_JSON:
             raise HealthError('READER_OUTPUT_TOO_LARGE')
         print(result)
