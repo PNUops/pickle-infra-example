@@ -57,7 +57,26 @@ Console artifact에 운영 주소가 포함되면 배포를 거부해요. `pickl
 `40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-29 API·console·게이트웨이 수동
 배포, 게이트웨이 env에 `LLMGW_UPSTREAM_OPENROUTER_REASONING=effort` 한 줄 추가). console은 2026-10-30에 네 번 더
 배포했고 2026-11-11에 자체 서빙 가이드 hotfix를 배포했습니다. 게이트웨이는 2026-11-09에 새 고정 바이너리로 바꿨고, drop-in
-파일 이름은 그대로 두고 `ExecStart`와 주석 한 줄만 바꿨습니다.
+파일 이름은 그대로 두고 `ExecStart`와 주석 한 줄만 바꿨습니다. 2026-11-12에 아래 「2026-11-12 릴리스」로 세 서비스를 다시
+배포했습니다.
+
+### 2026-11-12 릴리스
+
+배치(batches)와 동영상 생성(videos) 기능 권한, 사용자 알림 설정을 담은 릴리스입니다. 순서는 게이트웨이 → API → console입니다.
+console은 새 API 경로(`/api/v1/me/notification-preferences`)를 부르고, 이전 API는 batches와 videos 권한 승인을 거부하기 때문입니다.
+공개 차단(fence)은 걸지 않았습니다.
+
+- 게이트웨이: `main` 병합 commit을 go1.27.3 linux/amd64 `CGO_ENABLED=0 -trimpath`(ldflags 없음)로 깨끗한 체크아웃에서
+  빌드했습니다(`vcs.modified=false`). 진행 중 요청 0에서 재시작했고 실행 파일 SHA, `/healthz`, 카탈로그 generation, env SHA 불변을
+  확인했습니다. env는 바꾸지 않았습니다.
+- API: API 명세 0.115.0, Flyway V146(스키마만). JobRunr 진행 작업, 웹 터미널과 SSH 연결, 게이트웨이 진행 요청이 모두 0인 순간에
+  멈추고, 수동 백업이 VERIFIED된 뒤 unit의 JAR 경로만 바꿔 기동했습니다(정지 약 30초). 사용량 알림 발송은
+  `PICKLE_LLM_USAGE_ALERTS_ENABLED`가 env에 없으므로 꺼져 있습니다.
+- console: 기본 빌드를 직전 웹루트를 `cp -a`로 보존한 뒤 그 위에 복사했습니다. `._*` 파일이 없는지 확인했습니다.
+- 실호출 검수(시험 키 둘): 유료 Chat과 자체 서빙 Chat, Anthropic 메시지 배치 제출, 가장 싼 영상 모델의 짧은 영상 생성과 내려받기,
+  권한 없는 기능의 403 `endpoint_not_allowed`, 금액 한도 소진 뒤 429 `credit_exhausted`, 폐기 뒤 401 `api_key_revoked`를
+  확인했습니다. 비동기 객체 기록은 접수 시 OWNED, 업스트림 거절 시 RELEASED였습니다.
+- 현장 사본: API unit, console 웹 루트, 게이트웨이 drop-in, 백업 reader 설정의 `.before-<날짜>`.
 
 ### 2026-11-09 게이트웨이 릴리스
 
@@ -74,7 +93,7 @@ Console artifact에 운영 주소가 포함되면 배포를 거부해요. `pickl
 - 재시작 뒤 확인: 실행 파일 SHA, 프로세스 environ의 OpenRouter API 키 0개와 `DGX_MESSAGES=open` 1개, `/healthz` generation,
   `/metrics`의 Messages 슬롯 한도 4, journal ERROR 0, API의 마지막 연락과 감시 키의 자체 서빙 응답.
 - 현장 사본: env와 drop-in의 `.before-<날짜>`. 카탈로그 행 사본과 적용 스크립트 사본은 운영 호스트의 백업 폴더에 있습니다.
-- 게이트웨이 되돌림: 이전 바이너리는 새 env로 기동하지 못합니다. 바이너리만 바꾸지 말고 두 `.before-<날짜>`를 원래 이름으로
+- 게이트웨이 되돌림(2026-11-12 게이트웨이 되돌림 뒤에만): 이전 바이너리는 새 env로 기동하지 못합니다. 바이너리만 바꾸지 말고 두 `.before-<날짜>`를 원래 이름으로
   함께 복사한 뒤 `systemctl daemon-reload`, restart 합니다. 실행 파일과 env SHA가 배포 전 기록과 같은지 확인하고 볼트 env도
   이전 판으로 맞춥니다.
 - 카탈로그를 외부 API로 되돌릴 때: 지금 env에는 OpenRouter API 키 줄이 없으므로 외부 API 행을 먼저 적용하면 해당 모델 요청이
@@ -148,7 +167,16 @@ artifact SHA를 읽기 전용으로 대조할 수 있어요. 서비스 재시작
   맞춰 바꾸지 않으므로, 되돌리면 사용 가이드의 추론 강도 설명이 사실과 달라집니다. 가이드 문구 수정이나 공지를 함께 정합니다.
 - API 되돌림: V143을 적용했으므로 이전 JAR 단독 기동은 금지입니다. 되돌리려면 V142 전 복구점에서 새 DB를 복원해
   전환하는 별도 운영자 판단이 필요하고, 그때만 이전 JAR와 이전 console을 함께 되돌립니다.
-- console 되돌림(추론 안내 문체 hotfix): `<웹 루트>.before-<날짜>-reasoning-guide-tone`과 현재 index를 배포 기록의 SHA와
+- 2026-11-12 릴리스 되돌림은 배포의 역순(console → API → 게이트웨이)입니다. API는 fix-forward가 원칙입니다.
+  - console: `<웹 루트>.before-<날짜>-release`와 현재 index를 배포 기록의 SHA와 대조하고 `mv --exchange -T`로 맞바꿉니다.
+  - API: V146은 테이블 둘을 더하고 메일 발송 기록의 결과 CHECK에 SKIPPED를 더할 뿐이라 이전 JAR도 기동합니다. 그래도 먼저
+    고쳐서 다시 배포하는 쪽을 택하고, 꼭 되돌려야 하면 console을 먼저 되돌린 뒤 `pickle-api.service.before-<날짜>`를 원래 이름으로
+    복사하고 `systemctl daemon-reload`, restart 합니다. 이미 승인된 batches와 videos 권한은 DB에 남습니다. V146은 DB에 남으므로
+    백업 reader의 `expected_schema_version` 146도 그대로 둡니다.
+  - 게이트웨이: drop-in의 `.before-<날짜>`를 원래 이름으로 복사하고 `systemctl daemon-reload`, restart 합니다. 실행 파일 SHA가
+    배포 전 기록과 같은지 확인합니다. env는 그대로입니다. 되돌린 게이트웨이는 batches와 videos 경로를 열지 않으므로 그 권한을
+    받은 키의 호출이 거절됩니다.
+- console 되돌림(추론 안내 문체 hotfix, 위 2026-11-12 console 되돌림 뒤에만): `<웹 루트>.before-<날짜>-reasoning-guide-tone`과 현재 index를 배포 기록의 SHA와
   대조하고 `mv --exchange -T`로 맞바꿉니다. 문구 문체만 다르므로 게이트웨이 설정은 그대로 둡니다.
 - console 되돌림(추론 예산 안내 hotfix, 위 문체 hotfix 되돌림 뒤에만): `<웹 루트>.before-<날짜>-reasoning-guide`와 현재 index를 배포 기록의 SHA와 대조하고
   `mv --exchange -T`로 맞바꿉니다. 되돌린 판은 자체 서빙 추론이 닫혀 있다고 설명하므로 게이트웨이 추론 설정도 함께 볼지 정합니다.
@@ -383,12 +411,12 @@ job timeout은 3분이며 runner 배정과 environment 승인 대기 시간은 �
 항상 실행하는 종료 단계에서 해당 job이 등록한 NetBird 연결만 중단해요. 현재 소스 준비 단계이며
 키 발급, GitHub 설정과 실제 workflow 실행 결과는 별도로 확인해야 해요.
 
-`config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-10-29부터
-0.113/V145 판이고(console은 2026-10-30에 두 번 더, 2026-11-11과 2026-11-12에 hotfix 배포, 게이트웨이는 2026-11-09 릴리스), 산출물은
+`config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-11-12부터
+0.115/V146 판이고(API, console, 게이트웨이 모두 2026-11-12 릴리스), 산출물은
 고정 artifact 수동 배포로 올렸습니다. pin은 빌드한 commit이자 릴리스 태그가 가리키는 commit이며, 게이트웨이의
 `legacy_exec_path`와 `legacy_sha256`은 drop-in이 실행하는 고정 바이너리 경로와 그 SHA-256입니다. 운영 호스트에는
 이 manifest를 읽는 배포 도구가 없어, console pin 갱신은 실행 중인 source를 기록할 뿐입니다. 같은 파일과 `config/deploy-backup-reader.json`의
-`expected_schema_version`은 2026-10-30에 백업 reader 호스트의 설정과 함께 145로 맞췄습니다. 별도
+`expected_schema_version`은 2026-11-12에 백업 reader 호스트의 설정과 함께 146으로 맞췄습니다(그 전 145는 2026-10-30). 별도
 `config/deploy-target-prod-release-candidate.json`은 그 전의 미활성 0.100/V140 미집행 후보이며
 이번 배포에 쓰지 않았습니다. 파일에 남은 0.99 API·console SHA는 과거 검증한 snapshot이며 최종 0.100 source로 확인된 값이 아닙니다. API와 console 새 source, 검증된 Chat 집행 gateway source와 세 artifact
 SHA를 함께 검증하기 전에는 `release_candidate_ready=false`이며 apply를 거부해요.
@@ -398,7 +426,7 @@ Gateway placeholder와 미확인 digest를 제거하지 않고 READY로 바꿔�
 `PICKLE_PRODUCTION_RELEASE_APPROVED`는 운영 적용을 허용하지 않아요.
 
 `config/deploy-backup-reader.json`은 example-backup-host 독립 DB reader의 현재 선택 profile,
-배치된 기존 native library SHA, 실제 DB instance/system ID와 현재 스키마 버전(2026-10-30부터 V145)을 고정한 후보예요.
+배치된 기존 native library SHA, 실제 DB instance/system ID와 현재 스키마 버전(2026-11-12부터 V146)을 고정한 후보예요.
 백업 reader 호스트에 설치한 사본도 레포 판과 같아야 하므로, 이 파일이 바뀌면 호스트 사본을 같은 소유와 권한(root 0600)으로 다시 설치해요.
 이 파일과 `verify-production-backup.py`를 별도 root 보호 경로에 stage하고, example-prod-host→example-backup-host
 reader 및 example-backup-host→example-prod-host의 native PostgreSQL 읽기 actor를 각각 기존 신뢰 핀과 키의 새 전용
