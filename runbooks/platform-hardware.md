@@ -119,6 +119,24 @@ API의 전용 bearer, source ID와 실제 TCP peer 제한을 준비해요.
 `Wants`는 하드웨어 unit을 함께 시작하지만 health unit의 성공 조건으로 삼지 않아요.
 하드웨어 실패와 전송 지연은 기존 생성 점검과 통지의 시간 제한을 늘리지 않아요.
 
+## 운영 수신 경로 예시
+
+수집 호스트는 고정 장비를 읽고 기존 `pickle-prod.example.com` HTTPS에 전송해요.
+별도 망의 장비에 SSH로 연결하려면 수집 호스트 한 대에서 해당 장비의 SSH 포트로
+가는 한 방향 정책을 사용해요. 정책 그룹의 구성원이 각각 장비 한 대인지 확인해요.
+
+엣지 프록시는 기존 PROXY 경로에서 복원한 수집 호스트의 POST만
+`/internal/platform-hardware-observations`에서 받아요. 원래 요청 헤더 전달은 끄고
+Host, Authorization, Content-Type을 지정해 API로 넘겨요. API 방화벽에서는
+실제 TCP peer인 엣지 프록시만 새로 API 포트에 허용해요.
+전용 경로를 바꿀 때 기존 공개 화면의 HTTPS 200과 다른 발신지의 403을 확인해요.
+수집 호스트에서 bearer 없이 보내면 배포와 수신 설정이 끝난 API의 401로 경계를 확인할 수 있어요.
+
+수신 경로를 되돌릴 때는 수집 전송부터 끄고 엣지 프록시의 exact location만 제거해요.
+`nginx -t`를 통과한 뒤 graceful reload하고 기존 화면을 확인해요.
+API 방화벽의 영구 파일과 실행 규칙에서 해당 소스·포트·표식의 규칙만 제거해요.
+별도 망에서는 이름과 대상을 대조한 전용 정책만 제거해요.
+
 ## 되돌리기
 
 선택 drop-in을 제거하고 daemon-reload한 뒤 하드웨어 oneshot만 중지해요.

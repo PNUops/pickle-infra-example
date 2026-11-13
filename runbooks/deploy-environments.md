@@ -53,14 +53,26 @@ manager가 application 변수를 주입하면 거부해요. 선택 env 파일은
 Console artifact에 운영 주소가 포함되면 배포를 거부해요. `pickle-dev.example.com`의
 공개 TLS와 CT900 경로는 별도 승인 전까지 확인된 접속 경로로 취급하지 않아요.
 
-현재 운영 API unit은 고정 `production-example/pickle-api.jar`를, gateway unit은 drop-in
-`40-release-example.conf`로 고정 `llm-gateway-example`을 실행합니다(2026-10-29 API·console·게이트웨이 수동
-배포, 게이트웨이 env에 `LLMGW_UPSTREAM_OPENROUTER_REASONING=effort` 한 줄 추가). console은 2026-10-30에 네 번 더
-배포했고 2026-11-11에 자체 서빙 가이드 hotfix를 배포했습니다. 게이트웨이는 2026-11-09에 새 고정 바이너리로 바꿨고, drop-in
-파일 이름은 그대로 두고 `ExecStart`와 주석 한 줄만 바꿨습니다. 2026-11-12에 아래 「2026-11-12 릴리스」로 세 서비스를 다시
-배포했습니다.
+운영 예시에서 API unit은 고정 `production-example/pickle-api.jar`를 실행해요.
+Gateway unit은 `40-release-example.conf`의 고정 `llm-gateway-example`을 실행해요.
+API와 console은 `2026.11.13`, gateway는 `2026.11.12` 릴리스에 해당해요.
+
+### 2026-11-13 활용 성과 릴리스
+
+관리자 개요에 활용 성과 화면을 배포했어요. 자동 장비 관측을 받는 API를 먼저 올리고 console을
+교체했어요. 수집 경로의 적용과 되돌리기는 [플랫폼 하드웨어 관측 런북](platform-hardware.md)을 따라요.
+
+- API 명세 0.116.0과 Flyway V147을 적용했어요. V147은 장비 관측 테이블을 추가해요.
+  기존 스키마의 백업을 독립 reader로 검증한 뒤 고정 artifact를 올리고 readiness 200과 Flyway 실패 0을 확인했어요.
+  첫 정기 V147 백업도 독립 reader에서 검증했어요.
+- Console 웹 루트를 맞바꾸고 새 index와 파일 목록을 확인했어요. 직전 웹 루트는 운영 환경에서 정한
+  `<웹 루트>.before-<날짜>-<이름>` 경로에 보존해요.
+- 되돌릴 때는 하드웨어 수집을 끈 뒤 현재와 직전 웹 루트의 index를 배포 기록과 대조하고
+  `mv --exchange -T`로 맞바꿔요. API는 fix-forward가 원칙이에요. V147이 남아 있는 동안 백업 reader 기준은 147을 유지해요.
 
 ### 2026-11-12 릴리스
+
+2026-11-13 릴리스를 되돌려 이 절의 실행본이 활성일 때 아래 되돌리기 절차를 적용해요.
 
 배치(batches)와 동영상 생성(videos) 기능 권한, 사용자 알림 설정을 담은 릴리스입니다. 순서는 게이트웨이 → API → console입니다.
 새 API가 부여한 batches와 videos는 이전 게이트웨이가 처리하지 못하므로 게이트웨이가 먼저입니다. console은 새 API 경로
@@ -86,7 +98,7 @@ Console artifact에 운영 주소가 포함되면 배포를 거부해요. `pickl
     요청이 모두 0인지 확인합니다. 이미 승인된 batches와 videos 권한은 DB에 남고, 이전 API도 그 값을 snapshot에 실어 보내므로
     게이트웨이를 되돌리기 전까지 그 키들의 batches와 videos 호출은 계속 동작합니다. 이전 API에서는 그 키의 허용 목록을 통째로
     다시 저장하는 수정(단건 교체, 일괄 변경)이 거부되고, 사용량 이벤트의 `object`로 하는 소유 기록 복구도 하지 않습니다.
-    V146은 DB에 남으므로 백업 reader의 `expected_schema_version` 146도 그대로 둡니다.
+    백업 reader의 `expected_schema_version`은 운영 DB에 실제로 남아 있는 버전을 유지해요.
   - 게이트웨이: drop-in의 `.before-<날짜>`를 원래 이름으로 복사하고 `systemctl daemon-reload`, restart 합니다. 실행 파일 SHA가
     배포 전 기록과 같은지 확인합니다. env는 그대로입니다. 되돌린 게이트웨이는 batches와 videos 경로를 열지 않으므로 그 권한을
     받은 키의 호출이 거절됩니다.
@@ -222,8 +234,8 @@ artifact SHA를 읽기 전용으로 대조할 수 있어요. 서비스 재시작
   `install -o root -g root -m 0600`으로 원본을 다시 설치하고 SHA를 대조하지만, 운영 DB가 V145이므로 이전 값은
   검증을 거부하게 됩니다. 이전 값으로 되돌리는 것은 정상 상태 복구가 아니라 검증 기준을 과거 스키마로 바꾸는 일이므로,
   운영 DB가 새 스키마인 동안은 새 값을 유지하고 DB 복원 같은 환경 판단과 함께 고릅니다.
-  2026-11-12에 같은 방식으로 145에서 146으로 바꿨습니다(원본은 `.before-<날짜>`). 운영 DB가 V146인 동안은 146을 유지하며,
-  이전 값으로 되돌리면 검증을 거부하게 됩니다.
+  2026-11-12에는 145에서 146으로, 2026-11-13에는 146에서 147로 바꿨어요.
+  운영 DB가 V147인 동안은 147을 유지해요.
 
 ## 제한된 실연동 개발 후보
 
@@ -417,12 +429,12 @@ job timeout은 3분이며 runner 배정과 environment 승인 대기 시간은 �
 항상 실행하는 종료 단계에서 해당 job이 등록한 NetBird 연결만 중단해요. 현재 소스 준비 단계이며
 키 발급, GitHub 설정과 실제 workflow 실행 결과는 별도로 확인해야 해요.
 
-`config/deploy-target-prod.json`은 실제 운영 실행본의 source SHA를 사용합니다. 2026-11-12부터
-0.115/V146 판이고(API, console, 게이트웨이 모두 2026-11-12 릴리스), 산출물은
-고정 artifact 수동 배포로 올렸습니다. pin은 빌드한 commit이자 릴리스 태그가 가리키는 commit이며, 게이트웨이의
-`legacy_exec_path`와 `legacy_sha256`은 drop-in이 실행하는 고정 바이너리 경로와 그 SHA-256입니다. 운영 호스트에는
-이 manifest를 읽는 배포 도구가 없어, console pin 갱신은 실행 중인 source를 기록할 뿐입니다. 같은 파일과 `config/deploy-backup-reader.json`의
-`expected_schema_version`은 2026-11-12에 백업 reader 호스트의 설정과 함께 146으로 맞췄습니다(그 전 145는 2026-10-30). 별도
+`config/deploy-target-prod.json`에는 실제 운영 환경에서 빌드한 commit의 SHA를 넣어요.
+API는 0.116/V147이고 console과 함께 2026-11-13에 배포했어요. 게이트웨이는 2026-11-12 릴리스예요.
+API와 게이트웨이의 `legacy_exec_path`와 `legacy_sha256`에는 운영 unit이 실행하는 고정 artifact 경로와 SHA-256을 넣어요.
+운영 호스트에는 이 manifest를 읽는 배포 도구가 없어 여기의 pin은 현재 실행본을 기록해요.
+같은 파일과 `config/deploy-backup-reader.json`의 `expected_schema_version`은
+2026-11-13에 백업 reader 호스트의 설정과 함께 147로 맞췄어요. 별도
 `config/deploy-target-prod-release-candidate.json`은 그 전의 미활성 0.100/V140 미집행 후보이며
 이번 배포에 쓰지 않았습니다. 파일에 남은 0.99 API·console SHA는 과거 검증한 snapshot이며 최종 0.100 source로 확인된 값이 아닙니다. API와 console 새 source, 검증된 Chat 집행 gateway source와 세 artifact
 SHA를 함께 검증하기 전에는 `release_candidate_ready=false`이며 apply를 거부해요.
@@ -432,7 +444,7 @@ Gateway placeholder와 미확인 digest를 제거하지 않고 READY로 바꿔�
 `PICKLE_PRODUCTION_RELEASE_APPROVED`는 운영 적용을 허용하지 않아요.
 
 `config/deploy-backup-reader.json`은 example-backup-host 독립 DB reader의 현재 선택 profile,
-배치된 기존 native library SHA, 실제 DB instance/system ID와 현재 스키마 버전(2026-11-12부터 V146)을 고정한 후보예요.
+배치된 기존 native library SHA, 실제 DB instance/system ID와 현재 스키마 버전(2026-11-13부터 V147)을 고정한 후보예요.
 백업 reader 호스트에 설치한 사본도 레포 판과 같아야 하므로, 이 파일이 바뀌면 호스트 사본을 같은 소유와 권한(root 0600)으로 다시 설치해요.
 이 파일과 `verify-production-backup.py`를 별도 root 보호 경로에 stage하고, example-prod-host→example-backup-host
 reader 및 example-backup-host→example-prod-host의 native PostgreSQL 읽기 actor를 각각 기존 신뢰 핀과 키의 새 전용
