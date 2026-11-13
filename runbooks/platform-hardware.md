@@ -132,6 +132,13 @@ Host, Authorization, Content-Type을 지정해 API로 넘겨요. API 방화벽�
 전용 경로를 바꿀 때 기존 공개 화면의 HTTPS 200과 다른 발신지의 403을 확인해요.
 수집 호스트에서 bearer 없이 보내면 배포와 수신 설정이 끝난 API의 401로 경계를 확인할 수 있어요.
 
+같은 HTTPS 이름이 내부 주소와 공개 주소로 해석되면 reporter 프로세스에만 내부 주소를 고정할 수 있어요.
+수집 호스트의 `hosts` 조회가 DNS 전에 파일을 읽는지 확인해요. 호스트의 hosts 파일을 root 소유
+사본에 복사하고 `192.0.2.10 pickle-prod.example.com`처럼 내부 HTTPS 이름이 한 주소에만
+매핑되도록 준비해요. reporter unit의 drop-in에서
+`BindReadOnlyPaths=/etc/pickle-platform-hardware/report-hosts:/etc/hosts`로 사본을 읽기 전용으로 연결해요.
+호스트 전체의 이름 해석과 HTTPS hostname, CA 검증을 유지해요. 다음 자연 실행에서 내부 발신과 API 200을 확인해요.
+
 수신 경로를 되돌릴 때는 수집 전송부터 끄고 엣지 프록시의 exact location만 제거해요.
 `nginx -t`를 통과한 뒤 graceful reload하고 기존 화면을 확인해요.
 API 방화벽의 영구 파일과 실행 규칙에서 해당 소스·포트·표식의 규칙만 제거해요.
@@ -141,6 +148,8 @@ API 방화벽의 영구 파일과 실행 규칙에서 해당 소스·포트·표
 
 선택 drop-in을 제거하고 daemon-reload한 뒤 하드웨어 oneshot만 중지해요.
 기존 health timer와 상태, 통지 이력은 유지해요.
+내부 주소 바인딩도 거두려면 하드웨어 수집을 끄고 해당 drop-in과 hosts 사본을 설치 기록에 대조해요.
+drop-in을 제거하고 daemon-reload한 뒤 그 사본을 제거해요. 호스트의 `/etc/hosts`는 유지해요.
 reader의 `allow_hardware`를 끄면 새 명령이 거절되고 기존 health 명령은 유지돼요.
 새 연결을 정리할 때는 이번에 추가한 설정과 정확한 제한 키 행만 제거해요.
 기존 health 키나 `authorized_keys`, 상태 디렉터리를 일괄 삭제하지 않아요.

@@ -55,7 +55,17 @@ Console artifact에 운영 주소가 포함되면 배포를 거부해요. `pickl
 
 운영 예시에서 API unit은 고정 `production-example/pickle-api.jar`를 실행해요.
 Gateway unit은 `40-release-example.conf`의 고정 `llm-gateway-example`을 실행해요.
-API와 console은 `2026.11.13`, gateway는 `2026.11.12` 릴리스에 해당해요.
+API는 `2026.11.13`, console은 `2026.11.13b`, gateway는 `2026.11.12` 릴리스에 해당해요.
+
+### 2026-11-13 활용 성과 콘솔 후속 릴리스
+
+활용 성과의 LLM 통계와 차트, 토큰 표시 문구를 정리했어요. 콘솔의 새 빌드와 이전 해시 자산을
+검산한 뒤 같은 파일시스템의 웹 루트를 원자 교환해요. 각 접속 경로에서 새 index와 참조 자산의 해시를
+대조하고, 기존 API의 readiness와 Flyway 상태를 확인해요.
+
+콘솔 후속만 되돌리려면 운영 환경에 보존한 직전 웹 루트와 현재 웹 루트의 index 및 파일 목록을
+배포 기록에 맞춰 확인해요. 두 경로가 같은 파일시스템의 실제 디렉터리이면 `mv --exchange -T`로
+맞바꾸고 양쪽 index와 공개 응답을 대조해요. 앞선 릴리스의 복구 웹 루트도 별도 경로에 보존해요.
 
 ### 2026-11-13 활용 성과 릴리스
 
@@ -67,7 +77,8 @@ API와 console은 `2026.11.13`, gateway는 `2026.11.12` 릴리스에 해당해�
   첫 정기 V147 백업도 독립 reader에서 검증했어요.
 - Console 웹 루트를 맞바꾸고 새 index와 파일 목록을 확인했어요. 직전 웹 루트는 운영 환경에서 정한
   `<웹 루트>.before-<날짜>-<이름>` 경로에 보존해요.
-- 되돌릴 때는 하드웨어 수집을 끈 뒤 현재와 직전 웹 루트의 index를 배포 기록과 대조하고
+- 이 릴리스까지 되돌리려면 먼저 콘솔 후속판을 되돌려 최초 활용 성과판의 index가 활성인지 확인해요.
+  하드웨어 수집을 끈 뒤 현재와 직전 웹 루트의 index를 배포 기록과 대조하고
   `mv --exchange -T`로 맞바꿔요. API는 fix-forward가 원칙이에요. V147이 남아 있는 동안 백업 reader 기준은 147을 유지해요.
 
 ### 2026-11-12 릴리스
@@ -430,7 +441,7 @@ job timeout은 3분이며 runner 배정과 environment 승인 대기 시간은 �
 키 발급, GitHub 설정과 실제 workflow 실행 결과는 별도로 확인해야 해요.
 
 `config/deploy-target-prod.json`에는 실제 운영 환경에서 빌드한 commit의 SHA를 넣어요.
-API는 0.116/V147이고 console과 함께 2026-11-13에 배포했어요. 게이트웨이는 2026-11-12 릴리스예요.
+API는 0.116/V147(`2026.11.13`), console은 `2026.11.13b`, 게이트웨이는 `2026.11.12` 릴리스예요.
 API와 게이트웨이의 `legacy_exec_path`와 `legacy_sha256`에는 운영 unit이 실행하는 고정 artifact 경로와 SHA-256을 넣어요.
 운영 호스트에는 이 manifest를 읽는 배포 도구가 없어 여기의 pin은 현재 실행본을 기록해요.
 같은 파일과 `config/deploy-backup-reader.json`의 `expected_schema_version`은
