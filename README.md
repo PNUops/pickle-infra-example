@@ -105,6 +105,10 @@ stage/check를 분리하며 이 예시 레포지토리에는 실행 workflow를 
 `config/deploy-target-dev-real.json`과 `config/deploy-backup-reader.json`에 있어요.
 자리표시자는 실제 검증한 배치 값으로 교체하며 기존 운영 helper는 수정하지 않아요.
 
+API 실행기의 공개 출발지 정책은 `PICKLE_NETWORK_POLICY_ENABLED=true`일 때만 켜요.
+미설정 또는 `false`는 비활성이며, 사용자 편집 UI를 배포하고 확인한 뒤 활성화해요.
+VM 방화벽은 별도 설정이고 `production-copy`의 공개 출발지 정책은 항상 비활성이에요.
+
 운영 DB 사본으로 시험하는 개발 환경은 보호 manifest의
 `PICKLE_DEV_DATA_MODE=production-copy`를 사용해요. 같은 개발 CT와 DB 배치에서
 API의 `isolated` profile을 선택하며, 복제한 계정과 비밀번호, MFA, 기관 권한, 이력을

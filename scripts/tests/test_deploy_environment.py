@@ -554,7 +554,9 @@ os.close(9)
              patch.object(wrapper.Path, "resolve", return_value=Path("/opt/pickle/api/releases/production.jar")), \
              patch.object(wrapper.os, "open", return_value=8), \
              patch.object(wrapper.os, "fstat", return_value=SimpleNamespace(st_uid=0, st_mode=0o100640)), \
-             patch.object(wrapper.os, "dup2"), patch.object(wrapper.os, "close"), patch.object(wrapper.os, "execve") as execute:
+             patch.object(wrapper.os, "dup2"), patch.object(wrapper.os, "close"), \
+             patch.dict(wrapper.os.environ, {"PICKLE_NETWORK_POLICY_ENABLED": "true"}, clear=True), \
+             patch.object(wrapper.os, "execve") as execute:
             wrapper.main()
         argv = execute.call_args.args[1]
         self.assertIn("-Xmx2g", argv)
@@ -563,6 +565,64 @@ os.close(9)
         self.assertIn("--pickle.network-policy.enabled=true", argv)
         self.assertIn("--pickle.vm-firewall.enabled=true", argv)
         self.assertIn("--pickle.dns.provider=google", argv)
+
+    def test_public_source_policy_requires_explicit_opt_in(self):
+        wrapper_spec = importlib.util.spec_from_file_location("api_start", SCRIPT.parent / "pickle-api-start.py")
+        wrapper = importlib.util.module_from_spec(wrapper_spec)
+        wrapper_spec.loader.exec_module(wrapper)
+        self.assertIn("PICKLE_NETWORK_POLICY_ENABLED", wrapper.ALLOWED_ENV)
+        for values, expected in (({}, "false"), ({"PICKLE_NETWORK_POLICY_ENABLED": "false"}, "false"),
+                                 ({"PICKLE_NETWORK_POLICY_ENABLED": "true"}, "true")):
+            with self.subTest(values=values):
+                argv = wrapper.execution_arguments("prod", values)
+                self.assertIn(f"--pickle.network-policy.enabled={expected}", argv)
+                self.assertEqual(sum(arg.startswith("--pickle.network-policy.enabled=") for arg in argv), 1)
+                self.assertIn("--pickle.vm-firewall.enabled=true", argv)
+
+    def test_development_manifests_accept_public_source_policy_flag(self):
+        for name in ("deploy-target-dev.json", "deploy-target-dev-copy.json", "deploy-target-dev-real.json"):
+            with self.subTest(manifest=name), tempfile.TemporaryDirectory() as folder:
+                entry = json.loads((SCRIPT.parents[1] / "config" / name).read_text())["targets"]["api"]
+                env = Path(folder) / "api.env"
+                entry["env_file"] = str(env)
+                values = dict(entry.get("required_env", {}))
+                for key, prefix in entry.get("prefix_env", {}).items():
+                    values.setdefault(key, prefix + "18085" if prefix.endswith(":") else prefix)
+                for key in entry.get("required_nonempty_env", []):
+                    values.setdefault(key, "fixture-value")
+                def write_env():
+                    env.write_text("".join(f"{key}='{value}'\n" for key, value in values.items()))
+                def execute_probe(_ctid, *argv, **kwargs):
+                    return subprocess.run(argv, capture_output=True, text=True)
+                with patch.object(deploy, "guest", side_effect=execute_probe):
+                    write_env()
+                    deploy.check_env_rules(entry)
+                    values["PICKLE_NETWORK_POLICY_ENABLED"] = "false"
+                    write_env()
+                    deploy.check_env_rules(entry)
+                    entry["allowed_env"].remove("PICKLE_NETWORK_POLICY_ENABLED")
+                    with self.assertRaisesRegex(deploy.Refusal, "environment allowlist"):
+                        deploy.check_env_rules(entry)
+
+    def test_public_source_policy_refuses_invalid_boolean_without_echoing_value(self):
+        wrapper_spec = importlib.util.spec_from_file_location("api_start", SCRIPT.parent / "pickle-api-start.py")
+        wrapper = importlib.util.module_from_spec(wrapper_spec)
+        wrapper_spec.loader.exec_module(wrapper)
+        for value in ("", "1", "TRUE", "false --unexpected-option"):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "must be true or false") as refused:
+                wrapper.execution_arguments("prod", {"PICKLE_NETWORK_POLICY_ENABLED": value})
+            if value:
+                self.assertNotIn(value, str(refused.exception))
+
+    def test_copy_wrapper_forces_public_source_policy_off(self):
+        wrapper_spec = importlib.util.spec_from_file_location("api_start", SCRIPT.parent / "pickle-api-start.py")
+        wrapper = importlib.util.module_from_spec(wrapper_spec)
+        wrapper_spec.loader.exec_module(wrapper)
+        argv = wrapper.execution_arguments("dev", {"PICKLE_DEV_DATA_MODE": "production-copy",
+                                                    "PICKLE_NETWORK_POLICY_ENABLED": "true"})
+        self.assertIn("--pickle.network-policy.enabled=false", argv)
+        self.assertNotIn("--pickle.network-policy.enabled=true", argv)
+        self.assertIn("--pickle.vm-firewall.enabled=false", argv)
 
     def test_nonempty_secret_rule_refuses_missing_empty_and_whitespace_without_printing_values(self):
         with tempfile.TemporaryDirectory() as folder:

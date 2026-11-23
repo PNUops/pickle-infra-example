@@ -41,7 +41,7 @@
       "release_dir": "/opt/pickle/api/releases",
       "health_url": "http://127.0.0.1:8080/actuator/health/readiness",
       "startup_wrapper": "/usr/local/libexec/pickle-api-start.py",
-      "startup_wrapper_sha256": "e9eb7394366d298d3fd66283f520cfe96f033961f03717e763f1cce41e81a463",
+      "startup_wrapper_sha256": "0b016f9d91a29bac694ed6570836744c008dc48ffb32b9fe6a7291232c44e57c",
       "allowed_env": [
         "PICKLE_CONSOLE_BASE_URL",
         "PICKLE_CREDENTIALS_KEY",
@@ -106,6 +106,7 @@
         "PICKLE_MAIL_FROM",
         "PICKLE_MFA_ENFORCE_ADMIN",
         "PICKLE_MOCK_MAIL_SPOOL",
+        "PICKLE_NETWORK_POLICY_ENABLED",
         "PICKLE_NOTIFICATION_ADMIN_BUNDLE_WINDOW",
         "PICKLE_OPENROUTER_CREDENTIAL_READ_KEYS",
         "PICKLE_OPENROUTER_CREDENTIAL_WRITE_KEY_ID",

@@ -25,7 +25,7 @@
       "release_dir": "/opt/pickle/api/releases",
       "health_url": "http://127.0.0.1:8080/actuator/health/readiness",
       "startup_wrapper": "/usr/local/libexec/pickle-api-start.py",
-      "startup_wrapper_sha256": "c500d605d5ae4cc6dc435b9e2a7a73c0164765281a2d228d6964a1794c24a1cd"
+      "startup_wrapper_sha256": "0b016f9d91a29bac694ed6570836744c008dc48ffb32b9fe6a7291232c44e57c"
     },
     "console": {
       "ctid": 911,

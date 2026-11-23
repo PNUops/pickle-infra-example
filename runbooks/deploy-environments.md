@@ -29,8 +29,14 @@ Chat 권한 집행 전판이므로 권한 집행판 검증 후 다시 고정해�
 Spring 설정은 JAR의 `classpath:/application.yml`만 읽고, 검토된 `PICKLE_*` 변수만
 전달하므로 외부 config와 Spring/JVM, loader override가 실행 설정을 바꾸지 못해요.
 개발은 `-Xmx1g`와 `--server.address=127.0.0.1`, 운영은 기존 `-Xmx2g`와
-`--server.address=0.0.0.0`과 JobRunr server true/dashboard false, network-policy true,
-vm-firewall true, DNS google의 명시 CLI 선택을 보존해요. `PICKLE_DEV_*` inventory와 JobRunr, 실연동
+`--server.address=0.0.0.0`과 JobRunr server true/dashboard false,
+vm-firewall true, DNS google의 명시 CLI 선택을 보존해요. 공개 출발지 정책은
+`PICKLE_NETWORK_POLICY_ENABLED`의 `true` 또는 `false`를 따르며, 미설정 기본값은
+`false`예요. 사용자 편집 UI의 배포와 실제 동작을 확인한 뒤에만 `true`로 켜요.
+VM 방화벽 설정과 별개이며 `production-copy`는 공개 출발지 정책도 항상 꺼요.
+기존 환경에서 끌 때는 env뿐 아니라 effective `ExecStart`와 실제 프로세스 인자도
+확인하고, 이미 적용된 기본 차단의 재동기화 결과를 별도로 검증해요.
+`PICKLE_DEV_*` inventory와 JobRunr, 실연동
 opt-in, 기대 DB identity 변수도 whitelist에 포함해요. 원격 개발 DB는
 `PICKLE_DEV_DB_HOST=198.18.0.60`, `NAME=pickle_dev`, `USER=pickle_dev_api`,
 `PORT=5432`이며 실제 `PICKLE_DB_USER`도 `pickle_dev_api`예요. 초기 개발 VMID

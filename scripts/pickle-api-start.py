@@ -72,6 +72,7 @@ ALLOWED_ENV = frozenset(
     PICKLE_MAIL_FROM
     PICKLE_MFA_ENFORCE_ADMIN
     PICKLE_MOCK_MAIL_SPOOL
+    PICKLE_NETWORK_POLICY_ENABLED
     PICKLE_NOTIFICATION_ADMIN_BUNDLE_WINDOW
     PICKLE_OPENROUTER_CREDENTIAL_READ_KEYS
     PICKLE_OPENROUTER_CREDENTIAL_WRITE_KEY_ID
@@ -130,9 +131,15 @@ def execution_arguments(environment, values):
     mode = values.get("PICKLE_DEV_DATA_MODE", "synthetic")
     if mode not in ("synthetic", "production-copy") or (environment == "prod" and mode != "synthetic"):
         raise RuntimeError("invalid development data mode for this environment")
+    source_policy = values.get("PICKLE_NETWORK_POLICY_ENABLED", "false")
+    if source_policy not in ("true", "false"):
+        raise RuntimeError("PICKLE_NETWORK_POLICY_ENABLED must be true or false")
+    if mode == "production-copy":
+        source_policy = "false"
     profile = "isolated" if mode == "production-copy" else environment
     address = "127.0.0.1" if environment == "dev" else "0.0.0.0"
-    arguments = [f"--spring.profiles.active={profile}", f"--server.address={address}"]
+    arguments = [f"--spring.profiles.active={profile}", f"--server.address={address}",
+                 f"--pickle.network-policy.enabled={source_policy}"]
     if mode == "production-copy":
         # A restored queue and inventory may refer to live infrastructure. Keep
         # every copied record while refusing external effects at runtime.
@@ -153,7 +160,7 @@ def execution_arguments(environment, values):
         ])
     elif environment == "prod":
         arguments.extend(["--jobrunr.background-job-server.enabled=true", "--jobrunr.dashboard.enabled=false",
-                          "--pickle.network-policy.enabled=true", "--pickle.vm-firewall.enabled=true",
+                          "--pickle.vm-firewall.enabled=true",
                           "--pickle.dns.provider=google"])
     return arguments
 
