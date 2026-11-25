@@ -26,7 +26,7 @@ def validate(args):
 
 def run(args, ctx):
     ct = args['ct']
-    if ctx.run(['pct', 'status', str(ct)]) != 'status: running':
+    if not ctx.ct_running(ct):
         return bad('FAIL', 'CONTAINER_STOPPED')
     failed = []
     for unit in args.get('units', []):

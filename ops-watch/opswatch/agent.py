@@ -52,11 +52,42 @@ class Context:
             raise CheckError('COMMAND_FAILED')
         return result.stdout.strip()
 
+    # The pct wrapper costs about 0.4 s of CPU per call in Perl startup, and a
+    # production host makes dozens of calls a minute. These run what pct itself
+    # runs: `pct exec` is `lxc-attach --keep-env` after clearing the environment,
+    # which `run` already does.
     def pct(self, ct, argv, timeout=12):
-        return self.run(['pct', 'exec', str(ct), '--', *argv], timeout=timeout)
+        return self.run(['lxc-attach', '-n', str(int(ct)), '--keep-env', '--', *argv], timeout=timeout)
+
+    def ct_running(self, ct):
+        """Whether the container is up, by the test `pct status` itself uses.
+
+        A missing configuration is a failed command, as it is for pct. Running
+        means a live LXC command socket, so a container frozen for a snapshot
+        backup still counts. `lxc-info` would call that FROZEN, and would call a
+        stopped container whose runtime config was removed by a restore or a
+        migration nonexistent rather than stopped.
+        """
+        ct = int(ct)
+        self.run(['test', '-f', f'/etc/pve/lxc/{ct}.conf'])
+        socket = f'@/var/lib/lxc/{ct}/command'
+        return any(line.split()[-1:] == [socket] for line in self.run(['cat', '/proc/net/unix']).splitlines())
+
+    def ct_config(self, ct):
+        """The container's current configuration, without snapshot or pending sections.
+
+        `pct config` folds pending changes in; the checks want what the running
+        container was started with, so a pending change is not read as live.
+        """
+        lines = []
+        for line in self.run(['cat', f'/etc/pve/lxc/{int(ct)}.conf']).splitlines():
+            if line.startswith('['):
+                break
+            lines.append(line)
+        return '\n'.join(lines)
 
 
-_SLOTS = threading.BoundedSemaphore(8)  # bounds concurrent pct/psql processes on a busy host
+_SLOTS = threading.BoundedSemaphore(8)  # bounds concurrent container commands and psql on a busy host
 
 
 def _start(item, ctx):

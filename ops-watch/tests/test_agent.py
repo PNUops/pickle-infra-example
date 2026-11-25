@@ -26,6 +26,49 @@ def item(**extra):
     return value
 
 
+class ContainerContextTests(unittest.TestCase):
+    def context(self, stdout):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout, '')
+        return agent.Context(T0, {}, runner), calls
+
+    def test_exec_runs_what_pct_exec_runs(self):
+        ctx, calls = self.context('ok\n')
+        self.assertEqual(ctx.pct(204, ['true']), 'ok')
+        self.assertEqual(calls, [['lxc-attach', '-n', '204', '--keep-env', '--', 'true']])
+
+    UNIX = ('Num       RefCount Protocol Flags    Type St Inode Path\n'
+            '00000000fbd50e77: 00000002 00000000 00010000 0001 01 2377314 @/var/lib/lxc/201/command\n'
+            '00000000fbd50e78: 00000002 00000000 00010000 0001 01 2377315 @/var/lib/lxc/2010/command\n')
+
+    def test_running_is_a_live_command_socket_like_pct(self):
+        ctx, calls = self.context(self.UNIX)
+        self.assertTrue(ctx.ct_running(201))
+        self.assertEqual(calls, [['test', '-f', '/etc/pve/lxc/201.conf'], ['cat', '/proc/net/unix']])
+        # 2010's socket must not count for 201 or 20; a frozen container keeps
+        # its socket, and a stopped one without runtime config simply has none.
+        self.assertFalse(self.context(self.UNIX)[0].ct_running(20))
+        self.assertFalse(self.context(self.UNIX)[0].ct_running(203))
+
+    def test_running_needs_the_container_to_exist(self):
+        def runner(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 1 if argv[0] == 'test' else 0, self.UNIX, '')
+        with self.assertRaises(agent.CheckError):
+            agent.Context(T0, {}, runner).ct_running(201)
+
+    def test_config_ignores_pending_changes(self):
+        ctx, _ = self.context('net0: name=eth0,mtu=1450\n[pve:pending]\nnet0: name=eth0,mtu=1400\n')
+        self.assertEqual(ctx.ct_config(201), 'net0: name=eth0,mtu=1450')
+
+    def test_config_stops_at_the_first_snapshot_section(self):
+        ctx, calls = self.context('arch: amd64\nnet0: name=eth0,mtu=1450\n\n[before-upgrade]\nnet0: name=eth0,mtu=1500\n')
+        self.assertEqual(ctx.ct_config(201), 'arch: amd64\nnet0: name=eth0,mtu=1450\n')
+        self.assertEqual(calls, [['cat', '/etc/pve/lxc/201.conf']])
+
+
 class CollectTests(unittest.TestCase):
     def test_runs_only_due_checks_and_keeps_the_newest_result(self):
         calls = []

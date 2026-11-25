@@ -45,7 +45,7 @@ def as_int(text):
 def exit_code(ctx, ct, argv, timeout=12):
     """Run argv in a container and return its exit code instead of raising on nonzero.
 
-    The wrapper itself must succeed; if it cannot (container gone, pct broken) the
+    The wrapper itself must succeed; if it cannot (container gone, lxc-attach refused) the
     check could not observe, which stays a CheckError.
     """
     script = '"$@" >/dev/null 2>&1; echo "$?"'

@@ -32,7 +32,7 @@ def net0_mtu(config_text):
 def run(args, ctx):
     mismatched = []
     for ct in args['cts']:
-        configured = net0_mtu(ctx.run(['pct', 'config', str(ct)]))
+        configured = net0_mtu(ctx.ct_config(ct))
         veth = _pve.as_int(ctx.run(['cat', f'/sys/class/net/veth{ct}i0/mtu']))
         guest = _pve.as_int(ctx.pct(ct, ['cat', '/sys/class/net/eth0/mtu']))
         if guest != veth or configured not in (None, veth):

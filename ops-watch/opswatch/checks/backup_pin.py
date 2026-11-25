@@ -104,7 +104,9 @@ def run(args, ctx):
             raise CheckError('COMMAND_FAILED') from None
         if actual != expected:
             mismatched.append(_pve.ct_label(vmid))
-        if ctx.run(['pct', 'status', str(vmid)]) != 'status: running':
+        # A container whose configuration is gone cannot be running, and asking
+        # would turn the mismatch above into a failed command.
+        if actual is None or not ctx.ct_running(vmid):
             stopped.append(_pve.ct_label(vmid))
     if mismatched:
         return bad('FAIL', 'BACKUP_PIN_MISMATCH', mismatched=mismatched, stopped=stopped)

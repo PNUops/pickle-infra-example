@@ -30,6 +30,12 @@ T0 = 1794402000.0  # 2026-11-11 22:00 KST
 CATALOG = Path(__file__).resolve().parents[1] / 'catalog'
 
 
+def lxc(*running):
+    """Rules for Context.ct_running: every config exists, these containers have a live socket."""
+    sockets = ''.join(f'0000: 00000002 00000000 00010000 0001 01 {ct} @/var/lib/lxc/{ct}/command\n' for ct in running)
+    return [(['test -f /etc/pve/lxc/'], ''), (['cat /proc/net/unix'], 'Num RefCount Protocol\n' + sockets)]
+
+
 class Runner:
     """Answer argv by the first rule whose every fragment appears in the joined command."""
 
@@ -69,26 +75,26 @@ class ContainerTests(Assertions):
 
     def test_running_with_active_units(self):
         result, runner = check('container', self.ARGS, [
-            (['pct status 202'], 'status: running'), (['ActiveState'], 'active')])
+            *lxc(202), (['ActiveState'], 'active')])
         self.assertResult(result, 'OK', 'HEALTHY')
-        self.assertIn('pct exec 202 -- systemctl show --property=ActiveState --value sshpiperd.service', runner.calls)
+        self.assertIn('lxc-attach -n 202 --keep-env -- systemctl show --property=ActiveState --value sshpiperd.service', runner.calls)
 
     def test_stopped_container(self):
-        result, _ = check('container', self.ARGS, [(['pct status 202'], 'status: stopped')])
+        result, _ = check('container', self.ARGS, lxc())
         self.assertResult(result, 'FAIL', 'CONTAINER_STOPPED')
 
     def test_inactive_and_restarting_units_are_named(self):
         result, _ = check('container', self.ARGS, [
-            (['pct status'], 'status: running'), (['sshpiperd'], 'failed'), (['terminal-bridge'], 'activating')])
+            *lxc(202), (['sshpiperd'], 'failed'), (['terminal-bridge'], 'activating')])
         self.assertResult(result, 'FAIL', 'UNIT_INACTIVE',
                           failed_units=['sshpiperd.service', 'sshgw-terminal-bridge.service'])
 
     def test_reloading_counts_as_up(self):
-        result, _ = check('container', self.ARGS, [(['pct status'], 'status: running'), (['ActiveState'], 'reloading')])
+        result, _ = check('container', self.ARGS, [*lxc(202), (['ActiveState'], 'reloading')])
         self.assertResult(result, 'OK', 'HEALTHY')
 
     def test_unreadable_unit_state_is_an_observation_error(self):
-        result, _ = check('container', self.ARGS, [(['pct status'], 'status: running'), (['ActiveState'], (255, ''))])
+        result, _ = check('container', self.ARGS, [*lxc(202), (['ActiveState'], (255, ''))])
         self.assertResult(result, 'ERROR', 'COMMAND_FAILED')
 
     def test_shared_reason_text_is_the_agreed_one(self):
@@ -105,36 +111,36 @@ class ContainerTests(Assertions):
 class DiskAndMtuTests(Assertions):
     def test_fullest_container_decides(self):
         result, _ = check('container_disk', {'cts': [200, 201]}, [
-            (['pct exec 200'], '41'), (['pct exec 201'], '84')])
+            (['lxc-attach -n 200'], '41'), (['lxc-attach -n 201'], '84')])
         self.assertResult(result, 'WARN', 'CT_DISK_HIGH', worst_pct=84, ct_label='CT201')
 
     def test_disk_fail_threshold(self):
-        result, _ = check('container_disk', {'cts': [204], 'warn_pct': 80, 'fail_pct': 90}, [(['pct exec 204'], '90')])
+        result, _ = check('container_disk', {'cts': [204], 'warn_pct': 80, 'fail_pct': 90}, [(['lxc-attach -n 204'], '90')])
         self.assertResult(result, 'FAIL', 'CT_DISK_HIGH', worst_pct=90)
 
     def test_unparsable_disk_output_is_an_error(self):
-        result, _ = check('container_disk', {'cts': [204]}, [(['pct exec 204'], 'Traceback')])
+        result, _ = check('container_disk', {'cts': [204]}, [(['lxc-attach -n 204'], 'Traceback')])
         self.assertResult(result, 'ERROR', 'CHECK_CRASHED')
 
-    MTU_OK = [(['pct config 201'], 'arch: amd64\nnet0: name=eth0,bridge=pinfra,mtu=1450,type=veth'),
-              (['cat /sys/class/net/veth201i0/mtu'], '1450'), (['pct exec 201'], '1450')]
+    MTU_OK = [(['cat /etc/pve/lxc/201.conf'], 'arch: amd64\nnet0: name=eth0,bridge=pinfra,mtu=1450,type=veth'),
+              (['cat /sys/class/net/veth201i0/mtu'], '1450'), (['lxc-attach -n 201'], '1450')]
 
     def test_matching_mtu(self):
         result, _ = check('container_mtu', {'cts': [201]}, self.MTU_OK)
         self.assertResult(result, 'OK', 'HEALTHY')
 
     def test_guest_fallen_back_to_1500(self):
-        rules = [(['pct exec 201'], '1500')] + self.MTU_OK
+        rules = [(['lxc-attach -n 201'], '1500')] + self.MTU_OK
         result, _ = check('container_mtu', {'cts': [201]}, rules)
         self.assertResult(result, 'FAIL', 'MTU_MISMATCH', mismatched=['CT201'])
 
     def test_net0_without_mtu_inherits_the_bridge(self):
-        rules = [(['pct config 201'], 'net0: name=eth0,bridge=pinfra,type=veth')] + self.MTU_OK
+        rules = [(['cat /etc/pve/lxc/201.conf'], 'net0: name=eth0,bridge=pinfra,type=veth')] + self.MTU_OK
         result, _ = check('container_mtu', {'cts': [201]}, rules)
         self.assertResult(result, 'OK', 'HEALTHY')
 
     def test_configured_mtu_differs_from_veth(self):
-        rules = [(['pct config 201'], 'net0: name=eth0,mtu=1400,type=veth')] + self.MTU_OK
+        rules = [(['cat /etc/pve/lxc/201.conf'], 'net0: name=eth0,mtu=1400,type=veth')] + self.MTU_OK
         result, _ = check('container_mtu', {'cts': [201]}, rules)
         self.assertResult(result, 'FAIL', 'MTU_MISMATCH', mismatched=['CT201'])
 
@@ -150,7 +156,7 @@ class SqlTests(Assertions):
         result, runner = self.sql('read', '1')
         self.assertResult(result, 'OK', 'HEALTHY')
         self.assertTrue(runner.calls[0].startswith(
-            'pct exec 204 -- runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1 -tA -d pickle_prod -c select 1'))
+            'lxc-attach -n 204 --keep-env -- runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1 -tA -d pickle_prod -c select 1'))
 
     def test_unreachable_database_is_a_failure_not_an_error(self):
         result, _ = self.sql('read', (2, ''))
@@ -267,7 +273,7 @@ class NginxAndCertTests(Assertions):
                                      ('127', 'ERROR', 'COMMAND_FAILED')):
             result, runner = check('nginx_config', {'ct': 200}, [(['nginx -t'], code)])
             self.assertResult(result, status, reason)
-        self.assertTrue(runner.calls[0].startswith('pct exec 200 -- sh -c'))
+        self.assertTrue(runner.calls[0].startswith('lxc-attach -n 200 --keep-env -- sh -c'))
 
     ARGS = {'ct': 200, 'paths': ['/etc/letsencrypt/live/pickle.pusan.ac.kr/fullchain.pem',
                                  '/etc/letsencrypt/live/pusan.dev/fullchain.pem']}
@@ -398,8 +404,8 @@ class BackupPinTests(Assertions):
             'vzdump: other-job\n\tscript /bin/false\n\tenabled 1\n\n'
             f'vzdump: example-core-daily\n\tschedule 03:17\n{body}\tstorage pbs\n')
 
-    def run_pin(self, running='status: running'):
-        return check('backup_pin', self.args, [(['pct status'], running)])[0]
+    def run_pin(self, running=(200, 201, 202, 203, 204)):
+        return check('backup_pin', self.args, lxc(*running))[0]
 
     def test_unchanged_configs_pass(self):
         self.assertResult(self.run_pin(), 'OK', 'HEALTHY')
@@ -419,7 +425,7 @@ class BackupPinTests(Assertions):
         self.assertResult(self.run_pin(), 'FAIL', 'BACKUP_PIN_MISMATCH', mismatched=['CT200'])
 
     def test_stopped_container_would_be_refused(self):
-        self.assertResult(self.run_pin('status: stopped'), 'FAIL', 'BACKUP_CT_STOPPED',
+        self.assertResult(self.run_pin(()), 'FAIL', 'BACKUP_CT_STOPPED',
                           stopped=['CT200', 'CT201', 'CT203'])
 
     def test_disabled_or_missing_job(self):
@@ -457,16 +463,16 @@ class InternalLinkTests(Assertions):
     ARGS = {'ct': 100, 'address': '198.18.122.168', 'port': 24443}
 
     def test_link_up_and_down(self):
-        result, runner = check('internal_link', self.ARGS, [(['pct exec 100 -- bash -c'], 'up 3')])
+        result, runner = check('internal_link', self.ARGS, [(['lxc-attach -n 100 --keep-env -- bash -c'], 'up 3')])
         self.assertResult(result, 'OK', 'HEALTHY', latency_ms=3)
         self.assertTrue(runner.calls[0].endswith('198.18.122.168 24443 5'))
-        result, _ = check('internal_link', self.ARGS, [(['pct exec 100'], 'down')])
+        result, _ = check('internal_link', self.ARGS, [(['lxc-attach -n 100'], 'down')])
         self.assertResult(result, 'FAIL', 'LINK_DOWN')
         self.assertNotIn('10.125', json.dumps(result))
 
     def test_unexpected_output_and_broken_wrapper(self):
-        self.assertResult(check('internal_link', self.ARGS, [(['pct exec'], 'weird')])[0], 'ERROR', 'CHECK_CRASHED')
-        self.assertResult(check('internal_link', self.ARGS, [(['pct exec'], (255, ''))])[0], 'ERROR', 'COMMAND_FAILED')
+        self.assertResult(check('internal_link', self.ARGS, [(['lxc-attach'], 'weird')])[0], 'ERROR', 'CHECK_CRASHED')
+        self.assertResult(check('internal_link', self.ARGS, [(['lxc-attach'], (255, ''))])[0], 'ERROR', 'COMMAND_FAILED')
 
     def test_validate_address(self):
         for address in ('192.0.2.1; reboot', '', 'a b'):

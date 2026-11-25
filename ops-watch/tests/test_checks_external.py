@@ -455,11 +455,11 @@ class WireguardTests(unittest.TestCase):
         self.assertEqual(self.run_with(self.outputs('', interfaces='wg1'))[0]['reason'], 'WG_DOWN')
         self.assertEqual(self.run_with(self.outputs(''))[0]['reason'], 'WG_DOWN')
 
-    def test_in_container_goes_through_pct(self):
-        prefix = ('pct', 'exec', '102', '--')
+    def test_in_container_goes_through_lxc_attach(self):
+        prefix = ('lxc-attach', '-n', '102', '--keep-env', '--')
         result, context = self.run_with(self.outputs(f'peerA=\t{int(NOW) - 10}', prefix=prefix), in_container=102)
         self.assertEqual(result['status'], 'OK')
-        self.assertTrue(all(call[:4] == prefix for call in context.calls))
+        self.assertTrue(all(call[:len(prefix)] == prefix for call in context.calls))
 
     def test_missing_wg_binary_is_a_check_error(self):
         with self.assertRaises(CheckError):

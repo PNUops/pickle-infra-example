@@ -110,6 +110,7 @@
 |---|---|
 | 호스트 Python | pve-node, pve-node-2, pve-node-3, AWS 3.13, gpu-node 3.12 |
 | 점검 소요 시간 | pve-node-2 10초(가장 김), AWS 5~15초, 나머지 2초 이하. 30초 예산 안이에요. |
+| 에이전트 한 회차 비용 | 처음에는 pve-node-2가 CPU 34초, 메모리 최대 827 MB를 썼어요. 컨테이너 명령마다 `pct`(Perl, 호출당 CPU 약 0.4초)를 띄웠기 때문이에요. 유닛 제한(CPU 20%)에서는 1분 안에 끝나지 않는 양이에요. `pct exec`가 내부에서 실행하는 `lxc-attach --keep-env`, 상태는 `lxc-info`, 설정은 설정 파일을 직접 쓰게 바꾼 뒤 pve-node-2 CPU 0.4초, 메모리 60 MB가 됐어요. pve-node-3는 백업 목록 조회로 163 MB까지 써서 메모리 상한을 256 MB로 잡았어요. |
 | 유닛, thin pool, 설정 경로 | pve-node, pve-node-2, pve-node-3의 점검 항목이 모두 정상으로 나와 카탈로그 값과 실제가 일치해요. |
 | gpu-node GPU | `nvidia-smi`가 GPU 한 장의 온도를 보고해요. |
 | AWS 자원 | 메모리 442 MB 중 약 280 MB 여유, 스왑 없음, 디스크 16 GB 여유. 판정기는 MemoryMax 64M로 제한해요. |
