@@ -5,6 +5,7 @@ Sockets, HTTP and commands are mocked; nothing here touches the network.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -127,7 +128,7 @@ class DnsTests(unittest.TestCase):
             return valid(dns.run(args, ctx()), 'dns')
 
     def test_resolves_and_matches_expected(self):
-        args = {'name': 'llm.example.org', 'expected': ['192.0.2.10']}
+        args = {'name': 'llm.example.org', 'expected': ['192.0.2.10', '192.0.2.11']}
         result = self.run_with(args, self.answers('192.0.2.10', '192.0.2.11'))
         self.assertEqual((result['status'], result['detail']), ('OK', {'address_count': 2}))
 
@@ -137,6 +138,28 @@ class DnsTests(unittest.TestCase):
         self.assertEqual((result['status'], result['reason']), ('FAIL', 'DNS_UNEXPECTED'))
         self.assertEqual(result['detail'], {'address_count': 1, 'missing_count': 1})
         self.assertNotIn('198.51', json.dumps(result))
+
+    def test_private_answer_fails_even_when_the_expected_address_is_there(self):
+        # A public name that also hands out a private address: half the clients
+        # are sent somewhere they cannot reach.
+        private = str(ipaddress.IPv4Address(0x0A000005))
+        args = {'name': 'console.example.org', 'expected': ['192.0.2.10']}
+        result = self.run_with(args, self.answers('192.0.2.10', private))
+        self.assertEqual((result['status'], result['reason']), ('FAIL', 'DNS_PRIVATE_ADDRESS'))
+        self.assertEqual(result['detail'], {'address_count': 2, 'private_count': 1})
+        self.assertNotIn(private, json.dumps(result))
+
+    def test_sinkhole_and_multicast_answers_are_unreachable(self):
+        for value in (0x00000000, 0xE0000001, 0xF0000001):
+            address = str(ipaddress.IPv4Address(value))
+            result = self.run_with({'name': 'console.example.org'}, self.answers('192.0.2.10', address))
+            self.assertEqual(result['reason'], 'DNS_PRIVATE_ADDRESS', address)
+
+    def test_extra_public_answer_warns(self):
+        args = {'name': 'console.example.org', 'expected': ['192.0.2.10']}
+        result = self.run_with(args, self.answers('192.0.2.10', '198.51.100.7'))
+        self.assertEqual((result['status'], result['reason']), ('WARN', 'DNS_EXTRA_ADDRESS'))
+        self.assertEqual(result['detail'], {'address_count': 2, 'extra_count': 1})
 
     def test_resolution_failure_shares_http_text(self):
         result = self.run_with({'name': 'llm.example.org'}, socket.gaierror())
@@ -150,6 +173,32 @@ class DnsTests(unittest.TestCase):
                     'expected': '203.0.113.5'}, {'name': '203.0.113.5'}):
             with self.assertRaises(ValueError):
                 dns.validate(bad)
+
+
+class HttpConnectTests(unittest.TestCase):
+    def infos(self, *addresses):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (address, 443)) for address in addresses]
+
+    def test_tries_each_address_in_order_like_a_browser(self):
+        from opswatch.checks import http
+        tried, sock = [], object()
+
+        def connect(address, timeout):
+            tried.append((address[0], timeout))
+            if address[0] == '192.0.2.1':
+                raise socket.timeout()
+            return sock
+        with mock.patch.object(http.socket, 'create_connection', connect):
+            self.assertIs(http._connect(self.infos('192.0.2.1', '192.0.2.2'), 5), sock)
+        self.assertEqual(tried, [('192.0.2.1', 5), ('192.0.2.2', 5)])
+
+    def test_every_address_failing_raises_the_last_error(self):
+        from opswatch.checks import http
+        with mock.patch.object(http.socket, 'create_connection', side_effect=ConnectionRefusedError()):
+            with self.assertRaises(ConnectionRefusedError):
+                http._connect(self.infos('192.0.2.1', '192.0.2.2'), 5)
+        with self.assertRaises(OSError):
+            http._connect([], 5)
 
 
 class FakeResponse:

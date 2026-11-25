@@ -102,15 +102,25 @@
 | 시험 메시지 | `sudo -u opswatch /usr/bin/python3 -I -B /usr/local/lib/pickle-ops-watch/bin/ops-watch test-message --config /etc/pickle-ops-watch/judge.json` |
 | 에이전트 실행 기록 | `journalctl -u pickle-ops-watch-agent.service -n 20` |
 
-## 설치 전에 실측할 것
+## 설치 전 실측 결과 (2026-11-25)
 
-점검 모듈을 만들 때 문서만으로 확인하지 못한 값이에요. 설치 단계에서 각 호스트에서 확인해요.
+각 호스트에서 패키지를 임시 경로에 풀고, 전송 없이 점검을 한 번씩 돌려 확인했어요.
 
-- AWS 릴레이 유닛 이름(`haproxy.service`, `relay-agent.service`, `wg-quick@wg0.service`)과 판정 서버가 릴레이와 같은 장비인지
-- CT201 콘솔 nginx 유닛 이름, pve-node과 pve-node-2의 thin pool 이름 `pve/data`
-- DB 백업 감시 설정 경로와 PBS 용량 설정 경로
-- gpu-node `nvidia-smi`가 온도를 보고하는지
-- 교내 호스트에서 AWS 관리 SSH 포트로 나가는 경로
-- LLM 실패율 기준(실패 비율 0.2, 최소 요청 10건), 메일 적체 15분과 60분, 잔액 경고 20달러는 잠정값이에요. 이틀 비교 기간에 조정해요.
+| 항목 | 결과 |
+|---|---|
+| 호스트 Python | pve-node, pve-node-2, pve-node-3, AWS 3.13, gpu-node 3.12 |
+| 점검 소요 시간 | pve-node-2 10초(가장 김), AWS 5~15초, 나머지 2초 이하. 30초 예산 안이에요. |
+| 유닛, thin pool, 설정 경로 | pve-node, pve-node-2, pve-node-3의 점검 항목이 모두 정상으로 나와 카탈로그 값과 실제가 일치해요. |
+| gpu-node GPU | `nvidia-smi`가 GPU 한 장의 온도를 보고해요. |
+| AWS 자원 | 메모리 442 MB 중 약 280 MB 여유, 스왑 없음, 디스크 16 GB 여유. 판정기는 MemoryMax 64M로 제한해요. |
+| 교내에서 AWS 관리 SSH 포트로 가는 경로 | pve-node은 공인 주소로 닿아요. pve-node-2, pve-node-3, gpu-node은 다른 교내 NAT 주소로 나가서 Lightsail 방화벽에 막혀요. pve-node-3는 NetBird 주소로 닿고, pve-node-2와 gpu-node은 NetBird 정책에도 없어요. |
 
-최종 갱신: 2026-11-12
+실측에서 고친 점검:
+
+- **OpenRouter 잔액**: 운영 DB에 사업 계정이 다섯 개 있고 그중 둘은 충전한 적이 없어요. 계정 전체의 최솟값을 보던 점검이 늘 0달러 주의를 냈어요. 지금은 충전된 계정마다 「고정 금액(기본 20달러)과 충전액의 비율(기본 20%) 중 작은 값」보다 적게 남았는지 보고, 그 계정 이름을 함께 알려요.
+- **DNS**: `pickle.pusan.ac.kr`가 공인 주소와 함께 교내 사설 주소를 돌려주고 있었어요. 기대 주소가 들어 있기만 하면 정상으로 보던 점검이 이를 놓쳤어요. 지금은 사설 주소가 섞이면 장애, 예상 밖 공인 주소가 섞이면 주의예요.
+- **HTTP**: 첫 번째 주소에만 연결하던 점검이 DNS 응답 순서에 따라 성공과 실패를 오갔어요. 지금은 브라우저처럼 주소를 차례로 시도하고, 주소마다 연결 제한은 5초예요.
+
+LLM 실패율 기준(실패 비율 0.2, 최소 요청 10건), 메일 적체 15분과 60분은 잠정값이에요. 나란히 돌리는 기간에 조정해요.
+
+최종 갱신: 2026-11-25

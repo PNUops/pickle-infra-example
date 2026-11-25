@@ -13,7 +13,7 @@ from . import CheckError, _pve, bad, ok
 KIND = 'sql'
 DETAIL = {
     'count': int, 'workers': int, 'stale': [str], 'requests': int, 'failed': int, 'ratio_pct': int,
-    'oldest_min': int, 'balance_usd': float, 'usage_pct': int, 'snapshot_age_min': int,
+    'oldest_min': int, 'balance_usd': float, 'account': str, 'usage_pct': int, 'snapshot_age_min': int,
 }
 REASONS = {
     'DB_UNREACHABLE': ('데이터베이스에 접속하지 못했어요.', '데이터베이스 장애'),
@@ -27,7 +27,7 @@ REASONS = {
     'MAIL_BACKLOG': ('보내지 못한 메일 {count}통이 밀려 있어요. 가장 오래된 메일은 {oldest_min}분째 기다리고 있어요.', '메일 지연'),
     'OPENROUTER_KEY_EXHAUSTED': ('공용 LLM 키가 오늘 사용 한도를 다 썼어요.', 'LLM 한도'),
     'OPENROUTER_KEY_HIGH': ('공용 LLM 키가 오늘 한도의 {usage_pct}%를 썼어요.', 'LLM 한도'),
-    'OPENROUTER_BALANCE_LOW': ('OpenRouter 계정 잔액이 {balance_usd:.2f}달러 남았어요.', 'LLM 잔액'),
+    'OPENROUTER_BALANCE_LOW': ('OpenRouter 사업 계정 「{account}」 잔액이 {balance_usd:.2f}달러 남았어요.', 'LLM 잔액'),
     'OPENROUTER_SNAPSHOT_STALE': ('OpenRouter 잔액 정보가 {snapshot_age_min}분째 갱신되지 않았어요.', 'LLM 잔액'),
 }
 DATABASE = re.compile(r'[a-z][a-z0-9_]{0,62}\Z')
@@ -68,6 +68,7 @@ def _validate_recurring(args):
 
 def _validate_openrouter(args):
     _pve.number(args.get('balance_warn_usd', 20), 'balance_warn_usd', 0, 100000, (int, float))
+    _pve.number(args.get('balance_warn_ratio', 0.2), 'balance_warn_ratio', 0, 1, (int, float))
     _int(args, 'stale_min', 30, 1, 1440)
     _pair(args, 'usage_warn_pct', 80, 'usage_fail_pct', 100, 1, 1000)
     keys = args.get('key_ids', [])
@@ -236,21 +237,38 @@ def _number(text):
 
 
 def openrouter(args, ctx):
-    """Business-account balance, its poll freshness, and watched runtime keys' daily use.
+    """Business-account balances, their poll freshness, and watched runtime keys' daily use.
 
-    An account that has never been read counts from its creation, so a new
-    account warns only if its first poll is late too.
+    Each funded account is judged on its own: it warns when what is left falls
+    under the smaller of a fixed amount and a share of what was put in, so a
+    small club account is not permanently low against a figure sized for a large
+    one. An account never funded has nothing to run out of and is skipped. An
+    account that has never been read counts from its creation, so a new account
+    warns only if its first poll is late too.
     """
-    out = sql(ctx, args, "select count(*), coalesce(min(credits_total - credits_usage)::text, ''), "
-                         "coalesce(max(floor(extract(epoch from now() - coalesce(credits_observed_at, created_at)) "
-                         "/ 60))::bigint::text, '') from openrouter_accounts where status = 'ACTIVE'")
-    (accounts, balance, age), = rows(out, 3)
+    warn_usd = float(args.get('balance_warn_usd', 20))
+    warn_ratio = float(args.get('balance_warn_ratio', 0.2))
+    left = 'credits_total - credits_usage'
+    # The name reaches Discord, so it is reduced to letters, digits and a few
+    # separators. Dots and colons go too: the result schema refuses text shaped
+    # like an address, and a name such as 'lab 2024.10.01.1' would otherwise
+    # turn the warning into a crashed check. psql's separator cannot survive.
+    label = r"left(trim(regexp_replace(name, '[^A-Za-z0-9가-힣 _@+-]+', ' ', 'g')), 40)"
+    out = sql(ctx, args,
+              "select count(*), "
+              f"coalesce((select {label} || '|' || ({left})::text from openrouter_accounts "
+              f"where status = 'ACTIVE' and credits_total > 0 "
+              f"and {left} < least({warn_usd!r}, credits_total * {warn_ratio!r}) "
+              f"order by {left} limit 1), '|'), "
+              "coalesce(max(floor(extract(epoch from now() - coalesce(credits_observed_at, created_at)) "
+              "/ 60))::bigint::text, '') from openrouter_accounts where status = 'ACTIVE'")
+    (accounts, account, balance, age), = rows(out, 4)
     detail, found = {}, []
     if _pve.as_int(accounts):
         if balance:
+            detail['account'] = account or '이름 없음'
             detail['balance_usd'] = round(_number(balance), 2)
-            if detail['balance_usd'] < args.get('balance_warn_usd', 20):
-                found.append(('WARN', 'OPENROUTER_BALANCE_LOW'))
+            found.append(('WARN', 'OPENROUTER_BALANCE_LOW'))
         detail['snapshot_age_min'] = _pve.as_int(age)
         if detail['snapshot_age_min'] >= args.get('stale_min', 30):
             found.append(('WARN', 'OPENROUTER_SNAPSHOT_STALE'))

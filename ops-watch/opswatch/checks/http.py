@@ -23,6 +23,8 @@ REASONS = {
 }
 HOST = re.compile(r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z')
 MAX_BODY = 256 * 1024
+# Per-address connect limit; a reachable server answers a SYN well inside it.
+CONNECT_TIMEOUT = 5
 
 
 def validate(args):
@@ -62,6 +64,22 @@ def _matches(expect, body):
     return text.strip() == expect['value']
 
 
+def _connect(infos, timeout):
+    """Try each resolved address in order, the way a browser does.
+
+    Which address comes first changes between lookups, so taking only the first
+    would make the result depend on that order. A name that also hands out an
+    address nobody can reach is the DNS check's to report.
+    """
+    error = OSError('no address')
+    for info in infos:
+        try:
+            return socket.create_connection(info[4][:2], timeout=timeout)
+        except OSError as caught:
+            error = caught
+    raise error
+
+
 def run(args, ctx):
     url = urlsplit(args['url'])
     timeout = args.get('timeout', 15)
@@ -71,7 +89,8 @@ def run(args, ctx):
         address = args.get('connect_address') or url.hostname
         infos = socket.getaddrinfo(address, url.port or 443, type=socket.SOCK_STREAM)
         phase = 'TCP'
-        raw = socket.create_connection(infos[0][4][:2], timeout=timeout)
+        raw = _connect(infos, min(timeout, CONNECT_TIMEOUT))
+        raw.settimeout(timeout)
         phase = 'TLS'
         context = ssl.create_default_context()
         sock = context.wrap_socket(raw, server_hostname=url.hostname)

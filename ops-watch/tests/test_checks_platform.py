@@ -219,17 +219,26 @@ class SqlTests(Assertions):
         self.assertResult(self.sql('mail_backlog', '4|61')[0], 'FAIL', 'MAIL_BACKLOG')
 
     def test_openrouter_balance_and_freshness(self):
-        self.assertResult(self.sql('openrouter', '0||')[0], 'OK', 'HEALTHY')
-        self.assertResult(self.sql('openrouter', '1|153.250000|4')[0], 'OK', 'HEALTHY',
-                          balance_usd=153.25, snapshot_age_min=4)
-        self.assertResult(self.sql('openrouter', '1|12.500000|4')[0], 'WARN', 'OPENROUTER_BALANCE_LOW')
-        self.assertResult(self.sql('openrouter', '1|153.25|31')[0], 'WARN', 'OPENROUTER_SNAPSHOT_STALE')
+        self.assertResult(self.sql('openrouter', '0|||')[0], 'OK', 'HEALTHY')
+        self.assertResult(self.sql('openrouter', '3|||4')[0], 'OK', 'HEALTHY', snapshot_age_min=4)
+        self.assertResult(self.sql('openrouter', '3|동아리|1.250000|4')[0], 'WARN', 'OPENROUTER_BALANCE_LOW',
+                          account='동아리', balance_usd=1.25, snapshot_age_min=4)
+        self.assertResult(self.sql('openrouter', '1|||31')[0], 'WARN', 'OPENROUTER_SNAPSHOT_STALE')
         # Never polled yet: the balance is unknown and only the age is judged.
-        self.assertResult(self.sql('openrouter', '1||3')[0], 'OK', 'HEALTHY', snapshot_age_min=3)
+        self.assertResult(self.sql('openrouter', '1|||3')[0], 'OK', 'HEALTHY', snapshot_age_min=3)
+
+    def test_openrouter_judges_each_funded_account_against_its_own_size(self):
+        _, runner = self.sql('openrouter', '0|||', balance_warn_usd=20, balance_warn_ratio=0.2)
+        query = runner.calls[0]
+        # Unfunded accounts have nothing to run out of; a small account is
+        # measured against a share of its own credit, not the large figure.
+        self.assertIn('credits_total > 0', query)
+        self.assertIn('least(20.0, credits_total * 0.2)', query)
+        self.assertIn("regexp_replace(name, '[^A-Za-z0-9가-힣 _@+-]+'", query)
 
     def test_openrouter_watched_key_usage(self):
         key = '0b9a6d1e-1c2f-4a8b-9e3d-5f6a7b8c9d0e'
-        rules = [(['llm_api_keys'], '100'), (['openrouter_accounts'], '1|153.25|4')]
+        rules = [(['llm_api_keys'], '100'), (['openrouter_accounts'], '1|||4')]
         result, runner = check('sql', dict(DB, query='openrouter', key_ids=[key]), rules)
         self.assertResult(result, 'FAIL', 'OPENROUTER_KEY_EXHAUSTED', usage_pct=100)
         self.assertIn(f"public_id in ('{key}')", runner.calls[1])
@@ -239,8 +248,8 @@ class SqlTests(Assertions):
 
     def test_openrouter_reason_renders_the_balance(self):
         from opswatch import render
-        self.assertEqual(render.sentence('OPENROUTER_BALANCE_LOW', {'balance_usd': 12.5}),
-                         'OpenRouter 계정 잔액이 12.50달러 남았어요.')
+        self.assertEqual(render.sentence('OPENROUTER_BALANCE_LOW', {'account': 'PNUops', 'balance_usd': 1.5}),
+                         'OpenRouter 사업 계정 「PNUops」 잔액이 1.50달러 남았어요.')
 
     def test_validate_takes_a_query_name_never_sql(self):
         validate = REGISTRY['sql'].validate
